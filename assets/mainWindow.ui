@@ -1,0 +1,583 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>qt</class>
+ <widget class="QMainWindow" name="qt">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1200</width>
+    <height>665</height>
+   </rect>
+  </property>
+  <property name="cursor">
+   <cursorShape>ArrowCursor</cursorShape>
+  </property>
+  <property name="windowTitle">
+   <string>Camnera GUI</string>
+  </property>
+  <property name="windowOpacity">
+   <double>0.990000000000000</double>
+  </property>
+  <property name="statusTip">
+   <string>University of Arizona.</string>
+  </property>
+  <property name="whatsThis">
+   <string>Camera GUI</string>
+  </property>
+  <widget class="QWidget" name="widget_MainWindow">
+   <widget class="QTabWidget" name="tabWidget_MainWindow">
+    <property name="enabled">
+     <bool>true</bool>
+    </property>
+    <property name="geometry">
+     <rect>
+      <x>0</x>
+      <y>0</y>
+      <width>1200</width>
+      <height>570</height>
+     </rect>
+    </property>
+    <property name="maximumSize">
+     <size>
+      <width>1677799</width>
+      <height>16777215</height>
+     </size>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+    <property name="currentIndex">
+     <number>0</number>
+    </property>
+    <property name="iconSize">
+     <size>
+      <width>12</width>
+      <height>12</height>
+     </size>
+    </property>
+    <widget class="QWidget" name="SerialMonitor">
+     <property name="font">
+      <font>
+       <pointsize>9</pointsize>
+      </font>
+     </property>
+     <attribute name="title">
+      <string>Serial Monitor</string>
+     </attribute>
+     <widget class="QPushButton" name="pushButton_SerialSend">
+      <property name="geometry">
+       <rect>
+        <x>1090</x>
+        <y>10</y>
+        <width>91</width>
+        <height>31</height>
+       </rect>
+      </property>
+      <property name="font">
+       <font>
+        <pointsize>9</pointsize>
+       </font>
+      </property>
+      <property name="text">
+       <string>Send File</string>
+      </property>
+      <property name="autoDefault">
+       <bool>false</bool>
+      </property>
+     </widget>
+     <widget class="QPushButton" name="pushButton_SerialClearOutput">
+      <property name="geometry">
+       <rect>
+        <x>100</x>
+        <y>500</y>
+        <width>91</width>
+        <height>31</height>
+       </rect>
+      </property>
+      <property name="font">
+       <font>
+        <pointsize>9</pointsize>
+       </font>
+      </property>
+      <property name="text">
+       <string>Clear</string>
+      </property>
+     </widget>
+     <widget class="QPushButton" name="pushButton_SerialSave">
+      <property name="geometry">
+       <rect>
+        <x>190</x>
+        <y>500</y>
+        <width>91</width>
+        <height>31</height>
+       </rect>
+      </property>
+      <property name="font">
+       <font>
+        <pointsize>9</pointsize>
+       </font>
+      </property>
+      <property name="text">
+       <string>Save</string>
+      </property>
+     </widget>
+     <widget class="QLineEdit" name="lineEdit_SerialText">
+      <property name="geometry">
+       <rect>
+        <x>10</x>
+        <y>10</y>
+        <width>1071</width>
+        <height>31</height>
+       </rect>
+      </property>
+      <property name="font">
+       <font>
+        <pointsize>8</pointsize>
+        <kerning>false</kerning>
+       </font>
+      </property>
+     </widget>
+     <widget class="QPushButton" name="pushButton_SerialStartStop">
+      <property name="geometry">
+       <rect>
+        <x>10</x>
+        <y>500</y>
+        <width>91</width>
+        <height>31</height>
+       </rect>
+      </property>
+      <property name="font">
+       <font>
+        <pointsize>9</pointsize>
+       </font>
+      </property>
+      <property name="text">
+       <string>Start</string>
+      </property>
+     </widget>
+     <widget class="QPlainTextEdit" name="plainTextEdit_SerialTextDisplay">
+      <property name="geometry">
+       <rect>
+        <x>9</x>
+        <y>50</y>
+        <width>1171</width>
+        <height>441</height>
+       </rect>
+      </property>
+     </widget>
+    </widget>
+    <widget class="QWidget" name="SerialPlotter">
+     <attribute name="title">
+      <string>Serial Plotter</string>
+     </attribute>
+     <widget class="QGroupBox" name="groupBox">
+      <property name="geometry">
+       <rect>
+        <x>560</x>
+        <y>490</y>
+        <width>621</width>
+        <height>51</height>
+       </rect>
+      </property>
+      <property name="title">
+       <string>Zoom</string>
+      </property>
+      <widget class="QSlider" name="horizontalSlider_Zoom">
+       <property name="geometry">
+        <rect>
+         <x>90</x>
+         <y>20</y>
+         <width>441</width>
+         <height>20</height>
+        </rect>
+       </property>
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+      </widget>
+      <widget class="QLineEdit" name="lineEdit_Horizontal">
+       <property name="geometry">
+        <rect>
+         <x>550</x>
+         <y>15</y>
+         <width>61</width>
+         <height>31</height>
+        </rect>
+       </property>
+      </widget>
+      <widget class="QLabel" name="label_Horizontal">
+       <property name="geometry">
+        <rect>
+         <x>10</x>
+         <y>20</y>
+         <width>71</width>
+         <height>20</height>
+        </rect>
+       </property>
+       <property name="text">
+        <string>Horizontal</string>
+       </property>
+      </widget>
+     </widget>
+     <widget class="QPushButton" name="pushButton_ChartStartStop">
+      <property name="geometry">
+       <rect>
+        <x>10</x>
+        <y>500</y>
+        <width>91</width>
+        <height>31</height>
+       </rect>
+      </property>
+      <property name="font">
+       <font>
+        <pointsize>9</pointsize>
+       </font>
+      </property>
+      <property name="text">
+       <string>Start</string>
+      </property>
+     </widget>
+     <widget class="QPushButton" name="pushButton_ChartClear">
+      <property name="geometry">
+       <rect>
+        <x>100</x>
+        <y>500</y>
+        <width>91</width>
+        <height>31</height>
+       </rect>
+      </property>
+      <property name="font">
+       <font>
+        <pointsize>9</pointsize>
+       </font>
+      </property>
+      <property name="text">
+       <string>Clear</string>
+      </property>
+     </widget>
+     <widget class="QGraphicsView" name="chartView">
+      <property name="geometry">
+       <rect>
+        <x>10</x>
+        <y>10</y>
+        <width>1171</width>
+        <height>481</height>
+       </rect>
+      </property>
+     </widget>
+     <widget class="QPushButton" name="pushButton_ChartSave">
+      <property name="geometry">
+       <rect>
+        <x>190</x>
+        <y>500</y>
+        <width>91</width>
+        <height>31</height>
+       </rect>
+      </property>
+      <property name="font">
+       <font>
+        <pointsize>9</pointsize>
+       </font>
+      </property>
+      <property name="text">
+       <string>Save</string>
+      </property>
+     </widget>
+     <widget class="QComboBox" name="comboBoxDropDown_DataSeparator">
+      <property name="geometry">
+       <rect>
+        <x>380</x>
+        <y>500</y>
+        <width>81</width>
+        <height>31</height>
+       </rect>
+      </property>
+      <item>
+       <property name="text">
+        <string>comma (,)</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>semicolon (;)</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>point (.)</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>space (\s)</string>
+       </property>
+      </item>
+     </widget>
+     <widget class="QLabel" name="label_LineTermination_2">
+      <property name="geometry">
+       <rect>
+        <x>290</x>
+        <y>500</y>
+        <width>111</width>
+        <height>31</height>
+       </rect>
+      </property>
+      <property name="font">
+       <font>
+        <pointsize>9</pointsize>
+       </font>
+      </property>
+      <property name="text">
+       <string>Data Separator</string>
+      </property>
+     </widget>
+    </widget>
+   </widget>
+   <widget class="QComboBox" name="comboBoxDropDown_LineTermination">
+    <property name="geometry">
+     <rect>
+      <x>570</x>
+      <y>575</y>
+      <width>161</width>
+      <height>31</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+    <item>
+     <property name="text">
+      <string>return newline (\r\n)</string>
+     </property>
+    </item>
+    <item>
+     <property name="text">
+      <string>newline (\n)</string>
+     </property>
+    </item>
+    <item>
+     <property name="text">
+      <string>return (\r)</string>
+     </property>
+    </item>
+    <item>
+     <property name="text">
+      <string>newline return (\n\r)</string>
+     </property>
+    </item>
+    <item>
+     <property name="text">
+      <string>none</string>
+     </property>
+    </item>
+   </widget>
+   <widget class="QComboBox" name="comboBoxDropDown_SerialPorts">
+    <property name="geometry">
+     <rect>
+      <x>40</x>
+      <y>575</y>
+      <width>191</width>
+      <height>31</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_SerialPorts">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>575</y>
+      <width>41</width>
+      <height>31</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>Port</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_LineTermination">
+    <property name="geometry">
+     <rect>
+      <x>460</x>
+      <y>575</y>
+      <width>111</width>
+      <height>31</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>Line Termination</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_BaudRate">
+    <property name="geometry">
+     <rect>
+      <x>240</x>
+      <y>575</y>
+      <width>81</width>
+      <height>31</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>Baud Rate</string>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="comboBoxDropDown_BaudRates">
+    <property name="geometry">
+     <rect>
+      <x>310</x>
+      <y>575</y>
+      <width>141</width>
+      <height>31</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="pushButton_SerialScan">
+    <property name="geometry">
+     <rect>
+      <x>740</x>
+      <y>575</y>
+      <width>91</width>
+      <height>31</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>Scan Ports</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="throughput">
+    <property name="geometry">
+     <rect>
+      <x>1080</x>
+      <y>575</y>
+      <width>100</width>
+      <height>31</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="pushButton_SerialOpenClose">
+    <property name="geometry">
+     <rect>
+      <x>830</x>
+      <y>575</y>
+      <width>91</width>
+      <height>31</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>Close</string>
+    </property>
+   </widget>
+  </widget>
+  <widget class="QMenuBar" name="menubar">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>0</y>
+     <width>1200</width>
+     <height>26</height>
+    </rect>
+   </property>
+   <widget class="QMenu" name="menuInfo">
+    <property name="title">
+     <string>Info</string>
+    </property>
+    <addaction name="action_About"/>
+    <addaction name="action_Help"/>
+   </widget>
+   <addaction name="menuInfo"/>
+  </widget>
+  <widget class="QStatusBar" name="statusbar"/>
+  <action name="action_StatusBar">
+   <property name="text">
+    <string>Status</string>
+   </property>
+  </action>
+  <action name="actionHelp">
+   <property name="text">
+    <string>Help</string>
+   </property>
+  </action>
+  <action name="actionAbout">
+   <property name="text">
+    <string>About</string>
+   </property>
+  </action>
+  <action name="actionInformation">
+   <property name="text">
+    <string>Information</string>
+   </property>
+  </action>
+  <action name="action_SaveConfig">
+   <property name="text">
+    <string>Save Config</string>
+   </property>
+   <property name="statusTip">
+    <string>Save Configuration</string>
+   </property>
+  </action>
+  <action name="action_LoadConfig">
+   <property name="text">
+    <string>Load Config</string>
+   </property>
+   <property name="statusTip">
+    <string>Load Configuration</string>
+   </property>
+  </action>
+  <action name="action_About">
+   <property name="text">
+    <string>About</string>
+   </property>
+  </action>
+  <action name="action_Help">
+   <property name="text">
+    <string>Help</string>
+   </property>
+  </action>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
