@@ -17,11 +17,12 @@ Urs Utzinger
 <img src="assets/SerialMonitor.png" alt="Serial Monitor" width="800"/>
 <img src="assets/SerialPlotter.png" alt="Serial Plotter" width="800"/>
 
-## Installation
-- pip3 install PyQT
-- pip3 install numpy
-- pip3 install pyserial
-- pip3 install markdown
+## Installation Requirements
+- pip3 install pyqt5 (GNU General Public License (GPL))
+- pip3 install pyqtgraph (MIT License)
+- pip3 install numpy (BSD license)
+- pip3 install pyserial (Python Software Foundation License)
+- pip3 install markdown (BSD license)
 
 The main program is ```main_window.py```. It depends on the files in the ```assets``` and ```helper``` folder.
 
@@ -30,9 +31,9 @@ The main program is ```main_window.py```. It depends on the files in the ```asse
 ### Setting Serial port
 
 - plug in your device and hit scan ports
-- select serial port 
+- select serial port
 - select the baud rate
-- select the line termination
+- select the line termination (\r\n is most common)
 
 Line termination ```none``` displays text as it arrived from serial port but you can not display data in a chart.
 
@@ -64,7 +65,7 @@ Send complete text files with send file button. The file will need to fit into s
 
 - complete setting serial port section above
 - open the Serial Plotter tab
-- select data separator or leave as is if there is only one number per line
+- select data separator or leave as is if there is only one number per line, most common separator is comma.
 - hit start
 - adjust the view with the horizontal slider
 - you can save and clear the currently plotted data
