@@ -639,6 +639,8 @@ class QSerialUI(QObject):
         """
         rx = numReceived - self.lastNumReceived
         tx = numSent     - self.lastNumSent
+        if rx < 0: rx = self.rx # self.lastNumReceived is not cleared when we clear the serial buffer, take care of it here
+        if tx < 0: tx = self.tx
         # poor man's low pass
         self.rx = 0.5*self.rx + 0.5*rx
         self.tx = 0.5*self.tx + 0.5*tx
