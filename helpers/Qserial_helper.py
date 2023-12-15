@@ -7,7 +7,12 @@
 # Urs Utzinger
 # University of Arizona 2023
 ############################################################################################
-
+############################################################################################
+# This code has 3 sections
+# QSerialUI: Interface to GUI, rusn in main thread.
+# QSeril: Serial functions running in separate thread, communication with signals and slots.
+# PSerial: Low level interaction with serial ports, called from QSerial.
+############################################################################################
 ############################################################################################
 # Helpful readings:
 # ------------------------------------------------------------------------------------------
