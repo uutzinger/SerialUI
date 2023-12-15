@@ -34,12 +34,12 @@
 # Serial
 #   Examples using pySerial
 #      https://programmer.group/python-uses-pyqt5-to-write-a-simple-serial-assistant.html
-#      https://github.com/mcagriaksoy/Serial-Communication-GUI-Program/blob/master/qt.py
+#      https://github.com/mcagriaksoy/Serial-Communication-GUI-Program
 #      https://hl4rny.tistory.com/433
-#      https://iosoft.blog/pyqt-serial-terminal-code/
+#      https://iosoft.blog/pyqt-serial-terminal-code
 #   Examples using QSerialPort
 #      https://stackoverflow.com/questions/55070483/connect-to-serial-from-a-pyqt-gui
-#      https://ymt-lab.com/en/post/2021/pyqt5-serial-monitor/
+#      https://ymt-lab.com/en/post/2021/pyqt5-serial-monitor
 #
 ############################################################################################
 
