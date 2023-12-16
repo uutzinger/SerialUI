@@ -2,15 +2,15 @@
 # QT Serial Helper
 ############################################################################################
 # July 2022: initial work
-# December 2023: implemented line reading and line termination
+# December 2023: implemented line reading
 # ------------------------------------------------------------------------------------------
 # Urs Utzinger
-# University of Arizona 2023
+# University of Arizona 2022, 2023
 ############################################################################################
 ############################################################################################
 # This code has 3 sections
-# QSerialUI: Interface to GUI, rusn in main thread.
-# QSeril: Serial functions running in separate thread, communication with signals and slots.
+# QSerialUI: Interface to GUI, runs in main thread.
+# QSerial: Serial functions running in separate thread, communication with signals and slots.
 # PSerial: Low level interaction with serial ports, called from QSerial.
 ############################################################################################
 ############################################################################################

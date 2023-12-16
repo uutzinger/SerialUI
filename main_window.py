@@ -4,8 +4,7 @@
 # Provides serial interface to send and receive text to/from serial port similar to Arduino IDE.
 # Plots of data on up to 4 traces with zoom, save and clear.
 # This framework was setup to visualize signals at high data rates.
-# Because its implemented in python and QT it can be easily extended to incorporate serial
-# message encoding as well as drivers for serial devices. 
+# Because its implemented in python and QT it can be easily adapted to users needs. 
 # 
 # Urs Utzinger, 2022, 2023
 # University of Arizona

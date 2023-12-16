@@ -1,20 +1,23 @@
 ############################################################################################
 # QT Chart Helper
 ############################################################################################
-# Fall 2022: initial work
+# December 2023: added chart plotting
 # ------------------------------------------------------------------------------------------
 # Urs Utzinger
 # University of Arizona 2023
 ############################################################################################
-
-""" 
-https://www.pythonguis.com/tutorials/embed-pyqtgraph-custom-widgets-qt-app/
-https://www.pyqtgraph.org/
-https://www.youtube.com/watch?v=oWERFvUVDTg&ab_channel=UpskillwithGeeksforGeeks
-https://www.pythonguis.com/tutorials/plotting-pyqtgraph/
-https://stackoverflow.com/questions/65332619/pyqtgraph-scrolling-plots-plot-in-chunks-show-only-latest-10s-samples-in-curre
-https://github.com/pbmanis/EKGMonitor
-""" 
+############################################################################################
+# Helpful readings:
+# ------------------------------------------------------------------------------------------
+# pyqtgraph
+# https://www.pythonguis.com/tutorials/embed-pyqtgraph-custom-widgets-qt-app/
+# https://www.pyqtgraph.org/
+# https://www.youtube.com/watch?v=oWERFvUVDTg&ab_channel=UpskillwithGeeksforGeeks
+# https://www.pythonguis.com/tutorials/plotting-pyqtgraph/
+# https://stackoverflow.com/questions/65332619/pyqtgraph-scrolling-plots-plot-in-chunks-show-only-latest-10s-samples-in-curre
+# https://github.com/pbmanis/EKGMonitor
+#
+############################################################################################
 
 import logging, time
 
