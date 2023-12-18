@@ -12,9 +12,11 @@
 # pyqtgraph
 # https://www.pythonguis.com/tutorials/embed-pyqtgraph-custom-widgets-qt-app/
 # https://www.pyqtgraph.org/
-# https://www.youtube.com/watch?v=oWERFvUVDTg&ab_channel=UpskillwithGeeksforGeeks
 # https://www.pythonguis.com/tutorials/plotting-pyqtgraph/
+# https://github.com/pyqtgraph/pyqtgraph/blob/master/pyqtgraph/examples/scrollingPlots.py
 # https://stackoverflow.com/questions/65332619/pyqtgraph-scrolling-plots-plot-in-chunks-show-only-latest-10s-samples-in-curre
+#
+# Example Applications
 # https://github.com/pbmanis/EKGMonitor
 #
 ############################################################################################
