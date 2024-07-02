@@ -29,7 +29,7 @@ The main program is ```main_window.py```. It depends on the files in the ```asse
 
 ## How to use this program
 
-### Setting Serial port
+### Setting Serial Port
 
 - plug in your device and hit scan ports
 - select serial port
@@ -38,13 +38,13 @@ The main program is ```main_window.py```. It depends on the files in the ```asse
 
 Line termination ```none``` displays text as it arrived from serial port but you can not display data in a chart.
 
-### Close and Re-open Serial port
+### Use in Conjunction with Arduino IDE
 
 When you use this application together with Arduino IDE, you can not program your microcontroller while this application has the port open as serial ports are usually not shared.
 
 - Click close serial port
 - Program the microcontroller
-- Click re-open serial port
+- Click open serial port
 
 ### Issues with Microcontroller Response
 
@@ -55,21 +55,21 @@ If Serial UI does not pick up data from your microcontroller, the following sequ
 - Scan for serial ports
 - Open the serial port
 - Adjust baud rate if necessary
-- Start the serial reception
+- Start the serial text display
 - Push the reset button on the microcontroller if available
 
-### Receiving data for Serial Monitor
+### Receiving data for Text Display
 
 To receive and display data for the serial monitor:
 
 - Complete setting serial port section above
 - Select the serial monitor tab
-- Start the serial reception will display incoming data
+- Start the text display
 - You can save and clear the current content of the display window
 - If you scroll one page backwards, the display will stop scrolling
 - If you scroll to most recent text, the display will start scrolling
 
-### Sending data from Serial Monitor
+### Sending data
 
 - Complete setting serial port section above
 - Enter text in the line edit box

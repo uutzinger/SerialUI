@@ -20,7 +20,7 @@
    <double>0.990000000000000</double>
   </property>
   <property name="statusTip">
-   <string>University of Arizona.</string>
+   <string>Serial User Interface.</string>
   </property>
   <property name="whatsThis">
    <string>Camera GUI</string>
