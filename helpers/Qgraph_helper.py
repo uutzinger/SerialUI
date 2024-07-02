@@ -350,6 +350,7 @@ class QChartUI(QObject):
         Start timer
         """
         if self.ui.pushButton_ChartStartStop.text() == "Start":
+            # We want to start plotting
             if self.serialUI.textLineTerminator == '':
                 self.logger.log(logging.ERROR, "[{}]: Plotting of of raw data not yet supported".format(int(QThread.currentThreadId())))
                 return
@@ -362,6 +363,7 @@ class QChartUI(QObject):
             self.logger.log(logging.INFO, "[{}]: Start plotting".format(int(QThread.currentThreadId())))
             self.ui.statusBar().showMessage('Chart update started.', 2000)            
         else:
+            # We want to stop plotting
             self.ChartTimer.stop()
             self.ui.pushButton_ChartStartStop.setText("Start")
             try:

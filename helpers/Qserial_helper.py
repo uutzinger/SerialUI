@@ -203,7 +203,7 @@ class QSerialUI(QObject):
         self.ui.plainTextEdit_SerialTextDisplay.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         
         # Disable closing serial port button    
-        self.ui.pushButton_SerialOpenClose.setText("Close")
+        self.ui.pushButton_SerialOpenClose.setText("Open")
         self.ui.pushButton_SerialOpenClose.setEnabled(False)
         # Disable start button in serial monitor and chart
         self.ui.pushButton_ChartStartStop.setEnabled(False)
@@ -237,8 +237,8 @@ class QSerialUI(QObject):
         if self.receiverIsRunning == False:
             self.serialWorker.linesReceived.connect(self.on_SerialReceivedLines) # connect text display to serial receiver signal
             self.serialWorker.textReceived.connect(self.on_SerialReceivedText)   # connect text display to serial receiver signal            
-            self.startReceiverRequest.emit()
-            self.startThroughputRequest.emit()
+            # self.startReceiverRequest.emit()
+            # self.startThroughputRequest.emit()
             self.ui.pushButton_SerialStartStop.setText("Stop")
         text_bytearray = text.encode(self.encoding) + self.textLineTerminator    # add line termination
         self.sendTextRequest.emit(text_bytearray)                                # send text to serial TX line
@@ -309,18 +309,26 @@ class QSerialUI(QObject):
         Start serial receiver
         """
         if self.ui.pushButton_SerialStartStop.text() == "Start":
+            # Start text display
             self.ui.pushButton_SerialStartStop.setText("Stop")
             self.serialWorker.linesReceived.connect(self.on_SerialReceivedLines) # connect text display to serial receiver signal
             self.serialWorker.textReceived.connect(self.on_SerialReceivedText) # connect text display to serial receiver signal
-            self.startReceiverRequest.emit()
-            self.startThroughputRequest.emit()
+            # self.startReceiverRequest.emit()
+            # self.startThroughputRequest.emit()
+            self.logger.log(logging.DEBUG, "[{}]: text display is on.".format(int(QThread.currentThreadId())))
             self.ui.statusBar().showMessage('Text Display Started.', 2000)            
         else:
+            # End text display
             self.ui.pushButton_SerialStartStop.setText("Start")
             self.serialWorker.linesReceived.disconnect(self.on_SerialReceivedLines) # connect text display to serial receiver signal
             self.serialWorker.textReceived.disconnect(self.on_SerialReceivedText) # connect text display to serial receiver signal
-            self.stopReceiverRequest.emit()
-            self.stopThroughputRequest.emit()
+            # self.stopReceiverRequest.emit()
+            # self.stopThroughputRequest.emit()
+            # if plotter is running, stop it
+            # self.ui.pushButton_ChartStartStop.setText("Stop")
+            #if self.ui.pushButton_ChartStartStop.text() == "Stop":
+            #    self.ui.pushButton_ChartStartStop.click()
+            self.logger.log(logging.DEBUG, "[{}]: text display is off.".format(int(QThread.currentThreadId())))
             self.ui.statusBar().showMessage('Text Display Stopped.', 2000)            
 
     @pyqtSlot()
@@ -353,37 +361,41 @@ class QSerialUI(QObject):
     @pyqtSlot()
     def on_pushButton_SerialOpenClose(self):
         if self.ui.pushButton_SerialOpenClose.text() == "Close":
-            # stop the receiver
-            QTimer.singleShot(0,    lambda: self.stopReceiverRequest.emit())
-            QTimer.singleShot(50,   lambda: self.stopThroughputRequest.emit())
-            # update serial status (make sure when reopening it uses same port and baud rate)
-            QTimer.singleShot(100,  lambda: self.serialStatusRequest.emit())
-            # close the port
-            QTimer.singleShot(150,  lambda: self.closePortRequest.emit())
+            # Clost the serial port
+            # Stop the receiver
+            QTimer.singleShot(0,    lambda: self.stopThroughputRequest.emit())          # request to stop throughput
+            QTimer.singleShot(50,   lambda: self.stopReceiverRequest.emit())            # request to stop serial receiver
+            QTimer.singleShot(100,  lambda: self.serialStatusRequest.emit())            # request to report serial port status
+            QTimer.singleShot(150,  lambda: self.closePortRequest.emit())               # request to close serial port
             # shade start button in serial monitor and chart
             self.ui.pushButton_SerialStartStop.setEnabled(False)
             self.ui.pushButton_ChartStartStop.setEnabled(False)
             # shade baud rate 
             self.ui.comboBoxDropDown_BaudRates.setEnabled(False)
-            # disable sending text
+            # shade sending text
             self.ui.lineEdit_SerialText.setEnabled(False)
             self.ui.pushButton_SerialSend.setEnabled(False)                
-            self.ui.pushButton_SerialOpenClose.setText("Reopen")
+            self.ui.pushButton_SerialOpenClose.setText("Open")
             self.ui.statusBar().showMessage('Serial Close requested.', 2000)            
         else:
-            # re-open the port
+            # Open the serial port
+            # Start the receiver
             QTimer.singleShot(0,   lambda: self.changePortRequest.emit(self.serialPort, self.serialBaudRate)) # takes 11ms to open
             QTimer.singleShot(50,  lambda: self.serialStatusRequest.emit())             # request to report serial port status            
+            QTimer.singleShot(100, lambda: self.startReceiverRequest.emit())            # request to start serial receiver
+            QTimer.singleShot(150, lambda: self.startThroughputRequest.emit())          # request to start serial receiver
             # un-shade start button in serial monitor and chart
             self.ui.pushButton_SerialStartStop.setEnabled(True)
             self.ui.pushButton_ChartStartStop.setEnabled(True)
             # un-shade baud rate 
             self.ui.comboBoxDropDown_BaudRates.setEnabled(True)
-            # un share sending text
+            # un-shade sending text
             self.ui.lineEdit_SerialText.setEnabled(True)
             self.ui.pushButton_SerialSend.setEnabled(True)                
             self.ui.pushButton_SerialOpenClose.setText("Close")
-            self.ui.statusBar().showMessage('Serial Open requested.', 2000)            
+            self.ui.statusBar().showMessage('Serial Open requested.', 2000)         
+            
+   
 
     @pyqtSlot()
     def on_comboBoxDropDown_SerialPorts(self):
@@ -488,27 +500,27 @@ class QSerialUI(QObject):
         # adjust the combobox current item to match the current port
         try:
             if self.serialPort == "":
-                index = self.serialPorts.index("None")                                     # find current port in serial port list
+                index = self.ui.comboBoxDropDown_SerialPorts.findText("None")              # find current port in serial port list
                 self.ui.pushButton_ChartStartStop.setEnabled(False)
                 self.ui.pushButton_SerialStartStop.setEnabled(False)
                 self.ui.lineEdit_SerialText.setEnabled(False)
                 self.ui.pushButton_SerialSend.setEnabled(False)                
             else:
-                index = self.serialPorts.index(self.serialPort)                            # find current port in serial port list
+                index = self.ui.comboBoxDropDown_SerialPorts.findText(self.serialPort)     # find current port in serial port list
                 self.ui.pushButton_SerialOpenClose.setEnabled(True)                        # enable port closing button
-                self.ui.pushButton_ChartStartStop.setEnabled(True)                         # enable start/stop button for chart plotting
-                self.ui.pushButton_SerialStartStop.setEnabled(True)                        # enable start/stop button for serial monitor
-                self.ui.lineEdit_SerialText.setEnabled(True)                               # enable text input window
-                self.ui.pushButton_SerialSend.setEnabled(True)                
+                # self.ui.pushButton_ChartStartStop.setEnabled(True)                         # enable start/stop button for chart plotting
+                # self.ui.pushButton_SerialStartStop.setEnabled(True)                        # enable start/stop button for serial monitor
+                # self.ui.lineEdit_SerialText.setEnabled(True)                               # enable text input window
+                # self.ui.pushButton_SerialSend.setEnabled(True)                
             self.ui.comboBoxDropDown_SerialPorts.setCurrentIndex(index)                    # update serial port combobox
-            self.logger.log(logging.DEBUG, "[{}]: port {}.".format(int(QThread.currentThreadId()),self.serialPortNames[index]))
+            self.logger.log(logging.DEBUG, "[{}]: selected port \"{}\".".format(int(QThread.currentThreadId()),self.serialPort))
         except:
             self.logger.log(logging.ERROR, "[{}]: port not available.".format(int(QThread.currentThreadId())))
         # adjust the combobox current item to match the current baudrate
         try: 
-            index = self.BaudRates.index(self.serialBaudRate)                              # find baud rate in serial baud rate list
+            index = self.ui.comboBoxDropDown_BaudRates.findText(str(self.serialBaudRate))
             self.ui.comboBoxDropDown_BaudRates.setCurrentIndex(index)                      #  baud combobox
-            self.logger.log(logging.DEBUG, "[{}]: baudrate {}.".format(int(QThread.currentThreadId()),self.BaudRates[index]))
+            self.logger.log(logging.DEBUG, "[{}]: selected baudrate {}.".format(int(QThread.currentThreadId()),self.serialBaudRate))
         except:
             self.logger.log(logging.ERROR, "[{}]: no baudrate available.".format(int(QThread.currentThreadId())))
 
@@ -522,10 +534,12 @@ class QSerialUI(QObject):
         try:
             index = self.ui.comboBoxDropDown_LineTermination.findText(_tmp)
             self.ui.comboBoxDropDown_LineTermination.setCurrentIndex(index)
-            self.logger.log(logging.DEBUG, "[{}]: line termination {}.".format(int(QThread.currentThreadId()),_tmp))
+            self.logger.log(logging.DEBUG, "[{}]: selected line termination {}.".format(int(QThread.currentThreadId()),_tmp))
         except:
             self.logger.log(logging.ERROR, "[{}]: line termination not available.".format(int(QThread.currentThreadId())))
-        
+
+        self.logger.log(logging.DEBUG, "[{}]: receiver is {}.".format(int(QThread.currentThreadId()), "running" if self.receiverIsRunning else "not running"))
+
         # handle timeout and encoding
         #  not implemented as currently not selectable in the UI
         #  encoding is fixed to utf-8
@@ -549,7 +563,7 @@ class QSerialUI(QObject):
         selected = self.ui.comboBoxDropDown_SerialPorts.currentText()
         # populate new items
         self.ui.comboBoxDropDown_SerialPorts.clear()
-        self.ui.comboBoxDropDown_SerialPorts.addItems(self.serialPortNames+['None'])
+        self.ui.comboBoxDropDown_SerialPorts.addItems(self.serialPorts+['None'])
         # search for the previously selected item
         index = self.ui.comboBoxDropDown_SerialPorts.findText(selected)
         if index > -1: # if we found previously selected item
@@ -640,12 +654,12 @@ class QSerialUI(QObject):
         self.logger.log(logging.DEBUG, "[{}]: serial worker is {}.".format(int(QThread.currentThreadId()), "on" if running else "off"))
         self.receiverIsRunning = running
         if running: 
-            self.ui.pushButton_SerialStartStop.setText("Stop")
+            # self.ui.pushButton_SerialStartStop.setText("Stop")
             # self.ui.pushButton_ChartStartStop.setText("Stop")
             self.ui.statusBar().showMessage('Serial Worker started', 2000)
         else:
-            self.ui.pushButton_SerialStartStop.setText("Start")
-            self.ui.pushButton_ChartStartStop.setText("Start")
+            # self.ui.pushButton_SerialStartStop.setText("Start")
+            # self.ui.pushButton_ChartStartStop.setText("Start")
             self.ui.statusBar().showMessage('Serial Worker stopped', 2000)
 
     def on_throughputReceived(self, numReceived, numSent):
@@ -864,7 +878,9 @@ class QSerial(QObject):
             start_time = time.perf_counter()
             
             # Check if end-of-line handling is needed
-            if self.PSer.eol:
+            if self.PSer.eol: # non empty byte array
+                # reading lines
+                # -------------
                 lines = self.PSer.readlines()  # Read lines until buffer is empty
                 end_time = time.perf_counter()
                 
@@ -875,8 +891,9 @@ class QSerial(QObject):
                     if self.serialReceiverState == SerialReceiverState.awaitingData:
                         self.receiverTimer.setInterval(self.receiverInterval)
                         self.serialReceiverState = SerialReceiverState.receivingData
-                        self.serialReceiverCountDown = 0
-
+                        self.logger.log(logging.INFO, "[{}]: Receiving started, set faster update rate.".format(int(QThread.currentThreadId())))
+                    
+                    self.serialReceiverCountDown = 0
                     self.linesReceived.emit(lines)
 
                 else:
@@ -889,12 +906,12 @@ class QSerial(QObject):
                             self.logger.log(logging.INFO, "[{}]: Receiving finished, set slower update rate.".format(int(QThread.currentThreadId())))
 
             else:
+                # reading raw bytes
+                # -----------------
                 byte_array = self.PSer.read()
                 end_time = time.perf_counter()
-                if byte_array:
-                    duration = 1000 * (end_time - start_time) / len(byte_array)
-                else:
-                    duration = 0
+                if byte_array:   duration = 1000 * (end_time - start_time) / len(byte_array)
+                else:            duration = 0
                 self.logger.log(logging.DEBUG, "[{}]: {} bytes {:.3f} ms per line.".format(int(QThread.currentThreadId()), len(byte_array), duration))
                                 
                 self.textReceived.emit(byte_array)
@@ -1040,7 +1057,7 @@ class QSerial(QObject):
             return
         else:            
             self.PSer.eol = lineTermination
-            self.textLineTerminator = self.PSer.eol
+            self.textLineTerminator = lineTermination
             self.logger.log(logging.INFO, "[{}]: Changed line termination to {}.".format(int(QThread.currentThreadId()), repr(self.textLineTerminator)))
 
     @pyqtSlot()
@@ -1075,7 +1092,7 @@ class QSerial(QObject):
     @pyqtSlot()
     def on_serialStatusRequest(self):
         """ 
-        Request to report serial port and baudrate received
+        Request to report of serial status received
         """
         self.logger.log(logging.INFO, "[{}]: Provided serial status".format(int(QThread.currentThreadId())))
         if self.PSer.connected:
@@ -1083,7 +1100,7 @@ class QSerial(QObject):
         else:
             self.serialStatusReady.emit("", self.PSer.baud, self.PSer.eol, self.PSer.timeout)
 
-def compute_timeouts(baud: int):
+def compute_timeouts(baud: int, chars_per_line: int = 50):
     # Set timeout to the amount of time it takes to receive the shortest expected line of text
     # integer '123/n/r' 5 bytes, which is at least 45 serial bits
     # serialReadTimeOut = 40 / baud [s] is very small and we should just set it to zero (non blocking)
@@ -1093,14 +1110,14 @@ def compute_timeouts(baud: int):
     # lets assume we receive 5 integers in one line each with a legenf, this is approx 50 bytes, 
     # lets use 10 serial bits per byte
     # lets request NUM_LINES_COLLATE lines per call 
-    receiverInterval  = ceil(NUM_LINES_COLLATE * 50 * 10 / baud * 1000)  # in milliseconds
-    # check serial should occur no more than 200 times per second no less than 10 times per second
-    if receiverInterval < MIN_RECEIVER_INTERVAL: 
-        receiverInterval = MIN_RECEIVER_INTERVAL # set maximum to 100 Hz
-
+    receiverInterval  = ceil(NUM_LINES_COLLATE * chars_per_line * 10 / baud * 1000)  # in milliseconds
     receiverIntervalStandby  = 10 * receiverInterval # make standby 10 times slower
-    if receiverIntervalStandby > MAX_RECEIVER_INTERVAL: 
-        receiverIntervalStandby = MAX_RECEIVER_INTERVAL # but check at least 10 times per second
+
+    # check serial should occur no more than 200 times per second no less than 10 times per second
+    if receiverInterval < MIN_RECEIVER_INTERVAL:        receiverInterval = MIN_RECEIVER_INTERVAL
+    if receiverIntervalStandby < MIN_RECEIVER_INTERVAL: receiverIntervalStandby = MIN_RECEIVER_INTERVAL
+    if receiverInterval > MAX_RECEIVER_INTERVAL:        receiverInterval = MAX_RECEIVER_INTERVAL
+    if receiverIntervalStandby > MAX_RECEIVER_INTERVAL: receiverIntervalStandby = MAX_RECEIVER_INTERVAL
     
     return serialReadTimeOut, receiverInterval, receiverIntervalStandby
 
@@ -1288,11 +1305,11 @@ class PSerial():
 
         if self._ser_open:
             bytes_to_read = self.ser.in_waiting
-            if bytes_to_read:
+            if bytes_to_read > 0:
                 byte_array = self.ser.read(bytes_to_read)
                 self.totalCharsReceived += bytes_to_read
             else:
-                return lines  # Return empty list if buffer is empty
+                return []  # Return empty list if buffer is empty
 
             idx = byte_array.rfind(self._eol)
             if idx == -1:
@@ -1319,10 +1336,9 @@ class PSerial():
                     lines = lines[:-1]  # Remove the partial line from the list
 
                 # Remove empty lines at the start or end
-                if lines and lines[-1] == b'':
-                    lines = lines[:-1]
-                if lines and lines[0] == b'':
-                    lines = lines[1:]
+                if lines: 
+                    if (lines[-1] == b''): lines = lines[:-1]
+                    if (lines[0]  == b''): lines = lines[1:]
 
             endTime = time.perf_counter()
             self.logger.log(logging.DEBUG, "[SER {}]: Read {} bytes in {} ms.".format(int(QThread.currentThreadId()), bytes_to_read, 1000 * (endTime - startTime)))
@@ -1387,7 +1403,7 @@ class PSerial():
 
     def avail(self) -> int:
         """ is there data in the serial receiving buffer? """
-        if self.ser is not None:
+        if self._ser_open:
             return self.ser.in_waiting
         else:
             return -1
@@ -1397,7 +1413,7 @@ class PSerial():
         clear serial buffers
         we want to clear not flush
         """
-        if self.ser is not None:
+        if self._ser_open:
             self.ser.reset_input_buffer()
             self.ser.reset_output_buffer()
             self.totalCharsReceived = 0

@@ -1,4 +1,5 @@
-################################################################################################
+#!/usr/bin/env python3
+# ################################################################################################
 # Serial Communication GUI
 # ========================
 #
@@ -15,7 +16,7 @@
 from PyQt5 import QtCore, QtWidgets, QtGui, uic
 from PyQt5.QtCore import QThread, QTimer, QEventLoop
 from PyQt5.QtWidgets import QMainWindow, QLineEdit, QSlider, QMessageBox, QDialog, QVBoxLayout, QTextEdit, QTabWidget
-from PyQt5.QtGui import QIcon
+from PyQt5.QtGui import QIcon, QTextCursor
 
 # Markdown for documentation
 from markdown import markdown
@@ -113,7 +114,7 @@ class mainWindow(QMainWindow):
         self.serialUI.changePortRequest.connect(            self.serialWorker.on_changePortRequest       ) # connect changing port
         self.serialUI.closePortRequest.connect(             self.serialWorker.on_closePortRequest        ) # connect close port
         self.serialUI.changeBaudRequest.connect(            self.serialWorker.on_changeBaudRateRequest   ) # connect changing baudrate
-        self.serialUI.changeLineTerminationRequest.connect( self.serialWorker.on_changeLineTerminationRequest) # connect changing baudrate
+        self.serialUI.changeLineTerminationRequest.connect( self.serialWorker.on_changeLineTerminationRequest) # connect changing line termination
         self.serialUI.scanPortsRequest.connect(             self.serialWorker.on_scanPortsRequest        ) # connect request to scan ports
         self.serialUI.scanBaudRatesRequest.connect(         self.serialWorker.on_scanBaudRatesRequest    ) # connect request to scan baudrates
         self.serialUI.setupReceiverRequest.connect(         self.serialWorker.on_setupReceiverRequest    ) # connect start receiver
@@ -206,14 +207,13 @@ class mainWindow(QMainWindow):
         self.show() 
 
     def on_tab_change(self, index):
-        # SerialMonitor
-        # SerialPlotter
+        """
+        Respond to tab change event
+        """
         tab_name = self.tabs.tabText(index)
         if tab_name == "Serial Monitor":
-            # nothing to do yet
-            pass
+            self.ui.plainTextEdit_SerialTextDisplay.ensureCursorVisible()
         elif tab_name == "Serial Plotter":
-            # if we stopped serial monitor but left chart running, we need to restart serial monitor
             pass
         else:
             try: 

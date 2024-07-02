@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Categories=Utility;
+Name=Serial UI
+Exec=/home/uutzinger/Documents/GitHub/SerialUI/run.sh
+Terminal=false
+Icon=/home/uutzinger/Documents/GitHub/SerialUI/assets/serial_48.png
+Path=/home/uutzinger/Documents/GitHub/SerialUI
