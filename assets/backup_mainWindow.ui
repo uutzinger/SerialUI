@@ -135,7 +135,6 @@
       </property>
       <property name="font">
        <font>
-        <family>Fira Mono</family>
         <pointsize>8</pointsize>
         <kerning>false</kerning>
        </font>
@@ -167,12 +166,6 @@
         <width>1171</width>
         <height>441</height>
        </rect>
-      </property>
-      <property name="font">
-       <font>
-        <family>Fira Mono</family>
-        <pointsize>9</pointsize>
-       </font>
       </property>
      </widget>
     </widget>

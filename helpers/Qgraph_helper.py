@@ -2,10 +2,12 @@
 # QT Chart Helper
 ############################################################################################
 # December 2023: added chart plotting
+# Summer 2024: added legend, fixed code issues
 # ------------------------------------------------------------------------------------------
 # Urs Utzinger
-# University of Arizona 2023
+# University of Arizona 2023, 2024
 ############################################################################################
+
 ############################################################################################
 # Helpful readings:
 # ------------------------------------------------------------------------------------------
@@ -25,6 +27,7 @@ import logging, time
 
 from PyQt5.QtCore import QObject, QTimer, QThread, pyqtSlot, QStandardPaths
 from PyQt5.QtWidgets import QFileDialog, QLineEdit, QSlider, QTabWidget, QGraphicsView, QVBoxLayout
+from PyQt5.QtGui import QBrush, QColor
 
 # QT Graphing for chart plotting
 import pyqtgraph as pg
@@ -34,10 +37,11 @@ import numpy as np
 
 # Constants
 ########################################################################################
-MAX_ROWS = 44100 # data history length
-MAX_COLUMNS = 4 # max number of signal traces
-UPDATE_INTERVAL = 100 # milliseconds, visualization does not improve with updates faster than 10 Hz
-COLORS = ['green', 'red', 'blue', 'black'] # need to have MAX_COLUMNS colors
+MAX_ROWS        = 44100 # data history length
+MAX_COLUMNS     =     5 # max number of signal traces
+UPDATE_INTERVAL =   100 # milliseconds, visualization does not improve with updates faster than 10 Hz
+COLORS = ['green', 'red', 'blue', 'black', 'magenta'] # need to have MAX_COLUMNS colors
+# https://i.sstatic.net/lFZum.png
 
 # Support Functions and Classes
 ########################################################################################
@@ -97,7 +101,7 @@ class QChartUI(QObject):
     """
     Chart Interface for QT
     
-    The chart displays up MAX_COLUMNS (4) signals in a plot.
+    The chart displays up MAX_COLUMNS (5) signals in a plot.
     The data is received from the serial port and organized into columns of a numpy array.
     The plot can be zoomed in by selecting how far back in time to display it.
     The horizontal axis is the sample number.
@@ -110,7 +114,6 @@ class QChartUI(QObject):
         on_pushButton_Save
         on_HorizontalSliderChanged(int)
         on_HorizontalLineEditChanged
-        on_newLineReceived(bytes)
         on_newLinesReceived(list)
         
     Functions
@@ -150,20 +153,27 @@ class QChartUI(QObject):
         # Setting the plotWidget features
         self.chartWidget.setBackground('w')
         self.chartWidget.showGrid(x=True, y=True)
-        self.chartWidget.setLabel('left', 'Signal', units='V') # ESP ADC calibrates the reading in mV
+        # self.chartWidget.setLabel('left', 'Signal', units='V') # ESP ADC calibrates the reading in mV
+        self.chartWidget.setLabel('left', 'Signal', units='')
         self.chartWidget.setLabel('bottom', 'Sample', units='')
         self.chartWidget.setTitle("Chart")
-        self.chartWidget.setMouseEnabled(x=True, y=True) # allow to move and zoom in the plot window
-                
+        self.chartWidget.setMouseEnabled(x=True, y=True)         # allow to move and zoom in the plot window
+
         self.sample_number = 0  # A counter indicating current sample number which is also the x position in the plot
         self.pen = [pg.mkPen(color, width=2) for color in COLORS] # colors for the signal traces
         self.data_line = [self.chartWidget.plot([], [], pen=self.pen[i % len(self.pen)], name=str(i)) for i in range(MAX_COLUMNS)]
         
+        # create a legend
+        self.legend = self.chartWidget.addLegend()               # add a legend to the plot
+        transparent_brush = QBrush(QColor(255, 255, 255, 0))     # set a transparent brush for the legend background
+        self.legend.setBrush(transparent_brush)
+        for line in self.data_line:
+            self.legend.addItem(line, line.opts['name'])
+
         self.maxPoints = 1024 # maximum number of points to show in a plot from now to the past
         
         self.buffer = CircularBuffer()
-        
-        self.textDataSeparator = b',' # comma
+        self.legends = []
         
         # Initialize the plot axis ranges
         self.chartWidget.setXRange(0, self.maxPoints)
@@ -173,11 +183,18 @@ class QChartUI(QObject):
         self.horizontalSlider = self.ui.findChild(QSlider, "horizontalSlider_Zoom")
         self.horizontalSlider.setMinimum(16)
         self.horizontalSlider.setMaximum(MAX_ROWS)
-        self.horizontalSlider.setValue(int(self.maxPoints))  
+        self.horizontalSlider.setValue(int(self.maxPoints))
         self.lineEdit = self.ui.findChild(QLineEdit, "lineEdit_Horizontal")
         self.lineEdit.setText(str(self.maxPoints))
         
-        self.logger = logging.getLogger("QChartUI_")           
+        self.logger = logging.getLogger("QChartUI_")
+
+        self.textDataSeparator = b'\t'                                       # default data separator
+        index = self.ui.comboBoxDropDown_DataSeparator.findText("tab (\\t)") # find default data separator in drop down
+        self.ui.comboBoxDropDown_DataSeparator.setCurrentIndex(index)        # update data separator combobox
+        self.logger.log(logging.DEBUG, "[{}]: data separator {}.".format(int(QThread.currentThreadId()), repr(self.textDataSeparator)))
+
+        self.ui.pushButton_ChartStartStop.setText("Start")
 
         # Plot update frequency
         self.ChartTimer = QTimer()
@@ -202,32 +219,47 @@ class QChartUI(QObject):
         tic = time.perf_counter()
         data = self.buffer.data
 
+        self.legend.clear()                          # Clear the existing legend
+
         # where do we have valid data?
         have_data = ~np.isnan(data)
+        max_legends = len(self.legends)
+
         max_y = -np.inf
         min_y =  np.inf
         max_x = -np.inf
         min_x =  np.inf
-        for i in range(MAX_COLUMNS): # for each column
+        for i in range(MAX_COLUMNS):                 # for each column
             have_column_data = have_data[:,i+1] 
-            x = data[have_column_data,0] # extract the sample numbers
-            y = data[have_column_data,i+1]/1000. # ESP ADC calibrates the reading to mV
-            # max and min of data
-            if x.size > 0: # avoid empty numpy array
-                max_x = max([np.max(x), max_x]) # update max and min
-                min_x = min([np.min(x), min_x])
-            if y.size > 0: # avoid empty numpy array
-                max_y = max([np.max(y), max_y]) # update max and min
-                min_y = min([np.min(y), min_y])
-            self.data_line[i].setData(x, y) # update the plot
+            x = data[have_column_data,0]             # extract the sample numbers
+            # y = data[have_column_data,i+1]/1000.     # ESP ADC calibrates the reading to mV
+            y = data[have_column_data,i+1]
 
-        if min_x <= max_x: # we found valid data
+            # max and min of data
+            if x.size > 0:                           # avoid empty numpy array
+                max_x = max([np.max(x), max_x])      # update max and min
+                min_x = min([np.min(x), min_x])
+            if y.size > 0:                           # avoid empty numpy array
+                max_y = max([np.max(y), max_y])      # update max and min
+                min_y = min([np.min(y), min_y])
+            self.data_line[i].setData(x, y)          # update the plot
+
+            # update the plot name
+            if i < max_legends:
+                self.data_line[i].opts['name'] = self.legends[i]
+            else:
+                self.data_line[i].opts['name'] = str(i)
+
+            # update the legend
+            self.legend.addItem(self.data_line[i], self.data_line[i].opts['name']) # Re-add the items with updated names to the legend
+
+        # adjust range
+        if min_x <= max_x:                           # we found valid data
             self.chartWidget.setXRange(max_x - self.maxPoints, max_x) # set the horizontal range
         if min_y <= max_y: 
             self.chartWidget.setYRange(min_y, max_y) # set the vertical range
-        self.chartWidget.addLegend() # add a legend
 
-        toc = time.perf_counter()            
+        toc = time.perf_counter()
         self.logger.log(logging.DEBUG, "[{}]: Plot updated in {} ms".format(int(QThread.currentThreadId()), 1000*(toc-tic)))
 
     @pyqtSlot()
@@ -242,6 +274,8 @@ class QChartUI(QObject):
             self.textDataSeparator = b'.'
         elif _tmp == "space (\\s)":
             self.textDataSeparator = b' '
+        elif _tmp == "tab (\\t)":
+            self.textDataSeparator = b'\t'
         else:
             self.textDataSeparator = b','            
         self.logger.log(logging.INFO, "[{}]: Data separator {}".format(int(QThread.currentThreadId()), repr(self.textDataSeparator)))
@@ -255,24 +289,45 @@ class QChartUI(QObject):
         tic = time.perf_counter()
         # parse text into numbers, textDataSeparator is a byte string, filter removes empty strings and \n and \r
         # the filter is necessary if data is lost during serial tranmission and a partial end of line is received
-        data = [list(map(float, filter(None, line.split(self.textDataSeparator)))) for line in lines if not (b'\n' in line or b'\r' in line)]
-        #toc = time.perf_counter()
-        #self.logger.log(logging.DEBUG, "[{}]: Lines to Data: took {} ms".format(int(QThread.currentThreadId()), 1000*(toc-tic))) # 200 microseconds
+        # data = [list(map(float, filter(None, line.split(self.textDataSeparator)))) for line in lines if not (b'\n' in line or b'\r' in line)]
+        parsed_data = []
+        legends = []
+        for line in lines:
+            if not (b'\n' in line or b'\r' in line):
+                items = line.split(self.textDataSeparator)
+                data_row, legend_row = [], []
+                for item in items:
+                    parts = item.split(b':')
+                    if len(parts) == 1:
+                        try:
+                            data_row.append(float(parts[0].strip()))
+                        except:
+                            self.logger.log(logging.DEBUG, "[{}]: Could not convert to float: {}".format(int(QThread.currentThreadId()), parts[0]))
+                    elif len(parts) == 2:
+                        legend, value = parts
+                        legend_row.append(legend.strip().decode(self.serialUI.encoding))
+                        try:
+                            data_row.append(float(value.strip()))
+                        except:
+                            self.logger.log(logging.DEBUG, "[{}]: Could not convert to float: {}".format(int(QThread.currentThreadId()), value))
+                    else:
+                        # wrong separator
+                        self.logger.log(logging.DEBUG, "[{}]: Wrong separator in line: {}".format(int(QThread.currentThreadId()), line))
+                        self.ui.statusBar().showMessage('Change Data Separator!', 2000)
+                if data_row:   parsed_data.append(data_row)
+                if legend_row: legends.append(legend_row)
+        toc = time.perf_counter()
+        self.logger.log(logging.DEBUG, "[{}]: Lines to Data: took {} ms".format(int(QThread.currentThreadId()), 1000*(toc-tic))) # 200 microseconds
 
         try:
-            # conversion to numpy if all lines have the same length
-            data_array = np.array(data, dtype=float)
-        except:
-            # likely we have a list of lines with different lengths
-            row_len = [len(data_rows) for data_rows in data]
-            max_length = max(row_len)
-            # Pad shorter lines with np.nan
-            padded_data = [data_row + [np.nan]*(max_length - len(data_row)) for data_row in data]
+            data_array = np.array(parsed_data, dtype=float)
+        except ValueError:
+            max_length = max(len(row) for row in parsed_data)
+            padded_data = [row + [np.nan] * (max_length - len(row)) for row in parsed_data]
             data_array = np.array(padded_data, dtype=float)
 
         num_rows, num_cols = data_array.shape
-        sample_numbers = np.arange(self.sample_number, self.sample_number + num_rows)
-        sample_numbers = sample_numbers.reshape(-1, 1)
+        sample_numbers = np.arange(self.sample_number, self.sample_number + num_rows).reshape(-1, 1)
         self.sample_number += num_rows
         right_pad = MAX_COLUMNS - num_cols
         if right_pad > 0:
@@ -281,10 +336,10 @@ class QChartUI(QObject):
             new_array = np.hstack([sample_numbers, data_array[:, :MAX_COLUMNS]])
 
         self.buffer.push(new_array)
+        self.legends = legends[-1]
         
         toc = time.perf_counter()
         self.logger.log(logging.DEBUG, "[{}]: {} Data points received: took {} ms".format(int(QThread.currentThreadId()), num_rows, 1000*(toc-tic)))
-        # 300 microseconds
         
     @pyqtSlot()
     def on_pushButton_StartStop(self):
@@ -298,12 +353,6 @@ class QChartUI(QObject):
             if self.serialUI.textLineTerminator == '':
                 self.logger.log(logging.ERROR, "[{}]: Plotting of of raw data not yet supported".format(int(QThread.currentThreadId())))
                 return
-            # start plotting
-            try:
-                self.serialWorker.linesReceived.disconnect(self.serialUI.on_SerialReceivedLines) # turn off text display
-                self.logger.log(logging.WARNING, "[{}]: Disconnected lines-received signal from serial text display.".format(int(QThread.currentThreadId())))
-            except:
-                pass
             self.serialWorker.linesReceived.connect(self.on_newLinesReceived) # enable plot data feed
             self.ChartTimer.start()
             if self.serialUI.receiverIsRunning == False:
@@ -314,10 +363,7 @@ class QChartUI(QObject):
             self.ui.statusBar().showMessage('Chart update started.', 2000)            
         else:
             self.ChartTimer.stop()
-            if self.serialUI.receiverIsRunning == True:
-                self.serialUI.stopReceiverRequest.emit()
-                self.serialUI.stopThroughputRequest.emit()
-                self.ui.pushButton_ChartStartStop.setText("Start")
+            self.ui.pushButton_ChartStartStop.setText("Start")
             try:
                 self.serialWorker.linesReceived.disconnect(self.on_newLinesReceived)
             except:

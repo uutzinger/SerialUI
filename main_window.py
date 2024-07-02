@@ -1,19 +1,20 @@
 ################################################################################################
 # Serial Communication GUI
 # ========================
-# Provides serial interface to send and receive text to/from serial port similar to Arduino IDE.
-# Plots of data on up to 4 traces with zoom, save and clear.
+#
+# Provides serial interface to send and receive text to/from serial port.
+# Plots of data on up to 5 traces (changable) with zoom, save and clear.
+#
 # This framework was setup to visualize signals at high data rates.
-# Because its implemented in python and QT it can be easily adapted to users needs. 
+# Its implemented in python and QT and can be adapted to users needs. 
 # 
-# Urs Utzinger, 2022, 2023
-# University of Arizona
+# Urs Utzinger, 2022, 2023, 2024
 ################################################################################################
 
 # QT imports
 from PyQt5 import QtCore, QtWidgets, QtGui, uic
-from PyQt5.QtCore import QThread, QTimer
-from PyQt5.QtWidgets import QMainWindow, QLineEdit, QSlider, QMessageBox, QDialog, QVBoxLayout, QTextEdit
+from PyQt5.QtCore import QThread, QTimer, QEventLoop
+from PyQt5.QtWidgets import QMainWindow, QLineEdit, QSlider, QMessageBox, QDialog, QVBoxLayout, QTextEdit, QTabWidget
 from PyQt5.QtGui import QIcon
 
 # Markdown for documentation
@@ -24,11 +25,10 @@ import logging
 import os
 from datetime import datetime
 
-# Custom imports
+# Custom program specific imports
 from helpers.Qserial_helper     import QSerial, QSerialUI
 from helpers.Qgraph_helper      import QChartUI, MAX_ROWS
 
-# QT
 # Deal with high resolution displays
 if hasattr(QtCore.Qt, 'AA_EnableHighDpiScaling'):
     QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
@@ -56,7 +56,9 @@ class mainWindow(QMainWindow):
         
         Serial:
         Create serial worker and move it to separate thread.
-        
+
+        Serial Plotter:
+        Create chart user interface object.        
         """
         super(mainWindow, self).__init__(parent) # parent constructor
         
@@ -72,6 +74,10 @@ class mainWindow(QMainWindow):
         window_icon = QIcon(icon_path)
         self.setWindowIcon(QIcon(window_icon))
         self.setWindowTitle("Serial GUI")
+
+        # find the tabs and connect to tab change
+        self.tabs = self.findChild(QTabWidget, 'tabWidget_MainWindow')
+        self.tabs.currentChanged.connect(self.on_tab_change)
 
         #----------------------------------------------------------------------------------------------------------------------
         # Serial
@@ -199,21 +205,56 @@ class mainWindow(QMainWindow):
         #----------------------------------------------------------------------------------------------------------------------
         self.show() 
 
+    def on_tab_change(self, index):
+        # SerialMonitor
+        # SerialPlotter
+        tab_name = self.tabs.tabText(index)
+        if tab_name == "Serial Monitor":
+            # nothing to do yet
+            pass
+        elif tab_name == "Serial Plotter":
+            # if we stopped serial monitor but left chart running, we need to restart serial monitor
+            pass
+        else:
+            try: 
+                self.logger.log(logging.ERROR, "[{}]: Unknown tab name: {}".format(int(QThread.currentThreadId()), tab_name))
+            except:
+                pass
+
+    def closeEvent(self, event):
+        """
+        Respond to window close event.
+        Close the serial port, stop the serial thread and the chart update timer.
+        """
+        self.chartUI.ChartTimer.stop()                        # stop the chart timer
+        if self.serialWorker:
+            if self.serialUI:
+                self.serialUI.finishWorkerRequest.emit()      # emit singal to finish worker
+                loop = QEventLoop()                           # create event loop
+                self.serialWorker.finished.connect(loop.quit) # connect the loop to finish signal
+                loop.exec_()                                  # wait until worker is finished
+            else:
+                self.logger.log(logging.ERROR, "[{}]: serialUI not initialized.".format(int(QThread.currentThreadId())))
+        else:
+            self.logger.log(logging.ERROR, "[{}]: serialWorker not initialized.".format(int(QThread.currentThreadId())))
+                            
+        event.accept()                                        # accept the close event to proceed closing the application
+
     def on_resetStatusBar(self):
         now = datetime.now()
         formatted_date_time = now.strftime("%Y-%m-%d %H:%M")
-        self.ui.statusbar.showMessage("University of Arizona. " + formatted_date_time)
+        self.ui.statusbar.showMessage("Serial User Interface. " + formatted_date_time)
 
     def show_about_dialog(self):
         # Information to be displayed
-        info_text = "Serial Terminal & Plotter\nVersion: 1.0\nAuthor: Urs Utzinger\n2022,2023"
+        info_text = "Serial Terminal & Plotter\nVersion: 1.0\nAuthor: Urs Utzinger\n2022,2023,2024"
         # Create and display the MessageBox
         QMessageBox.about(self, "About Program", info_text)       
         self.show()
  
     def show_help_dialog(self):
         # Load Markdown content from readme file
-        with open("Readme.md", "r") as file:
+        with open("README.md", "r") as file:
             markdown_content = file.read()
         html_content = markdown(markdown_content)
 
@@ -224,13 +265,13 @@ class mainWindow(QMainWindow):
             h1 {{ font-size: 24px; }}
             h2 {{ font-size: 20px; }}
             h3 {{ font-size: 18px; font-style: italic; }}
-            p {{ font-size: 16px; }}
+            p  {{ font-size: 16px; }}
             li {{ font-size: 16px; }}
         </style>
         {html_content}
         """
 
-        # Create a QDialog to display the content
+        # Create a QDialog to display the readme content
         dialog = QDialog(self)
         dialog.setWindowTitle("Help")
         layout = QVBoxLayout(dialog)
@@ -265,7 +306,10 @@ if __name__ == "__main__":
     # DEBUG     10
     # NOTSET     0
     logging.basicConfig(level=logging.INFO)
-    
+
+    root_logger = logging.getLogger()
+    current_level = root_logger.getEffectiveLevel()
+
     app = QtWidgets.QApplication(sys.argv)
     
     win = mainWindow()
@@ -277,4 +321,3 @@ if __name__ == "__main__":
     # You will need to adjust these numbers if you change the UI
     win.show()
     sys.exit(app.exec_())
-    
