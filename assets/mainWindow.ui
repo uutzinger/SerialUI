@@ -183,9 +183,9 @@
                     <widget class="QGroupBox" name="groupBox">
                         <property name="geometry">
                             <rect>
-                                <x>560</x>
+                                <x>600</x>
                                 <y>490</y>
-                                <width>621</width>
+                                <width>580</width>
                                 <height>51</height>
                             </rect>
                         </property>
@@ -208,9 +208,9 @@
                         <widget class="QLineEdit" name="lineEdit_Horizontal">
                             <property name="geometry">
                                 <rect>
-                                    <x>550</x>
+                                    <x>529</x>
                                     <y>15</y>
-                                    <width>61</width>
+                                    <width>45</width>
                                     <height>31</height>
                                 </rect>
                             </property>
@@ -315,9 +315,9 @@
                     <widget class="QSpinBox" name="spinBox_NumColumns">
                         <property name="geometry">
                             <rect>
-                                <x>507</x>
+                                <x>505</x>
                                 <y>500</y>
-                                <width>50</width>
+                                <width>25</width>
                                 <height>31</height>
                             </rect>
                         </property>
@@ -331,7 +331,7 @@
                     <widget class="QComboBox" name="comboBoxDropDown_DataSeparator">
                         <property name="geometry">
                             <rect>
-                                <x>380</x>
+                                <x>370</x>
                                 <y>500</y>
                                 <width>81</width>
                                 <height>31</height>

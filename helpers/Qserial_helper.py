@@ -24,10 +24,10 @@
 #      https://www.tutorialspoint.com/pyqt/pyqt_signals_and_slots.htm
 #      http://blog.debao.me/2013/08/how-to-use-qthread-in-the-right-way-part-1/
 #   Examples with Worker Tread
-#      https://stackoverflow.com/questions/41026032/pyqt5-how-to-send-a-signal-to-a-worker-thread
-#      https://stackoverflow.com/questions/68163578/stopping-an-infinite-loop-in-a-worker-thread-in-pyqt5-the-simplest-way
+#      https://stackoverflow.com/questions/41026032/PyQt6-how-to-send-a-signal-to-a-worker-thread
+#      https://stackoverflow.com/questions/68163578/stopping-an-infinite-loop-in-a-worker-thread-in-PyQt6-the-simplest-way
 #      https://stackoverflow.com/questions/61625043/threading-with-qrunnable-proper-manner-of-sending-bi-directional-callbacks
-#      https://stackoverflow.com/questions/52973090/pyqt5-signal-communication-between-worker-thread-and-main-window-is-not-working
+#      https://stackoverflow.com/questions/52973090/PyQt6-signal-communication-between-worker-thread-and-main-window-is-not-working
 #      https://stackoverflow.com/questions/61625043/threading-with-qrunnable-proper-manner-of-sending-bi-directional-callbacks
 # Timer, infinite loop
 #      https://stackoverflow.com/questions/55651718/how-to-use-a-qtimer-in-a-separate-qthread
@@ -39,13 +39,13 @@
 #      https://www.pythonfixing.com/2022/03/fixed-how-to-use-qtimer-inside-qthread.html
 # Serial
 #   Examples using pySerial
-#      https://programmer.group/python-uses-pyqt5-to-write-a-simple-serial-assistant.html
+#      https://programmer.group/python-uses-PyQt6-to-write-a-simple-serial-assistant.html
 #      https://github.com/mcagriaksoy/Serial-Communication-GUI-Program
 #      https://hl4rny.tistory.com/433
 #      https://iosoft.blog/pyqt-serial-terminal-code
 #   Examples using QSerialPort
 #      https://stackoverflow.com/questions/55070483/connect-to-serial-from-a-pyqt-gui
-#      https://ymt-lab.com/en/post/2021/pyqt5-serial-monitor
+#      https://ymt-lab.com/en/post/2021/PyQt6-serial-monitor
 #
 ############################################################################################
 
@@ -57,10 +57,10 @@ import time, logging
 from math import ceil
 from enum import Enum
     
-from PyQt5.QtCore    import QObject, QTimer, QThread, pyqtSignal, pyqtSlot, QStandardPaths
-from PyQt5.QtCore    import Qt
-from PyQt5.QtGui     import QTextCursor
-from PyQt5.QtWidgets import QFileDialog
+from PyQt6.QtCore    import QObject, QTimer, QThread, pyqtSignal, pyqtSlot, QStandardPaths
+from PyQt6.QtCore    import Qt
+from PyQt6.QtGui     import QTextCursor
+from PyQt6.QtWidgets import QFileDialog
 
 ########################################################################################
 # Debug 
@@ -200,7 +200,7 @@ class QSerialUI(QObject):
 
         # Text display window on serial text display
         self.textScrollbar = self.ui.plainTextEdit_SerialTextDisplay.verticalScrollBar()
-        self.ui.plainTextEdit_SerialTextDisplay.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.ui.plainTextEdit_SerialTextDisplay.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         
         # Disable closing serial port button    
         self.ui.pushButton_SerialOpenClose.setText("Open")
@@ -219,7 +219,7 @@ class QSerialUI(QObject):
       
         # Cursor for text display window
         self.textCursor = self.ui.plainTextEdit_SerialTextDisplay.textCursor()
-        self.textCursor.movePosition(QTextCursor.End)
+        self.textCursor.movePosition(QTextCursor.MoveOperation.End)
         self.ui.plainTextEdit_SerialTextDisplay.setTextCursor(self.textCursor)        
         self.ui.plainTextEdit_SerialTextDisplay.ensureCursorVisible()
         self.logger.log(logging.INFO, "[{}]: QSerialUI initialized.".format(int(QThread.currentThreadId())))
@@ -250,7 +250,7 @@ class QSerialUI(QObject):
         """
         Transmitting file to serial TX line
         """
-        stdFileName = QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation) + "/QSerial.txt"
+        stdFileName = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation) + "/QSerial.txt"
         fname, _ = QFileDialog.getOpenFileName(self.ui, 'Open', stdFileName, "Text files (*.txt)")
         if fname:
             self.serialSendFileRequest.emit(fname)
@@ -613,7 +613,7 @@ class QSerialUI(QObject):
                 self.isScrolling = True
             else: 
                 self.isScrolling = False
-            self.textCursor.movePosition(QTextCursor.End)
+            self.textCursor.movePosition(QTextCursor.MoveOperation.End)
             self.textCursor.insertText(text+'\n')
             if self.isScrolling:
                 self.ui.plainTextEdit_SerialTextDisplay.ensureCursorVisible()
@@ -641,7 +641,7 @@ class QSerialUI(QObject):
             self.isScrolling = True
         else:
             self.isScrolling = False
-        self.textCursor.movePosition(QTextCursor.End)
+        self.textCursor.movePosition(QTextCursor.MoveOperation.End)
         self.textCursor.insertText(text+'\n')
         if self.isScrolling:
             self.ui.plainTextEdit_SerialTextDisplay.ensureCursorVisible()
@@ -693,10 +693,10 @@ class QSerialUI(QObject):
         if numCharstoTrim > 0:
             # Select the text to remove
             self.textCursor.setPosition(0)
-            self.textCursor.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor, numCharstoTrim)
+            self.textCursor.movePosition(QTextCursor.MoveOperation.Right, QTextCursor.MoveMode.KeepAnchor, numCharstoTrim)
             # Remove the selected text
             self.textCursor.removeSelectedText()
-            self.textCursor.movePosition(QTextCursor.End)
+            self.textCursor.movePosition(QTextCursor.MoveOperation.End)
             # update scrollbar position
             new_max = self.textScrollbar.maximum()
             new_value = round(proportion * new_max)

@@ -25,8 +25,8 @@
 
 import logging, time
 
-from PyQt5.QtCore import QObject, QTimer, QThread, pyqtSlot, QStandardPaths
-from PyQt5.QtWidgets import (
+from PyQt6.QtCore import QObject, QTimer, QThread, pyqtSlot, QStandardPaths
+from PyQt6.QtWidgets import (
     QFileDialog,
     QLineEdit,
     QSlider,
@@ -38,7 +38,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QSpinBox,
 )
-from PyQt5.QtGui import QBrush, QColor
+from PyQt6.QtGui import QBrush, QColor
 
 # QT Graphing for chart plotting
 import pyqtgraph as pg
@@ -534,7 +534,7 @@ class QChartUI(QObject):
         Save data into Text File
         """
         stdFileName = (
-            QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation)
+            QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
             + "/data.txt"
         )
         fname, _ = QFileDialog.getSaveFileName(
