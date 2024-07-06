@@ -2,15 +2,17 @@
 # ################################################################################################
 # Serial Communication GUI
 # ========================
-#
+# 
 # Provides serial interface to send and receive text to/from serial port.
-# Plots of data on up to 5 traces (changable) with zoom, save and clear.
+# Plots data on up to 5 traces (changeable) with zoom, save, and clear.
 #
-# This framework was setup to visualize signals at high data rates.
-# Its implemented in python and QT and can be adapted to users needs.
+# This framework was set up to visualize signals at high data rates.
+# It is implemented in Python and Qt and can be adapted to users' needs.
 #
-# Urs Utzinger, 2022, 2023, 2024
-################################################################################################
+# Authors:
+# Urs Utzinger, 2022, 2023, 2024 (University of Arizona)
+# Cameron K Brooks, 2024 (Western University)
+# ################################################################################################
 
 # QT imports
 from PyQt6 import QtCore, QtWidgets, QtGui, uic
@@ -18,7 +20,7 @@ from PyQt6.QtCore import QThread, QTimer, QEventLoop
 from PyQt6.QtWidgets import (
     QMainWindow, QLineEdit, QSlider, QMessageBox, QDialog, QVBoxLayout, QTextEdit, QTabWidget,
 )
-from PyQt6.QtGui import QIcon, QTextCursor, QShortcut, QKeySequence
+from PyQt6.QtGui import QIcon, QShortcut, QKeySequence
 
 # Markdown for documentation
 from markdown import markdown

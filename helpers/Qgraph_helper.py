@@ -2,25 +2,13 @@
 # QT Chart Helper
 ############################################################################################
 # December 2023: added chart plotting
-# Summer 2024: added legend, fixed code issues
+# Summer 2024 a: added legend, fixed code issues
+# Summer 2024 b: added editable number of columns and upgrade to pyqt6
 # ------------------------------------------------------------------------------------------
 # Urs Utzinger
 # University of Arizona 2023, 2024
-############################################################################################
-
-############################################################################################
-# Helpful readings:
-# ------------------------------------------------------------------------------------------
-# pyqtgraph
-# https://www.pythonguis.com/tutorials/embed-pyqtgraph-custom-widgets-qt-app/
-# https://www.pyqtgraph.org/
-# https://www.pythonguis.com/tutorials/plotting-pyqtgraph/
-# https://github.com/pyqtgraph/pyqtgraph/blob/master/pyqtgraph/examples/scrollingPlots.py
-# https://stackoverflow.com/questions/65332619/pyqtgraph-scrolling-plots-plot-in-chunks-show-only-latest-10s-samples-in-curre
-#
-# Example Applications
-# https://github.com/pbmanis/EKGMonitor
-#
+# Cameron K Brooks
+# Western University 2024
 ############################################################################################
 
 import logging, time
