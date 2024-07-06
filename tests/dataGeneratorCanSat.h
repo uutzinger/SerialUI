@@ -6,7 +6,8 @@
 
 int messageId = 0;
 
-void generateCanSatData() {
+void generateCanSatData()
+{
   messageId++;
 
   uint32_t lightIntensity = random(1000, 5000);
@@ -76,7 +77,8 @@ void generateCanSatData() {
   Serial.print("A:" + String(a) + ",B:" + String(b) + ",C:" + String(c) + ",D:" + String(d) + ",E:" + String(e) + ",F:" + String(f) + ",G:" + String(g) + ",H:" + String(h) + ",I:" + String(i) + ",J:" + String(j) + ",K:" + String(k) + ",L:" + String(l) + ",R:" + String(r) + ",S:" + String(s) + ",T:" + String(t) + ",U:" + String(u) + ",V:" + String(v) + ",W:" + String(w) + ",");
   Serial.println("NumberOfSatellites:" + String(numberOfSatellites) + ",RSSI:" + String(rssi));
 
-  if (messageId > 1000) {
+  if (messageId > 1000)
+  {
     messageId = 0;
   }
 }
