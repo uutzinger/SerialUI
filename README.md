@@ -2,115 +2,139 @@
 ![Serial Monitor](assets/serial_96.png)
 
 ## Description
-Serial interface to send and receive text from the serial port similar to the Arduino IDE.
+SerialUI provides a graphical interface to send and receive text from the serial port, including a serial plotter for displaying numerical data. It optimizes high data rate visualization of signals and text, offering features beyond the Arduino IDE Serial Plotter.
 
-It includes a serial plotter to display numbers. A predefined number of values can be extracted from a line of text and displayed as traces.
-One can zoom, save and clear this display.
-
-This framework has been optimized to visualize signals and text at high data rates.
-
-The display of data allows adjustments not available in the Arduino IDE Serial Plotter.
-
-Urs Utzinger
-2022, 2023
-
-<img src="assets/SerialMonitor.png" alt="Serial Monitor" width="800"/>
-<img src="assets/SerialPlotter.png" alt="Serial Plotter" width="800"/>
+<img src="docs/SerialMonitor.png" alt="Serial Monitor" width="600"/>
+<img src="docs/SerialPlotter.png" alt="Serial Plotter" width="600"/>
 
 ## Installation Requirements
-- pip3 install pyqt5 (GNU General Public License (GPL))
-- pip3 install pyqtgraph (MIT License)
-- pip3 install numpy (BSD license)
-- pip3 install pyserial (Python Software Foundation License)
-- pip3 install markdown (BSD license)
+- `pip3 install pyqt5`
+- `pip3 install pyqtgraph`
+- `pip3 install numpy`
+- `pip3 install pyserial`
+- `pip3 install markdown`
+- *One liner:* 
+    - `pip3 install pyqt5 pyqtgraph numpy pyserial markdown`
 
-The main program is ```main_window.py```. It depends on the files in the ```assets``` and ```helper``` folder.
+The main program is `main_window.py`, uses files in the `assets` and `helper` folders.
 
-## How to use this program
+## How to Use This Program
 
-### Setting Serial port
+### Setting Serial Port
+1. Plug in your device and hit scan ports.
+2. Select serial port, baud rate, and line termination (`\r\n` is most common).
 
-- plug in your device and hit scan ports
-- select serial port
-- select the baud rate
-- select the line termination (\r\n is most common)
+### Use with Arduino IDE
+1. Close serial port in SerialUI.
+2. Program the microcontroller using Arduino IDE.
+3. Reopen the serial port in SerialUI.
 
-Line termination ```none``` displays text as it arrived from serial port but you can not display data in a chart.
+### Microcontroller Response Issues
+1. Close serial port.
+2. Unplug and replug the microcontroller.
+3. Scan for serial ports.
+4. Open serial port.
+5. Adjust baud rate if necessary.
+6. Start the serial text display.
+7. Reset microcontroller if needed.
 
-### Close and Re-open Serial port
+### Receiving Data for Text Display
+1. Set serial port as described.
+2. Select the serial monitor tab.
+3. Start the text display.
+4. Save and clear displayed data as needed.
 
-When you use this application together with Arduino IDE, you can not program your microcontroller while this application has the port open as serial ports are usually not shared.
+### Sending Data
+1. Set serial port as described.
+2. Enter text in the line edit box and hit enter.
+3. Use up/down arrows to recall previous text.
 
-- hit close serial port
-- program the microcontroller
-- hit re-open serial port
-
-### Receiving data for Serial Monitor
-
-- complete setting serial port section above
-- select the serial monitor tab
-- start the reception will display incoming data
-- you can save and clear the current content of the display window
-
-### Sending data from Serial Monitor
-
-- complete setting serial port section above
-- enter text in the line edit box
-- transmit it with keyboard enter
-- recall previous lines of text with up and down arrows
-
-Send complete text files with send file button. The file will need to fit into serial buffer. Only smaller text files will work.
-
-### Plotting data
-
-- complete setting serial port section above
-- open the Serial Plotter tab
-- select data separator or leave as is if there is only one number per line, most common separator is comma.
-- hit start
-- adjust the view with the horizontal slider
-- you can save and clear the currently plotted data
-- hit stop and zoom with mouse
-
-The vertical axis is auto scaled based on currently visible data. 
+### Plotting Data
+1. Set serial port as described.
+2. Open the Serial Plotter tab.
+3. Select data separator (comma, tab, etc.).
+4. Start plotting.
+5. Adjust view with the horizontal slider.
+6. Save and clear plotted data.
 
 ## Modules
 
 ### User Interface
+The UI is defined in `mainWindow.ui` (assets folder) and designed with QT Designer.
 
-The user interface is ``mainWindow.ui``` in the assets folder and was designed with QT Designer.
-
-### Main
-
-The main program loads the user interface and adjust its size to specified with and height compensating for scaling issues with high resolution screens. Almost all QT signal connections to slots are created in the main program. It spawns a new thread for the serial interface handling (python remains a single core application though). Plotting occurs in the main thread as it interacts with the user interface.
+### Main Program
+The main program (`main_window.py`) loads the UI, adjusts its size, handles QT signal connections, and manages the serial interface thread. Plotting occurs in the main thread.
 
 ### Serial Helper
-
-The serial helper contains three classes. *```QSerialUI```* handles the interaction between the user interface and *```QSerial```*. It remains in the main thread and emits signals to which *```QSerial```* subscribes. QSerial runs on its own thread and sends data to QSerialUI with signals. *```PSerial```* interfaces with the pySerial module. It provides a unified interface to the serial port capable of obtaining all currently available bytes in the buffer and it can convert these into lines of bytes for plotting and display purpose.
-
-The serial helpers allow to open, close and change serial port by specifying the baud rate and port. They allow reading and sending byte strings and multiple lines of byte strings. Selecting text encoding and end of line character handling is implemented with custom code not using the textIOWrapper. Data is collated so that we can process several lines of text at once and take advantage of numpy arrays and need less frequent updates of the text display window.
-
-The serial helpers uses 3 continuous timers. One to periodically check for new data on the receiver line. Once new data is arriving the timer interval is reduced to adjust for continuous high throughput. A second timer that emits throughput data (amount of characters received and transmitted) once a second. These 2 timers are setup after QSerial is moved to its own thread (as timers can only interact with the thread where they were started). A third timer trims the received text displayed in the display window once a minute to not exceed a pre defined amount.
-
-The challenges in this code is how to run a driver in a separate thread and how to collate text so that processing and visualization can occur with high data rates. Using multithreading in pyQT does not release the Global Interpreter Lock and therefore might not result in performance increase or increased GUI responsiveness.
+Includes three classes:
+- `QSerialUI`: Manages UI interaction, runs in the main thread.
+- `QSerial`: Runs on its own thread, communicates with `QSerialUI`.
+- `PSerial`: Interfaces with pySerial, provides unified serial port interface.
 
 ### Plotter Helper
+Uses pyqtgraph for plotting. Data is stored in a circular buffer, and plotting occurs in the main thread.
 
-The plotter helper provides a plotting interface using pyqtgraph. Data is plotted where the newest data is added on the right (chart) and the amount of data shown is selected through an adjustable slider. Vertical axis is auto scaled based on the data available in the buffer.
+### Future Enhancements
+- ADPCM or serialized data transfer for compressed data reception.
 
-The plotter helper extracts values from lines of text and appends them to a numpy array. The data array is organized in a circular buffer. The maximum size of that data array is predetermined. A signal trace is a column in the data array and the number of traces is adjusted depending on the numbers present in the line of text but it can not exceed MAX_COLUMNS (4).
-
-A timer is used to update the chart 10 times per second. Faster updating is not necessary as visual perception is not improved.
-
-Plotting occurs in the main thread as it needs to interact with the Graphical User Interface.
-
-### Future: ADPCM or serialized data transfer
-
-Compressed data or serialized data reception is *```not implemented```* yet.
-
-Data can be encoded on a microcontroller with a codec and decoded on the receiver. ADPCM is a lossy codec that uses little resources on microcontrollers. It would allow to transmit audio data at common  baudrates with a compression factor of 4.
-For internal reference:
+## References
 - [ADPCM](https://github.com/pschatzmann/adpcm)
 - [Python Implementation Matt](https://github.com/mattleaverton/stream-audio-compression/)
 - [Python Implementation acida](https://github.com/acida/pyima)
+- [MessagePack](https://msgpack.org/)
 
-An alternative is to serialize data frames using MessagePack to send packets of data in a simple structure.
+## Acknowledgments
+Urs Utzinger, 2022-2024
+
+---
+
+## Detailed Usage Instructions
+Move the following detailed usage instructions to a new markdown document under the `docs` folder.
+
+### Setting Serial Port
+- Plug in your device and hit scan ports.
+- Select serial port.
+- Select the baud rate.
+- Select the line termination (\r\n is most common).
+
+### Use in Conjunction with Arduino IDE
+- Click close serial port.
+- Program the microcontroller.
+- Click open serial port.
+
+### Issues with Microcontroller Response
+- Close the serial port.
+- Unplug and replug the microcontroller.
+- Scan for serial ports.
+- Open the serial port.
+- Adjust baud rate if necessary.
+- Start the serial text display.
+- Push the reset button on the microcontroller if available.
+
+### Receiving Data for Text Display
+- Complete setting serial port section above.
+- Select the serial monitor tab.
+- Start the text display.
+- You can save and clear the current content of the display window.
+- If you scroll one page backwards, the display will stop scrolling.
+- If you scroll to the most recent text, the display will start scrolling.
+
+### Sending Data
+- Complete setting serial port section above.
+- Enter text in the line edit box.
+- Transmit it by hitting enter on the keyboard.
+- Recall previous text sent with up and down arrows.
+
+Send complete text files with the send file button. 
+The file will need to fit into the serial buffer. Only smaller text files will work.
+
+### Plotting Data
+- Complete setting serial port section above.
+- Open the Serial Plotter tab.
+- Select data separator or none if there is only one number per line, most common separator is comma or tab. 
+- Click start.
+- Adjust the view with the horizontal slider.
+- You can save and clear the currently plotted data.
+- Click stop and zoom with the mouse.
+
+The vertical axis is auto-scaled based on currently visible data.
