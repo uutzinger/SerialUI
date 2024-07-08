@@ -2,39 +2,31 @@
 # QT Chart Helper
 ############################################################################################
 # December 2023: added chart plotting
-# Summer 2024: added legend, fixed code issues
+# Summer 2024 a: added legend, fixed code issues
+# Summer 2024 b: added editable number of columns and upgrade to pyqt6
 # ------------------------------------------------------------------------------------------
 # Urs Utzinger
 # University of Arizona 2023, 2024
-############################################################################################
-
-############################################################################################
-# Helpful readings:
-# ------------------------------------------------------------------------------------------
-# pyqtgraph
-# https://www.pythonguis.com/tutorials/embed-pyqtgraph-custom-widgets-qt-app/
-# https://www.pyqtgraph.org/
-# https://www.pythonguis.com/tutorials/plotting-pyqtgraph/
-# https://github.com/pyqtgraph/pyqtgraph/blob/master/pyqtgraph/examples/scrollingPlots.py
-# https://stackoverflow.com/questions/65332619/pyqtgraph-scrolling-plots-plot-in-chunks-show-only-latest-10s-samples-in-curre
-#
-# Example Applications
-# https://github.com/pbmanis/EKGMonitor
-#
+# Cameron K Brooks
+# Western University 2024
 ############################################################################################
 
 import logging, time
 
-from PyQt5.QtCore import QObject, QTimer, QThread, pyqtSlot, QStandardPaths
-from PyQt5.QtWidgets import (
+from PyQt6.QtCore import QObject, QTimer, QThread, pyqtSlot, QStandardPaths
+from PyQt6.QtWidgets import (
     QFileDialog,
     QLineEdit,
     QSlider,
     QTabWidget,
     QGraphicsView,
+    QHBoxLayout,
     QVBoxLayout,
+    QComboBox,
+    QLabel,
+    QSpinBox,
 )
-from PyQt5.QtGui import QBrush, QColor
+from PyQt6.QtGui import QBrush, QColor
 
 # QT Graphing for chart plotting
 import pyqtgraph as pg
@@ -42,16 +34,20 @@ import pyqtgraph as pg
 # Numerical Math
 import numpy as np
 
+# Colors for graphing
+from helpers.colors_qtgraph import color_names_sweet16 as COLORS
+
 # Constants
 ########################################################################################
 MAX_ROWS = 44100  # data history length
-MAX_COLUMNS = 5  # max number of signal traces
+#MAX_COLS = len(COLORS)  # maximum number of columns [available colors]
+MAX_COLS = 16  # maximum number of columns (after this it begins to overflow off bottom of chart)
+DEF_COLS = 2  # default number of columns
 UPDATE_INTERVAL = (
     100  # milliseconds, visualization does not improve with updates faster than 10 Hz
 )
-COLORS = ["green", "red", "blue", "black", "magenta"]  # need to have MAX_COLUMNS colors
-# https://i.sstatic.net/lFZum.png
 
+########################################################################################
 # Support Functions and Classes
 ########################################################################################
 
@@ -59,27 +55,30 @@ COLORS = ["green", "red", "blue", "black", "magenta"]  # need to have MAX_COLUMN
 def clip_value(value, min_value, max_value):
     return max(min_value, min(value, max_value))
 
-
 class CircularBuffer:
     """
     This is a circular buffer to store numpy data.
 
-    It is initialized based on MAX_ROWS and MAX_COLUMNS.
-    You add data by pushing a numpy array to it. The width of the numpy array needs to match MAX_COLUMNS.
+    It is initialized based on MAX_ROWS and DEF_COLS.
+    You add data by pushing a numpy array to it.
+    The width of the numpy array needs to match the set number of columns.
     You access the data by the data property.
     It automatically rearranges adding and extracting data with wrapping around.
     """
 
-    def __init__(self):
+    def __init__(self, num_columns):
         """initialize the circular buffer"""
-        self._data = np.full((MAX_ROWS, MAX_COLUMNS + 1), np.nan)
+        self._data = np.full((MAX_ROWS, num_columns + 1), np.nan)
         self._index = 0
+        self.num_columns = num_columns
 
     def push(self, data_array):
         """add new data to the circular buffer"""
         num_new_rows, num_new_cols = data_array.shape
-        if num_new_cols != MAX_COLUMNS + 1:
-            raise ValueError("Data array must have {} columns".format(MAX_COLUMNS + 1))
+        if num_new_cols != self.num_columns + 1:
+            raise ValueError(
+                "Data array must have {} columns".format(self.num_columns + 1)
+            )
         end_index = (
             self._index + num_new_rows
         ) % MAX_ROWS  # where new data will be inserted
@@ -95,7 +94,7 @@ class CircularBuffer:
 
     def clear(self):
         """set all buffer values to -inf"""
-        self._data = np.full((MAX_ROWS, MAX_COLUMNS + 1), np.nan)
+        self._data = np.full((MAX_ROWS, self.num_columns + 1), np.nan)
 
     @property
     def data(self):
@@ -117,7 +116,7 @@ class QChartUI(QObject):
     """
     Chart Interface for QT
 
-    The chart displays up MAX_COLUMNS (5) signals in a plot.
+    The chart displays signals in a plot.
     The data is received from the serial port and organized into columns of a numpy array.
     The plot can be zoomed in by selecting how far back in time to display it.
     The horizontal axis is the sample number.
@@ -144,6 +143,8 @@ class QChartUI(QObject):
     def __init__(self, parent=None, ui=None, serialUI=None, serialWorker=None):
         # super().__init__()
         super(QChartUI, self).__init__(parent)
+
+        self.logger = logging.getLogger("QChartUI_")
 
         if ui is None:
             self.logger.log(
@@ -172,6 +173,9 @@ class QChartUI(QObject):
             )
         self.serialWorker = serialWorker
 
+        # Number of columns (default is 2)
+        self.num_columns = DEF_COLS
+
         # Create the chart
         self.chartWidget = pg.PlotWidget()
 
@@ -198,7 +202,7 @@ class QChartUI(QObject):
         ]  # colors for the signal traces
         self.data_line = [
             self.chartWidget.plot([], [], pen=self.pen[i % len(self.pen)], name=str(i))
-            for i in range(MAX_COLUMNS)
+            for i in range(self.num_columns)
         ]
 
         # create a legend
@@ -214,7 +218,7 @@ class QChartUI(QObject):
             1024  # maximum number of points to show in a plot from now to the past
         )
 
-        self.buffer = CircularBuffer()
+        self.buffer = CircularBuffer(self.num_columns)
         self.legends = []
 
         # Initialize the plot axis ranges
@@ -223,13 +227,18 @@ class QChartUI(QObject):
 
         # Initialize the horizontal slider
         self.horizontalSlider = self.ui.findChild(QSlider, "horizontalSlider_Zoom")
-        self.horizontalSlider.setMinimum(16)
+        self.horizontalSlider.setMinimum(0)
         self.horizontalSlider.setMaximum(MAX_ROWS)
         self.horizontalSlider.setValue(int(self.maxPoints))
         self.lineEdit = self.ui.findChild(QLineEdit, "lineEdit_Horizontal")
         self.lineEdit.setText(str(self.maxPoints))
 
-        self.logger = logging.getLogger("QChartUI_")
+        # Initialize input for number of columns
+        self.numColumnsInput = self.ui.findChild(QSpinBox, "spinBox_NumColumns")
+        self.numColumnsInput.setMinimum(1)
+        self.numColumnsInput.setMaximum(MAX_COLS)
+        self.numColumnsInput.setValue(self.num_columns)
+        self.numColumnsInput.valueChanged.connect(self.on_numColumnsChanged)
 
         self.textDataSeparator = b"\t"  # default data separator
         index = self.ui.comboBoxDropDown_DataSeparator.findText(
@@ -282,7 +291,7 @@ class QChartUI(QObject):
         min_y = np.inf
         max_x = -np.inf
         min_x = np.inf
-        for i in range(MAX_COLUMNS):  # for each column
+        for i in range(self.num_columns):  # for each column
             have_column_data = have_data[:, i + 1]
             x = data[have_column_data, 0]  # extract the sample numbers
             # y = data[have_column_data,i+1]/1000.     # ESP ADC calibrates the reading to mV
@@ -422,13 +431,13 @@ class QChartUI(QObject):
             self.sample_number, self.sample_number + num_rows
         ).reshape(-1, 1)
         self.sample_number += num_rows
-        right_pad = MAX_COLUMNS - num_cols
+        right_pad = self.num_columns - num_cols
         if right_pad > 0:
             new_array = np.hstack(
                 [sample_numbers, data_array, np.full((num_rows, right_pad), np.nan)]
             )
         else:
-            new_array = np.hstack([sample_numbers, data_array[:, :MAX_COLUMNS]])
+            new_array = np.hstack([sample_numbers, data_array[:, : self.num_columns]])
 
         self.buffer.push(new_array)
         self.legends = legends[-1]
@@ -513,7 +522,7 @@ class QChartUI(QObject):
         Save data into Text File
         """
         stdFileName = (
-            QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation)
+            QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
             + "/data.txt"
         )
         fname, _ = QFileDialog.getSaveFileName(
@@ -572,6 +581,33 @@ class QChartUI(QObject):
             ),
         )
         self.updatePlot()
+
+    @pyqtSlot(int)
+    def on_numColumnsChanged(self, value):
+        if value > MAX_COLS:
+            self.logger.log(
+                logging.ERROR,
+                f"Number of columns {value} exceeds the maximum number of available colors {MAX_COLS}.",
+            )
+            return
+
+        self.num_columns = value
+        self.pen = [
+            pg.mkPen(color, width=2) for color in COLORS
+        ]
+        self.data_line = [
+            self.chartWidget.plot([], [], pen=self.pen[i % len(self.pen)], name=str(i))
+            for i in range(self.num_columns)
+        ]
+
+        self.buffer = CircularBuffer(self.num_columns)
+        self.updatePlot()
+        self.logger.log(
+            logging.INFO,
+            "[{}]: Number of columns changed to {}.".format(
+                int(QThread.currentThreadId()), value
+            ),
+        )
 
 
 #####################################################################################

@@ -2,30 +2,25 @@
 # ################################################################################################
 # Serial Communication GUI
 # ========================
-#
+# 
 # Provides serial interface to send and receive text to/from serial port.
-# Plots of data on up to 5 traces (changable) with zoom, save and clear.
+# Plots data on up to 5 traces (changeable) with zoom, save, and clear.
 #
-# This framework was setup to visualize signals at high data rates.
-# Its implemented in python and QT and can be adapted to users needs.
+# This framework was set up to visualize signals at high data rates.
+# It is implemented in Python and Qt and can be adapted to users' needs.
 #
-# Urs Utzinger, 2022, 2023, 2024
-################################################################################################
+# Authors:
+# Urs Utzinger, 2022, 2023, 2024 (University of Arizona)
+# Cameron K Brooks, 2024 (Western University)
+# ################################################################################################
 
 # QT imports
-from PyQt5 import QtCore, QtWidgets, QtGui, uic
-from PyQt5.QtCore import QThread, QTimer, QEventLoop
-from PyQt5.QtWidgets import (
-    QMainWindow,
-    QLineEdit,
-    QSlider,
-    QMessageBox,
-    QDialog,
-    QVBoxLayout,
-    QTextEdit,
-    QTabWidget,
+from PyQt6 import QtCore, QtWidgets, QtGui, uic
+from PyQt6.QtCore import QThread, QTimer, QEventLoop
+from PyQt6.QtWidgets import (
+    QMainWindow, QLineEdit, QSlider, QMessageBox, QDialog, QVBoxLayout, QTextEdit, QTabWidget,
 )
-from PyQt5.QtGui import QIcon, QTextCursor
+from PyQt6.QtGui import QIcon, QShortcut, QKeySequence
 
 # Markdown for documentation
 from markdown import markdown
@@ -40,11 +35,10 @@ from helpers.Qserial_helper import QSerial, QSerialUI
 from helpers.Qgraph_helper import QChartUI, MAX_ROWS
 
 # Deal with high resolution displays
-if hasattr(QtCore.Qt, "AA_EnableHighDpiScaling"):
-    QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
-
-if hasattr(QtCore.Qt, "AA_UseHighDpiPixmaps"):
-    QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps, True)
+if hasattr(QtCore.Qt.ApplicationAttribute, "AA_EnableHighDpiScaling"):
+    QtWidgets.QApplication.setAttribute(QtCore.Qt.ApplicationAttribute.AA_EnableHighDpiScaling, True)
+if hasattr(QtCore.Qt.ApplicationAttribute, "AA_UseHighDpiPixmaps"):
+    QtWidgets.QApplication.setAttribute(QtCore.Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)
 
 ###########################################################################################
 # Main Window
@@ -86,6 +80,7 @@ class mainWindow(QMainWindow):
         self.setWindowIcon(QIcon(window_icon))
         self.setWindowTitle("Serial GUI")
 
+        # ----------------------------------------------------------------------------------------------------------------------
         # find the tabs and connect to tab change
         self.tabs = self.findChild(QTabWidget, "tabWidget_MainWindow")
         self.tabs.currentChanged.connect(self.on_tab_change)
@@ -238,16 +233,17 @@ class mainWindow(QMainWindow):
             self.serialUI.on_pushButton_SerialOpenClose
         )  # Open/Close serial port
         # User hit up/down arrow in serial lineEdit
-        self.shortcutUpArrow = QtWidgets.QShortcut(
-            QtGui.QKeySequence.MoveToPreviousLine,
+        self.shortcutUpArrow = QShortcut(
+            QKeySequence(QKeySequence.StandardKey.MoveToPreviousLine),
             self.ui.lineEdit_SerialText,
             self.serialUI.on_serialMonitorSendUpArrowPressed,
         )
-        self.shortcutDownArrow = QtWidgets.QShortcut(
-            QtGui.QKeySequence.MoveToNextLine,
+        self.shortcutDownArrow = QShortcut(
+            QKeySequence(QKeySequence.StandardKey.MoveToNextLine),
             self.ui.lineEdit_SerialText,
             self.serialUI.on_serialMonitorSendDownArrowPressed,
         )
+
 
         # Done with Serial
         self.logger.log(
@@ -344,7 +340,7 @@ class mainWindow(QMainWindow):
                 self.serialWorker.finished.connect(
                     loop.quit
                 )  # connect the loop to finish signal
-                loop.exec_()  # wait until worker is finished
+                loop.exec()  # wait until worker is finished
             else:
                 self.logger.log(
                     logging.ERROR,
@@ -380,7 +376,6 @@ class mainWindow(QMainWindow):
             markdown_content = file.read()
         html_content = markdown(markdown_content)
 
-        # somehow h3 font size is not applied, not sure how to fix
         html_with_style = f"""
         <style>
             body {{ font-size: 16px; }}
@@ -392,7 +387,7 @@ class mainWindow(QMainWindow):
         </style>
         {html_content}
         """
-
+        
         # Create a QDialog to display the readme content
         dialog = QDialog(self)
         dialog.setWindowTitle("Help")
@@ -409,7 +404,7 @@ class mainWindow(QMainWindow):
         dialog.resize(dialog_width, dialog_height)
 
         # Show the dialog
-        dialog.exec_()
+        dialog.exec()
 
 
 ###########################################################################################
@@ -418,7 +413,7 @@ class mainWindow(QMainWindow):
 
 if __name__ == "__main__":
     import sys
-    from PyQt5 import QtWidgets
+    from PyQt6 import QtWidgets
     import logging
 
     # set logging level
@@ -436,11 +431,11 @@ if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
 
     win = mainWindow()
-    d = app.desktop()
-    scalingX = d.logicalDpiX() / 96.0
-    scalingY = d.logicalDpiY() / 96.0
+    screen = app.primaryScreen()
+    scalingX = screen.logicalDotsPerInchX() / 96.0
+    scalingY = screen.logicalDotsPerInchY() / 96.0
     win.resize(int(1200 * scalingX), int(665 * scalingY))
     # 1200 and 670 are the dimension of the UI in QT Designer
     # You will need to adjust these numbers if you change the UI
     win.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())
