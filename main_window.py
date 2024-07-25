@@ -16,7 +16,7 @@
 from PyQt5 import QtCore, QtWidgets, QtGui, uic
 from PyQt5.QtCore import QThread, QTimer, QEventLoop
 from PyQt5.QtWidgets import QMainWindow, QLineEdit, QSlider, QMessageBox, QDialog, QVBoxLayout, QTextEdit, QTabWidget
-from PyQt5.QtGui import QIcon, QTextCursor
+from PyQt5.QtGui import QIcon, QTextCursor, QPalette, QColor
 
 # Markdown for documentation
 from markdown import markdown
@@ -36,7 +36,9 @@ if hasattr(QtCore.Qt, 'AA_EnableHighDpiScaling'):
 
 if hasattr(QtCore.Qt, 'AA_UseHighDpiPixmaps'):
     QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps, True)
-        
+
+USE3DPLOT = True
+
 ###########################################################################################
 # Main Window
 ###########################################################################################
@@ -55,10 +57,10 @@ class mainWindow(QMainWindow):
         Initialize the components of the main window.
         This will create the connections between slots and signals in both directions.
         
-        Serial:
+        Serial Monitor:
         Create serial worker and move it to separate thread.
 
-        Serial Plotter:
+        Plotter:
         Create chart user interface object.        
         """
         super(mainWindow, self).__init__(parent) # parent constructor
@@ -79,6 +81,17 @@ class mainWindow(QMainWindow):
         # find the tabs and connect to tab change
         self.tabs = self.findChild(QTabWidget, 'tabWidget_MainWindow')
         self.tabs.currentChanged.connect(self.on_tab_change)
+            
+        if USE3DPLOT ==  True:
+            self.ui.ThreeD_1.setEnabled(True)
+            self.ui.ThreeD_2.setEnabled(True)
+            self.ui.ThreeD_3.setEnabled(True)
+            self.ui.ThreeD_4.setEnabled(True)
+        else:
+            self.ui.ThreeD_1.setEnabled(False)
+            self.ui.ThreeD_2.setEnabled(False)
+            self.ui.ThreeD_3.setEnabled(False)
+            self.ui.ThreeD_4.setEnabled(False)
 
         #----------------------------------------------------------------------------------------------------------------------
         # Serial
@@ -163,7 +176,7 @@ class mainWindow(QMainWindow):
         self.logger.log(logging.INFO, "[{}]: serial initialized.".format(int(QThread.currentThreadId())))
 
         #----------------------------------------------------------------------------------------------------------------------
-        # Serial Plotter
+        # Plotter
         #----------------------------------------------------------------------------------------------------------------------
         # Create user interface hook for chart plotting
         self.chartUI  = QChartUI(ui=self.ui, serialUI=self.serialUI, serialWorker = self.serialWorker) # create chart user interface object
@@ -212,8 +225,11 @@ class mainWindow(QMainWindow):
         """
         tab_name = self.tabs.tabText(index)
         if tab_name == "Serial Monitor":
+            self.ui.plainTextEdit_SerialTextDisplay.verticalScrollBar().setValue(self.ui.plainTextEdit_SerialTextDisplay.verticalScrollBar().maximum())
             self.ui.plainTextEdit_SerialTextDisplay.ensureCursorVisible()
-        elif tab_name == "Serial Plotter":
+        elif tab_name == "Plotter":
+            pass
+        elif tab_name == "Indicator":
             pass
         else:
             try: 
@@ -247,7 +263,7 @@ class mainWindow(QMainWindow):
 
     def show_about_dialog(self):
         # Information to be displayed
-        info_text = "Serial Terminal & Plotter\nVersion: 1.0\nAuthor: Urs Utzinger\n2022,2023,2024"
+        info_text = "Serial User Interface\nVersion: 1.0\nAuthor: Urs Utzinger\n2022,2023,2024"
         # Create and display the MessageBox
         QMessageBox.about(self, "About Program", info_text)       
         self.show()

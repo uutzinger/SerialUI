@@ -370,8 +370,6 @@ class QSerialUI(QObject):
             # shade start button in serial monitor and chart
             self.ui.pushButton_SerialStartStop.setEnabled(False)
             self.ui.pushButton_ChartStartStop.setEnabled(False)
-            # shade baud rate 
-            self.ui.comboBoxDropDown_BaudRates.setEnabled(False)
             # shade sending text
             self.ui.lineEdit_SerialText.setEnabled(False)
             self.ui.pushButton_SerialSend.setEnabled(False)                
@@ -500,11 +498,14 @@ class QSerialUI(QObject):
         # adjust the combobox current item to match the current port
         try:
             if self.serialPort == "":
-                index = self.ui.comboBoxDropDown_SerialPorts.findText("None")              # find current port in serial port list
+                # index = self.ui.comboBoxDropDown_SerialPorts.findText("None")              # find current port in serial port list
                 self.ui.pushButton_ChartStartStop.setEnabled(False)
                 self.ui.pushButton_SerialStartStop.setEnabled(False)
                 self.ui.lineEdit_SerialText.setEnabled(False)
                 self.ui.pushButton_SerialSend.setEnabled(False)                
+                self.ui.pushButton_SerialOpenClose.setEnabled(True)                        # enable port closing button
+                self.ui.pushButton_SerialOpenClose.setText("Open")
+                self.ui.statusBar().showMessage('Could not open serial port', 2000)
             else:
                 index = self.ui.comboBoxDropDown_SerialPorts.findText(self.serialPort)     # find current port in serial port list
                 self.ui.pushButton_SerialOpenClose.setEnabled(True)                        # enable port closing button
@@ -512,7 +513,7 @@ class QSerialUI(QObject):
                 # self.ui.pushButton_SerialStartStop.setEnabled(True)                        # enable start/stop button for serial monitor
                 # self.ui.lineEdit_SerialText.setEnabled(True)                               # enable text input window
                 # self.ui.pushButton_SerialSend.setEnabled(True)                
-            self.ui.comboBoxDropDown_SerialPorts.setCurrentIndex(index)                    # update serial port combobox
+                self.ui.comboBoxDropDown_SerialPorts.setCurrentIndex(index)                    # update serial port combobox
             self.logger.log(logging.DEBUG, "[{}]: selected port \"{}\".".format(int(QThread.currentThreadId()),self.serialPort))
         except:
             self.logger.log(logging.ERROR, "[{}]: port not available.".format(int(QThread.currentThreadId())))

@@ -21,6 +21,7 @@ Urs Utzinger
 ## Installation Requirements
 - pip3 install pyqt5 (GNU General Public License (GPL))
 - pip3 install pyqtgraph (MIT License)
+- pip3 install pyopengl (BSD license)
 - pip3 install numpy (BSD license)
 - pip3 install pyserial (Python Software Foundation License)
 - pip3 install markdown (BSD license)
