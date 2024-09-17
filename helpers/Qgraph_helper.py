@@ -35,11 +35,17 @@ import pyqtgraph as pg
 # Numerical Math
 import numpy as np
 
+# Regular Expressions
+import re
+from collections import defaultdict
+
+from typing import List, Tuple
+
 # Constants
 ########################################################################################
-MAX_ROWS        = 44100 # data history length
-MAX_COLUMNS     =     5 # max number of signal traces
-UPDATE_INTERVAL =   100 # milliseconds, visualization does not improve with updates faster than 10 Hz
+MAX_ROWS         = 44100 # data history length
+INITIAL_COLUMNS  =     5 # max number of signal traces
+UPDATE_INTERVAL  =   100 # milliseconds, visualization does not improve with updates faster than 10 Hz
 COLORS = ['green', 'red', 'blue', 'black', 'magenta'] # need to have MAX_COLUMNS colors
 # https://i.sstatic.net/lFZum.png
 
@@ -52,45 +58,62 @@ def clip_value(value, min_value, max_value):
 class CircularBuffer():
     '''
     This is a circular buffer to store numpy data.
-    
-    It is initialized based on MAX_ROWS and MAX_COLUMNS.
-    You add data by pushing a numpy array to it. The width of the numpy array needs to match MAX_COLUMNS.
-    You access the data by the data property. 
-    It automatically rearranges adding and extracting data with wrapping around.
+
+    It adjusts the number of columns dynamically.
+    It is initialized with a maximum number of rows and an initial number of columns.
+    The buffer adjusts the columns based on incoming data, padding with NaNs as needed.
     '''    
-    def __init__(self):
-        ''' initialize the circular buffer '''
-        self._data = np.full((MAX_ROWS, MAX_COLUMNS+1), np.nan)
+    def __init__(self,max_rows, initial_columns):
+        ''' Initialize the circular buffer '''
+        self.max_rows = max_rows
+        self.columns = initial_columns
+        self._data = np.full((max_rows, initial_columns), np.nan)
         self._index = 0
         
     def push(self, data_array):
-        ''' add new data to the circular buffer '''
+        ''' Add new data to the circular buffer '''
         num_new_rows, num_new_cols = data_array.shape
-        if num_new_cols != MAX_COLUMNS+1:
-            raise ValueError("Data array must have {} columns".format(MAX_COLUMNS+1))
-        end_index = (self._index + num_new_rows) % MAX_ROWS # where new data will be inserted
+
+        # Adjust the number of columns of the buffer if necessary
+        if num_new_cols > self.columns:
+            new_data = np.full((self.max_rows, num_new_cols), np.nan)
+            new_data[:, :self.columns] = self._data
+            self._data = new_data
+            self.columns = num_new_cols            
+        elif num_new_cols < self.columns:
+            if not np.isnan(self._data[:, num_new_cols:]).all():
+                # Need to pad the incoming data to match existing columns
+                padded_data_array = np.full((num_new_rows, self.columns), np.nan)
+                padded_data_array[:, :num_new_cols] = data_array
+                data_array = padded_data_array
+            else:
+                # Trim the buffer columns
+                self._data = self._data[:, :num_new_cols]
+                self.columns = num_new_cols
+
+        # Insert data
+        end_index = (self._index + num_new_rows) % self.max_rows # where new data will be inserted
         if end_index < self._index:
-            # wrapping is necessary when inserting new data
-            self._data[self._index:MAX_ROWS] = data_array[:MAX_ROWS - self._index]
-            self._data[:end_index] = data_array[MAX_ROWS - self._index:]
+            # Wrapping is necessary when inserting new data
+            self._data[self._index:self.max_rows] = data_array[:self.max_rows - self._index]
+            self._data[:end_index] = data_array[self.max_rows - self._index:]
         else:
-            # no wrapping necessary, new data fits into the buffer
-            self._data[self._index:end_index] = data_array
-                    
+            # No wrapping necessary, new data fits into the buffer
+            self._data[self._index:end_index] = data_array                    
+
         self._index = end_index
 
     def clear(self):
-        ''' set all buffer values to -inf '''
-        self._data = np.full((MAX_ROWS, MAX_COLUMNS+1), np.nan)
+        ''' Set all buffer values to NaN '''
+        self._data = np.full((self.max_rows, self.columns), np.nan)
     
     @property
     def data(self):
-        ''' obtain the data from the buffer'''
+        ''' Obtain the data from the buffer '''
         if self._index == 0:
             return self._data
         else:
-            # rearrange the data so that the newest data is at the end
-            # return np.vstack((self._data[self._index:], self._data[:self._index]))
+            # Rearrange the data so that the newest data is at the end
             return np.roll(self._data, -self._index, axis=0)
 
 ############################################################################################
@@ -161,7 +184,7 @@ class QChartUI(QObject):
 
         self.sample_number = 0  # A counter indicating current sample number which is also the x position in the plot
         self.pen = [pg.mkPen(color, width=2) for color in COLORS] # colors for the signal traces
-        self.data_line = [self.chartWidget.plot([], [], pen=self.pen[i % len(self.pen)], name=str(i)) for i in range(MAX_COLUMNS)]
+        self.data_line = [self.chartWidget.plot([], [], pen=self.pen[i % len(self.pen)], name=str(i)) for i in range(INITIAL_COLUMNS)]
         
         # create a legend
         self.legend = self.chartWidget.addLegend()               # add a legend to the plot
@@ -172,7 +195,7 @@ class QChartUI(QObject):
 
         self.maxPoints = 1024 # maximum number of points to show in a plot from now to the past
         
-        self.buffer = CircularBuffer()
+        self.buffer = CircularBuffer(MAX_ROWS, INITIAL_COLUMNS) # create a circular buffer to store the data
         self.legends = []
         
         # Initialize the plot axis ranges
@@ -189,10 +212,10 @@ class QChartUI(QObject):
         
         self.logger = logging.getLogger("QChartUI_")
 
-        self.textDataSeparator = b'\t'                                       # default data separator
-        index = self.ui.comboBoxDropDown_DataSeparator.findText("tab (\\t)") # find default data separator in drop down
-        self.ui.comboBoxDropDown_DataSeparator.setCurrentIndex(index)        # update data separator combobox
-        self.logger.log(logging.DEBUG, "[{}]: data separator {}.".format(int(QThread.currentThreadId()), repr(self.textDataSeparator)))
+        self.textDataSeparator = 'No Labels (simple)'                                       # default data separator
+        index = self.ui.comboBoxDropDown_DataSeparator.findText("No Labels (simple)") # find default data separator in drop down
+        self.ui.comboBoxDropDown_DataSeparator.setCurrentIndex(index)          # update data separator combobox
+        self.logger.log(logging.DEBUG, "[{}]: Data separator {}.".format(int(QThread.currentThreadId()), repr(self.textDataSeparator)))
 
         self.ui.pushButton_ChartStartStop.setText("Start")
 
@@ -200,8 +223,116 @@ class QChartUI(QObject):
         self.ChartTimer = QTimer()
         self.ChartTimer.setInterval(100)  # milliseconds, we can not see more than 50 Hz
         self.ChartTimer.timeout.connect(self.updatePlot)
-                
+
+        # Regular expression pattern to separate data values
+        self.labeled_data_re = re.compile(r'\s+(?=\w+:)') # separate labeled data into segements
+        self.label_data_re = re.compile(r'(\w+):\s*(.+)') # sebarate segemnts into lable and data
+        self.vector_scalar_re = re.compile(r'[;,]\s*') # split on commas or semicolons
+
         self.logger.log(logging.INFO, "[{}]: Initialized.".format(int(QThread.currentThreadId())))
+
+    # Utility functions
+    ########################################################################################
+
+    def parse_lines(self, lines: List[bytes]) -> List[dict]:
+        """
+        Takes a text line and parses it for lables, vectors, scalars, or unlabeled data.
+
+        [[label:][{'\s' '\t' ''} value {',' ';', ''}]]
+        The regular expressions are defined in the init function.
+        """
+
+        data_structure = []
+
+        for line in lines:
+            # First, extract potential labeled parts
+            segments = self.labeled_data_re.split(line.decode(self.serialUI.encoding))
+            scalar_count = 0
+            vector_count = 0
+
+            for segment in segments:
+                if not segment:
+                    continue
+                match = self.label_data_re.match(segment)
+                if match:
+                    # labled data
+                    label, data = match.groups()
+                    data_elements = self.vector_scalar_re.split(data)
+                else:
+                    # unlabeled data
+                    data_elements = self.vector_scalar_re.split(segment)
+                    label = None
+
+                for data in data_elements:
+                    try:
+                        numbers = list(map(float, data.split()))
+                    except ValueError:
+                        continue  # Skip entries that cannot be converted to float
+                    
+                    if not numbers:
+                        continue  # Skip empty data elements
+
+                    if label:
+                        header = f"{label}"
+                    elif len(numbers) == 1:
+                        scalar_count += 1
+                        header = f"S{scalar_count}"
+                    else:
+                        vector_count += 1
+                        header = f"V{vector_count}"
+
+                    data_structure.append({'header': header, 'values': numbers, 'length': len(numbers)})
+
+        return data_structure
+
+    def parse_lines_simple(self, lines: List[bytes]) -> Tuple[List[np.ndarray], List[str]]:
+        """
+        Takes a text line and parses it.
+
+        No headers are expected
+        Each line is expected to have the same format.
+        Scalars and vectors are separated by commas or semicolons.
+        Vector ELEMENTS are separated by whitespace.
+        The regular expressions are defined in the init function.
+        """
+
+        component_lists = []  # List of lists, each sub-list will be converted to a numpy array
+        header_list = []  # List of headers
+        initialized = False  #
+
+        for line in lines:
+            # Decode the line from bytes to string
+            decoded_line = line.decode(self.serialUI.encoding)
+
+            # Split into major components (scalars or vector groups)
+            components = self.vector_scalar_re.split(decoded_line)
+
+            if not initialized:
+                scalar_count=0
+                vector_count=0
+                # Initialize lists for each component
+                for idx, component in enumerate(components):
+                    component_lists.append([])
+                    # Check if the component is a scalar or vector
+                    values = component.strip().split()
+                    if len(values) == 1:
+                        scalar_count += 1
+                        header_list.append(f"S{scalar_count}")
+                    else:
+                        vector_count
+                        header_list.append(f"V{vector_count}")
+                initialized = True
+
+            for idx, component in enumerate(components):
+                # Split potential vectors by whitespace and convert to float
+                values = [float(value) for value in component.strip().split() if value]
+                component_lists[idx].append(values)
+
+        # Convert each component list to a numpy array
+        data_array_list = [np.array(component) for component in component_lists]
+
+        return data_array_list, header_list
+
 
     # Response Functions to User Interface Signals
     ########################################################################################
@@ -218,8 +349,15 @@ class QChartUI(QObject):
         
         tic = time.perf_counter()
         data = self.buffer.data
+        num_rows, num_cols = data.shape
 
         self.legend.clear()                          # Clear the existing legend
+
+        # Ensure there are enough data_line objects for each data column
+        while len(self.data_line) < num_cols - 1:
+            new_line_index = len(self.data_line)
+            new_line = self.chartWidget.plot([], [], pen=self.pen[new_line_index % len(self.pen)], name=str(new_line_index))
+            self.data_line.append(new_line)
 
         # where do we have valid data?
         have_data = ~np.isnan(data)
@@ -229,11 +367,10 @@ class QChartUI(QObject):
         min_y =  np.inf
         max_x = -np.inf
         min_x =  np.inf
-        for i in range(MAX_COLUMNS):                 # for each column
-            have_column_data = have_data[:,i+1] 
+        for i in range(num_cols-1):                  # for each column, except first column which is sample number
+            have_column_data = have_data[:,i+1]      
             x = data[have_column_data,0]             # extract the sample numbers
-            # y = data[have_column_data,i+1]/1000.     # ESP ADC calibrates the reading to mV
-            y = data[have_column_data,i+1]
+            y = data[have_column_data,i+1]           # extract the data
 
             # max and min of data
             if x.size > 0:                           # avoid empty numpy array
@@ -242,16 +379,13 @@ class QChartUI(QObject):
             if y.size > 0:                           # avoid empty numpy array
                 max_y = max([np.max(y), max_y])      # update max and min
                 min_y = min([np.min(y), min_y])
+            
             self.data_line[i].setData(x, y)          # update the plot
 
-            # update the plot name
-            if i < max_legends:
-                self.data_line[i].opts['name'] = self.legends[i]
-            else:
-                self.data_line[i].opts['name'] = str(i)
-
-            # update the legend
-            self.legend.addItem(self.data_line[i], self.data_line[i].opts['name']) # Re-add the items with updated names to the legend
+            # update the plot name and re-add the legend
+            plot_name = self.legends[i] if i < len(self.legends) else str(i)
+            self.data_line[i].opts['name'] = plot_name
+            self.legend.addItem(self.data_line[i], plot_name)
 
         # adjust range
         if min_x <= max_x:                           # we found valid data
@@ -265,81 +399,152 @@ class QChartUI(QObject):
     @pyqtSlot()
     def on_changeDataSeparator(self):
         ''' user wants to change the data separator '''
-        _tmp = self.ui.comboBoxDropDown_DataSeparator.currentText()
-        if _tmp == "comma (,)":
-            self.textDataSeparator = b','
-        elif _tmp == "semicolon (;)":
-            self.textDataSeparator = b';'
-        elif _tmp == "point (.)":
-            self.textDataSeparator = b'.'
-        elif _tmp == "space (\\s)":
-            self.textDataSeparator = b' '
-        elif _tmp == "tab (\\t)":
-            self.textDataSeparator = b'\t'
-        else:
-            self.textDataSeparator = b','            
-        self.logger.log(logging.INFO, "[{}]: Data separator {}".format(int(QThread.currentThreadId()), repr(self.textDataSeparator)))
+        self.textDataSeparator = self.ui.comboBoxDropDown_DataSeparator.currentText()
+        self.logger.log(logging.INFO, "[{}]: Data separator {}".format(int(QThread.currentThreadId()), self.textDataSeparator))
         self.ui.statusBar().showMessage('Data Separator changed.', 2000)            
 
     @pyqtSlot(list)
     def on_newLinesReceived(self, lines: list):
         """
-        Decode a received list of bytes lines and add data to the circular buffer
+        Decode a received list of bytes and add data to the circular buffer
         """
+
         tic = time.perf_counter()
-        # parse text into numbers, textDataSeparator is a byte string, filter removes empty strings and \n and \r
-        # the filter is necessary if data is lost during serial tranmission and a partial end of line is received
-        # data = [list(map(float, filter(None, line.split(self.textDataSeparator)))) for line in lines if not (b'\n' in line or b'\r' in line)]
-        parsed_data = []
-        legends = []
-        for line in lines:
-            if not (b'\n' in line or b'\r' in line):
-                items = line.split(self.textDataSeparator)
-                data_row, legend_row = [], []
-                for item in items:
-                    parts = item.split(b':')
-                    if len(parts) == 1:
-                        try:
-                            data_row.append(float(parts[0].strip()))
-                        except:
-                            self.logger.log(logging.DEBUG, "[{}]: Could not convert to float: {}".format(int(QThread.currentThreadId()), parts[0]))
-                    elif len(parts) == 2:
-                        legend, value = parts
-                        legend_row.append(legend.strip().decode(self.serialUI.encoding))
-                        try:
-                            data_row.append(float(value.strip()))
-                        except:
-                            self.logger.log(logging.DEBUG, "[{}]: Could not convert to float: {}".format(int(QThread.currentThreadId()), value))
+
+        if self.textDataSeparator == 'No Labels (simple)':
+            # Simple approach with no labels
+            # ------------------------------
+
+            # 1) Parse the data
+            data_array_list, header_list = self.parse_lines_simple(lines)
+    
+            # 2) Stack the data and convert to numpy array, add sample numbers
+            if data_array_list:
+                # 2a) Stack horizontally
+                data_array = np.hstack(data_array_list)
+
+                # 2b) Add sample numbers as first column
+                data_array_shape = data_array.shape
+                if len(data_array_shape) == 2:
+                    num_rows = data_array_shape[0]
+                    sample_numbers = np.arange(self.sample_number, self.sample_number + num_rows).reshape(-1, 1)
+                    self.sample_number += num_rows
+
+                    data_array = np.hstack([sample_numbers, data_array])
+                else:
+                    data_array = None
+            else:
+                data_array = None
+
+            # 3) Update headers
+            if header_list and data_array_list:
+                legends = []
+                for idx, array in enumerate(data_array_list):
+                    if array.ndim > 1:  # Ensure the array is multi-dimensional
+                        num_cols = array.shape[1]
                     else:
-                        # wrong separator
-                        self.logger.log(logging.DEBUG, "[{}]: Wrong separator in line: {}".format(int(QThread.currentThreadId()), line))
-                        self.ui.statusBar().showMessage('Change Data Separator!', 2000)
-                if data_row:   parsed_data.append(data_row)
-                if legend_row: legends.append(legend_row)
-        toc = time.perf_counter()
-        self.logger.log(logging.DEBUG, "[{}]: Lines to Data: took {} ms".format(int(QThread.currentThreadId()), 1000*(toc-tic))) # 200 microseconds
+                        num_cols = 1  # A 1D array is treated as having one column
 
-        try:
-            data_array = np.array(parsed_data, dtype=float)
-        except ValueError:
-            max_length = max(len(row) for row in parsed_data)
-            padded_data = [row + [np.nan] * (max_length - len(row)) for row in parsed_data]
-            data_array = np.array(padded_data, dtype=float)
+                    if num_cols > 1:
+                        header_labels = [f"{header_list[idx]}_{i+1}" for i in range(num_cols)]
+                        legends.extend(header_labels)
+                    else:
+                        legends.append(header_list[idx])  
+            else:
+                legends = []
+            
+            # have numpy data_array and list of legends
 
-        num_rows, num_cols = data_array.shape
-        sample_numbers = np.arange(self.sample_number, self.sample_number + num_rows).reshape(-1, 1)
-        self.sample_number += num_rows
-        right_pad = MAX_COLUMNS - num_cols
-        if right_pad > 0:
-            new_array = np.hstack([sample_numbers, data_array, np.full((num_rows, right_pad), np.nan)])
-        else:
-            new_array = np.hstack([sample_numbers, data_array[:, :MAX_COLUMNS]])
+        else: 
+            # Complicated approach with labels
+            # --------------------------------
 
-        self.buffer.push(new_array)
-        self.legends = legends[-1]
+            # 1) Parse the data
+            parsed_data = self.parse_lines(lines)
+            # takes about 0.35 ms for 10 lines of data
+
+            # 2) Padd the data
+            if self.textDataSeparator == 'No Labels (simple)':
+            #    Determine the maximum number of data entries for each header
+                header_analysis = defaultdict(lambda: {'count': 0, 'max_length': 0})
+                for entry in parsed_data:
+                    header = entry['header']
+                    length = len(entry['values'])
+                    header_analysis[header]['count'] += 1
+                    header_analysis[header]['max_length'] = max(header_analysis[header]['max_length'], length)
+                # no padding
+                padded_parsed_results = parsed_data
+            else:
+            #    Determine the maximum number of data entries for each header
+                header_analysis = defaultdict(lambda: {'count': 0, 'max_length': 0})
+                for entry in parsed_data:
+                    header = entry['header']
+                    length = len(entry['values'])
+                    header_analysis[header]['count'] += 1
+                    header_analysis[header]['max_length'] = max(header_analysis[header]['max_length'], length)
+
+                #    Find the maximum occurrence of any header
+                max_header_occurrence = max(details['count'] for details in header_analysis.values())
+
+                #    Pad the data to ensure all data the same length for each header
+                padded_parsed_results = []
+
+                for header, details in header_analysis.items():
+                    # Existing entries for each header
+                    existing_entries = [entry for entry in parsed_data if entry['header'] == header]
+                    for entry in existing_entries:
+                        max_length = details['max_length']
+                        padded_values = entry['values'] + [float('nan')] * (max_length - len(entry['values']))
+                        padded_parsed_results.append({'header': header, 'values': padded_values, 'length': max_length})
+
+                    # Padding for headers to match max occurrence
+                    padding_count = max_header_occurrence - details['count']
+                    max_length = details['max_length']
+                    padding_entry = {'header': header, 'values': [float('nan')] * max_length, 'length': max_length}
+                    padded_parsed_results.extend([padding_entry] * padding_count)
+
+            # takes about 0.175 ms for 10 lines of data
+
+            # 3) Convert the parsed data to a numpy array
+
+            data_array_list = []
+            legends = []
+
+            # Create numpy data array for each header
+            for header, details in header_analysis.items():
+                entries = [entry for entry in padded_parsed_results if entry['header'] == header]
+                num_cols = details['max_length']
+
+                # Prepare data for stacking
+                data = np.array([entry['values'] for entry in entries], dtype=float)
+                data_array_list.append(data)
+
+                # Stack headers
+                if num_cols > 1:
+                    header_labels = [f"{header}_{i+1}" for i in range(num_cols)]
+                    legends.extend(header_labels)
+                else:
+                    legends.append(header)  
+
+            # Stack horizontally
+            if data_array_list:
+                # Stack arrays
+                data_array = np.hstack(data_array_list)
+
+                # Add sample numbers as first column
+                data_array_shape = data_array.shape
+                if len(data_array_shape) == 2:
+                    num_rows, num_cols = data_array_shape
+                    sample_numbers = np.arange(self.sample_number, self.sample_number + num_rows).reshape(-1, 1)
+                    self.sample_number += num_rows
+
+                    data_array = np.hstack([sample_numbers, data_array])
+
+        self.buffer.push(data_array)
+        self.legends = legends
         
         toc = time.perf_counter()
-        self.logger.log(logging.DEBUG, "[{}]: {} Data points received: took {} ms".format(int(QThread.currentThreadId()), num_rows, 1000*(toc-tic)))
+        self.logger.log(logging.DEBUG, "[{}]: {} Data lines received: parsing took {} ms".format(int(QThread.currentThreadId()), num_rows, 1000*(toc-tic)))
         
     @pyqtSlot()
     def on_pushButton_StartStop(self):
@@ -369,7 +574,7 @@ class QChartUI(QObject):
             try:
                 self.serialWorker.linesReceived.disconnect(self.on_newLinesReceived)
             except:
-                self.logger.log(logging.WARNING, "[{}]: lines-received signal was not connected the chart".format(int(QThread.currentThreadId())))
+                self.logger.log(logging.WARNING, "[{}]: lines-received Signal was not connected the chart".format(int(QThread.currentThreadId())))
             self.logger.log(logging.INFO, "[{}]: Stopped plotting".format(int(QThread.currentThreadId())))
             self.ui.statusBar().showMessage('Chart update stopped.', 2000)            
 

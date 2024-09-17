@@ -4,10 +4,11 @@
 # ========================
 #
 # Provides serial interface to send and receive text to/from serial port.
-# Plots of data on up to 5 traces (changable) with zoom, save and clear.
+# Plots of data on chart with zoom, save and clear.
 #
 # This framework was setup to visualize signals at high data rates.
 # Its implemented in python and QT and can be adapted to users needs. 
+# I am currenlty working on option for displaying data in indicators and 3D vectors.
 # 
 # Urs Utzinger, 2022, 2023, 2024
 ################################################################################################
@@ -27,7 +28,7 @@ import os
 from datetime import datetime
 
 # Custom program specific imports
-from helpers.Qserial_helper     import QSerial, QSerialUI
+from helpers.Qserial_helper     import QSerial, QSerialUI, USBMonitorWorker
 from helpers.Qgraph_helper      import QChartUI, MAX_ROWS
 
 # Deal with high resolution displays
@@ -126,7 +127,7 @@ class mainWindow(QMainWindow):
         # ---------------------------------
         self.serialUI.changePortRequest.connect(            self.serialWorker.on_changePortRequest       ) # connect changing port
         self.serialUI.closePortRequest.connect(             self.serialWorker.on_closePortRequest        ) # connect close port
-        self.serialUI.changeBaudRequest.connect(            self.serialWorker.on_changeBaudRateRequest   ) # connect changing baudrate
+        self.serialUI.changeBaudRequest.connect(            self.serialWorker.on_changeBaudRequest       ) # connect changing baudrate
         self.serialUI.changeLineTerminationRequest.connect( self.serialWorker.on_changeLineTerminationRequest) # connect changing line termination
         self.serialUI.scanPortsRequest.connect(             self.serialWorker.on_scanPortsRequest        ) # connect request to scan ports
         self.serialUI.scanBaudRatesRequest.connect(         self.serialWorker.on_scanBaudRatesRequest    ) # connect request to scan baudrates
@@ -171,9 +172,10 @@ class mainWindow(QMainWindow):
         # User hit up/down arrow in serial lineEdit
         self.shortcutUpArrow   = QtWidgets.QShortcut(QtGui.QKeySequence.MoveToPreviousLine, self.ui.lineEdit_SerialText, self.serialUI.on_serialMonitorSendUpArrowPressed)
         self.shortcutDownArrow = QtWidgets.QShortcut(QtGui.QKeySequence.MoveToNextLine,     self.ui.lineEdit_SerialText, self.serialUI.on_serialMonitorSendDownArrowPressed)
-
+        # ESP reset radio button
+        self.ui.radioButton_ResetESPonOpen.clicked.connect( self.serialUI.on_resetESPonOpen               ) # Reset ESP32 on open
         # Done with Serial
-        self.logger.log(logging.INFO, "[{}]: serial initialized.".format(int(QThread.currentThreadId())))
+        self.logger.log(logging.INFO, "[{}]: Serial initialized.".format(int(QThread.currentThreadId())))
 
         #----------------------------------------------------------------------------------------------------------------------
         # Plotter
@@ -198,7 +200,7 @@ class mainWindow(QMainWindow):
         self.lineEdit_Zoom.returnPressed.connect( self.chartUI.on_HorizontalLineEditChanged )
 
         # Done with Plotter
-        self.logger.log(logging.INFO, "[{}]: plotter initialized.".format(int(QThread.currentThreadId())))
+        self.logger.log(logging.INFO, "[{}]: Plotter initialized.".format(int(QThread.currentThreadId())))
         
         #----------------------------------------------------------------------------------------------------------------------
         # Menu Bar
@@ -215,9 +217,28 @@ class mainWindow(QMainWindow):
         self.statusTimer.start(10000)  # Trigger every 10 seconds
 
         #----------------------------------------------------------------------------------------------------------------------
-        # Finish up
+        # Show UI
         #----------------------------------------------------------------------------------------------------------------------
         self.show() 
+
+
+        #----------------------------------------------------------------------------------------------------------------------
+        # Check for USB device connect/disconnect
+        #----------------------------------------------------------------------------------------------------------------------
+
+        self.usbThread = QThread()
+        self.usbWorker = USBMonitorWorker()
+        self.usbWorker.moveToThread(self.usbThread)
+        # Connect signals and slots
+        self.usbThread.started.connect(   self.usbWorker.run)
+        self.usbWorker.finished.connect(  self.usbThread.quit                       ) # if worker emits finished quite worker thread
+        self.usbWorker.finished.connect(  self.usbWorker.deleteLater                ) # delete worker at some time
+        self.usbThread.finished.connect(  self.usbThread.deleteLater                ) # delete thread at some time
+        self.usbWorker.usb_event_detected.connect(self.serialUI.on_usb_event_detected)
+        self.usbThread.started.connect(self.usbWorker.run)
+
+        # Start the USB monitor thread
+        self.usbThread.start()
 
     def on_tab_change(self, index):
         """
@@ -237,6 +258,9 @@ class mainWindow(QMainWindow):
             except:
                 pass
 
+    def handle_usbThread_finished(self):
+        self.logger.log(logging.INFO, "USB monitor thread finished.")
+
     def closeEvent(self, event):
         """
         Respond to window close event.
@@ -246,6 +270,11 @@ class mainWindow(QMainWindow):
         if self.serialWorker:
             if self.serialUI:
                 self.serialUI.finishWorkerRequest.emit()      # emit singal to finish worker
+
+                if self.usbWorker:                           # stop the USB monitor thread
+                    self.usbWorker.stop()
+                    self.usbThread.quit()
+
                 loop = QEventLoop()                           # create event loop
                 self.serialWorker.finished.connect(loop.quit) # connect the loop to finish signal
                 loop.exec_()                                  # wait until worker is finished
