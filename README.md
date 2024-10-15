@@ -10,9 +10,11 @@ One can zoom, save and clear this display.
 
 This framework has been optimized to visualize signals and text at high data rates.
 
-The display of data allows adjustments not available in the Arduino IDE Serial Plotter.
+The display of data allows adjustments not available in the Arduino IDE Serial Plotter. 
 
-Urs Utzinger
+Text in the serial terminal can be scrolled, saved and copied. Text in the display window is automatically trimmed.
+
+**Urs Utzinger**
 2022, 2023, 2024
 
 <img src="assets/SerialMonitor.png" alt="Serial Monitor" width="800"/>
@@ -28,16 +30,28 @@ Urs Utzinger
 - pip3 install wmi (for Windows)
 - pip3 install pyudev (for Linux)
 
-Linux:
+All the above in Linux terminal:
 ```
 pip3 install pyqt5 pyqtgraph pyopengl numpy pyserial markdown pyudev
 ```
-Windows:
+All the above in Windows terminal:
 ```
 pip3 install pyqt5 pyqtgraph pyopengl numpy pyserial markdown wmi
 ```
 
+PyQt5 on Windows expects that you have C Compiler and Windows SDK installed. Read the suggested solution in the error message if you get any.
+
 The main program is ```main_window.py```. It depends on the files in the ```assets``` and ```helper``` folder.
+
+## How to make Deskop Link for this Program
+### Linux
+Edit SerialUI.desktop to match the location of your files. Run the provided install.sh script.
+### Windows
+Create a deskopt short cut and point it to the Python executable.
+Then edit the short cut properties:
+- change the target to include the python executable followed by the python program main_window.py. Put quotation marks around the path to python executable and also around the lcoation of the main python program.
+- change the target folder to be the location of the main_window.py program.
+- change the icon to the file you can find in assets
 
 ## How to use this program
 
@@ -45,10 +59,16 @@ The main program is ```main_window.py```. It depends on the files in the ```asse
 
 - plug in your device and hit scan ports
 - select serial port
+- open the port
 - select the baud rate
 - select the line termination (\r\n is most common)
+- start text display 
 
 Line termination ```none``` displays text as it arrived from serial port but you can not display data in a chart.
+
+If you unplug the device while the serial port is open, the serial port status is stored. When you replug it, the program will attempt reconnecting to it.
+
+When you have ESP Reset option enabled, opening the serial port will conduct an ESP DTR and DSR reset sequence which should result in an ESP reboot similar to pushing the reset button.
 
 ### Use in Conjunction with Arduino IDE
 
@@ -105,6 +125,10 @@ To plot data with qtgraph. The system can plot up to 5 traces. When data is form
 
 The vertical axis is auto scaled based on currently visible data. 
 
+### Indicating data
+
+To display data in numeric fields ... Need to complete this section.
+
 ## Modules
 
 ### User Interface
@@ -125,7 +149,7 @@ The serial helpers uses 3 continuous timers. One to periodically check for new d
 
 The challenges in this code is how to run a driver in a separate thread and how to collate text so that processing and visualization can occur with high data rates. Using multithreading in pyQT does not release the Global Interpreter Lock and therefore might not result in performance increase or increased GUI responsiveness.
 
-### Plotter Helper
+### Graphing Helper
 
 The plotter helper provides a plotting interface using pyqtgraph. Data is plotted where the newest data is added on the right (chart) and the amount of data shown is selected through an adjustable slider. Vertical axis is auto scaled based on the data available in the buffer.
 
@@ -135,11 +159,19 @@ A timer is used to update the chart 10 times per second. Faster updating is not 
 
 Plotting occurs in the main thread as it needs to interact with the Graphical User Interface.
 
+### Indicator Helper
+
+The indicator helper provides an interface to display data in numeric text fields. I also provides ability to display vectors.
+
 ### Future: ADPCM or serialized data transfer
 
-Compressed data or serialized data reception is *```not implemented```* yet.
+Compressed data or serialized data reception is *```not implemented```* yet. 
 
-Data can be encoded on a microcontroller with a codec and decoded on the receiver. ADPCM is a lossy codec that uses little resources on microcontrollers. It would allow to transmit audio data at common baudrates with a compression factor of 4. For example 500k baud allows 50kBytes/second and with 16 bit audio and compression of 4 would allow stereo data transmission. 
+Serial port data transmission is limited: For example stereo audio sampled at 41kHz and 24 bits requires 2 Million baud.
+
+Data can be encoded on a microcontroller with a codec and decoded on the receiver. ADPCM is a lossy codec that uses little resources on microcontrollers. It would allow to transmit audio data at common baudrates (e.g. 500kBaud) with a compression factor of 4.
+
+To send multiple data fields in a binary format, one should serialize data frames using MessagePack. This allows sending packets of data in a simple structure.
 
 For internal reference:
 
@@ -147,4 +179,3 @@ For internal reference:
 - [Python Implementation Matt](https://github.com/mattleaverton/stream-audio-compression/)
 - [Python Implementation acida](https://github.com/acida/pyima)
 
-An alternative is to serialize data frames using MessagePack to send packets of data in a simple structure.
