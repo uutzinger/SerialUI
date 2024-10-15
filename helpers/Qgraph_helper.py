@@ -325,7 +325,13 @@ class QChartUI(QObject):
 
             for idx, component in enumerate(components):
                 # Split potential vectors by whitespace and convert to float
-                values = [float(value) for value in component.strip().split() if value]
+                # values = [float(value) for value in component.strip().split() if value]
+                values = []
+                for value in component.strip().split():
+                    try:
+                        values.append(float(value))
+                    except ValueError:
+                        continue
                 component_lists[idx].append(values)
 
         # Convert each component list to a numpy array

@@ -57,7 +57,6 @@ import time, logging
 from math import ceil
 from enum import Enum
 
-import pyudev
 import platform
     
 from PyQt5.QtCore    import QObject, QTimer, QThread, pyqtSignal, pyqtSlot, QStandardPaths
@@ -837,6 +836,7 @@ class USBMonitorWorker(QObject):
 
 
     def monitor_usb_windows(self):
+        import wmi
         c = wmi.WMI()
         creation_watcher = c.Win32_PnPEntity.watch_for(notification_type="Creation", delay_secs=1)
         removal_watcher  = c.Win32_PnPEntity.watch_for(notification_type="Deletion", delay_secs=1)

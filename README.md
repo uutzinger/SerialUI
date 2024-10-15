@@ -25,6 +25,17 @@ Urs Utzinger
 - pip3 install numpy (BSD license)
 - pip3 install pyserial (Python Software Foundation License)
 - pip3 install markdown (BSD license)
+- pip3 install wmi (for Windows)
+- pip3 install pyudev (for Linux)
+
+Linux:
+```
+pip3 install pyqt5 pyqtgraph pyopengl numpy pyserial markdown pyudev
+```
+Windows:
+```
+pip3 install pyqt5 pyqtgraph pyopengl numpy pyserial markdown wmi
+```
 
 The main program is ```main_window.py```. It depends on the files in the ```assets``` and ```helper``` folder.
 
