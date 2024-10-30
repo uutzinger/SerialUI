@@ -20,7 +20,7 @@
             <double>0.990000000000000</double>
         </property>
         <property name="statusTip">
-            <string>University of Arizona.</string>
+            <string>Serial User Interface.</string>
         </property>
         <property name="whatsThis">
             <string>Camera GUI</string>
@@ -135,6 +135,7 @@
                         </property>
                         <property name="font">
                             <font>
+                                <family>Fira Mono</family>
                                 <pointsize>8</pointsize>
                                 <kerning>false</kerning>
                             </font>
@@ -167,6 +168,12 @@
                                 <height>441</height>
                             </rect>
                         </property>
+                        <property name="font">
+                            <font>
+                                <family>Fira Mono</family>
+                                <pointsize>9</pointsize>
+                            </font>
+                        </property>
                     </widget>
                 </widget>
                 <widget class="QWidget" name="SerialPlotter">
@@ -176,9 +183,9 @@
                     <widget class="QGroupBox" name="groupBox">
                         <property name="geometry">
                             <rect>
-                                <x>560</x>
+                                <x>600</x>
                                 <y>490</y>
-                                <width>621</width>
+                                <width>580</width>
                                 <height>51</height>
                             </rect>
                         </property>
@@ -201,9 +208,9 @@
                         <widget class="QLineEdit" name="lineEdit_Horizontal">
                             <property name="geometry">
                                 <rect>
-                                    <x>550</x>
+                                    <x>529</x>
                                     <y>15</y>
-                                    <width>61</width>
+                                    <width>45</width>
                                     <height>31</height>
                                 </rect>
                             </property>
@@ -221,6 +228,7 @@
                                 <string>Horizontal</string>
                             </property>
                         </widget>
+
                     </widget>
                     <widget class="QPushButton" name="pushButton_ChartStartStop">
                         <property name="geometry">
@@ -286,10 +294,44 @@
                             <string>Save</string>
                         </property>
                     </widget>
+                    <widget class="QLabel" name="label_NumColumns">
+                        <property name="geometry">
+                            <rect>
+                                <x>467</x>
+                                <y>500</y>
+                                <width>40</width>
+                                <height>31</height>
+                            </rect>
+                        </property>
+                        <property name="font">
+                            <font>
+                                <pointsize>9</pointsize>
+                            </font>
+                        </property>
+                        <property name="text">
+                            <string>Inputs</string>
+                        </property>
+                    </widget>
+                    <widget class="QSpinBox" name="spinBox_NumColumns">
+                        <property name="geometry">
+                            <rect>
+                                <x>505</x>
+                                <y>500</y>
+                                <width>25</width>
+                                <height>31</height>
+                            </rect>
+                        </property>
+                        <property name="minimum">
+                            <number>1</number>
+                        </property>
+                        <property name="value">
+                            <number>2</number>
+                        </property>
+                    </widget>
                     <widget class="QComboBox" name="comboBoxDropDown_DataSeparator">
                         <property name="geometry">
                             <rect>
-                                <x>380</x>
+                                <x>370</x>
                                 <y>500</y>
                                 <width>81</width>
                                 <height>31</height>

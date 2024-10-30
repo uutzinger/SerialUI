@@ -1,10 +1,10 @@
+
 ############################################################################################
 # QT Indicator Helper
 ############################################################################################
 # Summer 2024: created
-# ------------------------------------------------------------------------------------------
-# Urs Utzinger
-# University of Arizona 2024
+#
+# This code is maintained by Urs Utzinger
 ############################################################################################
 
 # NOT FINISHED
@@ -16,17 +16,30 @@
 
 # CHECK FIX THIS
 
-############################################################################################
-# Helpful readings:
-# ------------------------------------------------------------------------------------------
-#
-############################################################################################
-
 import logging, time
 
-from PyQt5.QtCore import QObject, QTimer, QThread, pyqtSlot, QStandardPaths, QSettings, pyqtSignal
-from PyQt5.QtWidgets import QFileDialog, QLineEdit, QSlider, QTabWidget, QGraphicsView, QVBoxLayout, QWidget, QPushButton
-from PyQt5.QtGui import QBrush, QColor, QIcon, QVector3D
+try:
+    from PyQt5.QtCore import (
+        QObject, QTimer, QThread, pyqtSlot, 
+        QStandardPaths, QSettings, pyqtSignal
+    )
+    from PyQt5.QtWidgets import (
+        QFileDialog, QLineEdit, QSlider, QTabWidget, 
+        QGraphicsView, QVBoxLayout, QWidget, QPushButton
+    )
+    from PyQt5.QtGui import QBrush, QColor, QIcon, QVector3D
+    hasQt6 = True
+except:
+    from PyQt5.QtCore import(
+        QObject, QTimer, QThread, pyqtSlot, 
+        QStandardPaths, QSettings, pyqtSignal
+    )
+    from PyQt5.QtWidgets import (
+        QFileDialog, QLineEdit, QSlider, QTabWidget, 
+        QGraphicsView, QVBoxLayout, QWidget, QPushButton
+    )
+    from PyQt5.QtGui import QBrush, QColor, QIcon, QVector3D
+    hasQt6 = False
 
 # QT Graphing for 3D display
 import pyqtgraph as pg
@@ -37,8 +50,11 @@ import numpy as np
 
 # Constants
 ########################################################################################
-UPDATE_INTERVAL =   100 # milliseconds, visualization does not improve with updates faster than 10 Hz
-COLORS = ['green', 'red', 'blue', 'black', 'magenta'] # need to have MAX_COLUMNS colors
+UPDATE_INTERVAL = 100 # milliseconds, visualization does not improve with updates faster than 10 Hz
+# Colors for graphing
+from helpers.Qgraph_colors import color_names_sweet16 as COLORS
+
+# COLORS = ['green', 'red', 'blue', 'black', 'magenta'] # need to have MAX_COLUMNS colors
 # https://i.sstatic.net/lFZum.png
 
 # Support Functions and Classes

@@ -1562,27 +1562,12 @@
               </property>
               <item>
                <property name="text">
-                <string>comma (,)</string>
+                <string>No Labels (simple)</string>
                </property>
               </item>
               <item>
                <property name="text">
-                <string>semicolon (;)</string>
-               </property>
-              </item>
-              <item>
-               <property name="text">
-                <string>point (.)</string>
-               </property>
-              </item>
-              <item>
-               <property name="text">
-                <string>space (\s)</string>
-               </property>
-              </item>
-              <item>
-               <property name="text">
-                <string>tab (\t)</string>
+                <string>With [Label:]</string>
                </property>
               </item>
              </widget>
