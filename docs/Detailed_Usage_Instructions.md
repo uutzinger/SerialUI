@@ -78,14 +78,8 @@ Includes three classes:
 Uses pyqtgraph for plotting. Data is stored in a circular buffer, and plotting occurs in the main thread.
 
 ### Indicator Helper
-The indicator helper provides an interface to display data in numeric text fields. I also provides ability to display vectors.
+The indicator helper provides an interface to display data in numeric text fields. I also provides ability to display vectors. This is incomplete.
 
-### Future Enhancements
-- ADPCM or serialized data transfer for compressed data reception.
-
-#### References
-- [ADPCM](https://github.com/pschatzmann/adpcm)
-- [Python Implementation Matt](https://github.com/mattleaverton/stream-audio-compression/)
-- [Python Implementation acida](https://github.com/acida/pyima)
-- [MessagePack](https://msgpack.org/)
+### Current Developlment
+- Binary data transmission including ADPCM, zlib, tamp for compressed data reception.
 
