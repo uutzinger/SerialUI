@@ -4,11 +4,12 @@
   This file contains the data generation function for an agricultural monitoring system scenario.
 */
 
-int agriMessageId = 0;
+#include "src/RingBuffer.h"
+extern RingBuffer dataBuffer;
+extern char data[1024];
 
 void generateAgriculturalMonitoringData()
 {
-  agriMessageId++;
 
   float soilMoisture = random(200, 800) / 10.0;          // Soil moisture in percentage
   float soilTemperature = random(100, 350) / 10.0;       // Soil temperature in Celsius
@@ -21,12 +22,10 @@ void generateAgriculturalMonitoringData()
   float windSpeed = random(0, 200) / 10.0;               // Wind speed in m/s
   float rssi = random(-90, -30);                         // RSSI value
 
-  Serial.print("SoilMoisture:" + String(soilMoisture) + ",SoilTemperature:" + String(soilTemperature) + ",");
-  Serial.print("AirTemperature:" + String(airTemperature) + ",AirHumidity:" + String(airHumidity) + ",LightIntensity:" + String(lightIntensity) + ",");
-  Serial.print("PHLevel:" + String(pHLevel) + ",LeafWetness:" + String(leafWetness) + ",CO2Level:" + String(co2Level) + ",WindSpeed:" + String(windSpeed) + ",RSSI:" + String(rssi) + "\n");
+  sprintf(data,"SoilMoisture: %f, SoilTemperature: %f, AirTemperature: %f,AirHumidity: %f,LightIntensity: %f, PHLevel: %f, LeafWetness: %d, CO2Level: %f, WindSpeed: %f,RSSI: %f\n", 
+          soilMoisture, soilTemperature, airTemperature, airHumidity,lightIntensity,pHLevel,leafWetness,co2Level,windSpeed,rssi);
 
-  if (agriMessageId > 1000)
-  {
-    agriMessageId = 0;
-  }
+  size_t ret = dataBuffer.push(data, sizeof(data), false);
+  if (ret == 0) { Serial.println("Ring buffer overflow"); }
+
 }

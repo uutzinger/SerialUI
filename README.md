@@ -1,8 +1,11 @@
 # Graphical User Interface for Serial Communication
 ![Serial Monitor](assets/serial_96.png)
+![BLE Serial Monitor](assets/BLE_96.png)
 
 ## Description
-SerialUI provides a graphical interface to send and receive text from the serial port, including a serial plotter for displaying numerical data. It optimizes high data rate visualization of signals and text, offering features beyond the Arduino IDE Serial Plotter.
+**SerialUI** provides a graphical interface to send and receive text from the serial port, including a serial plotter for displaying numerical data. It optimizes high data rate visualization of signals and text, offering features beyond the Arduino IDE Serial Plotter.
+
+**BLE_SerialUI** is equivalent to SerialUI but uses the Nordic Serial UART on a BLE connection.
 
 <img src="docs/SerialMonitor.png" alt="Serial Monitor" width="600"/>
 <img src="docs/SerialPlotter.png" alt="Serial Plotter" width="600"/>
@@ -20,9 +23,9 @@ SerialUI provides a graphical interface to send and receive text from the serial
 - *One liner Linux:* 
     - `pip3 install pyqt5 pyqtgraph numpy pyserial markdown pyudev`
 
-Installation of PyQt5/6 on has its own dependencies. If it fails, read the suggested solution in the error message.
+Installation of PyQt5/6 has its own dependencies. If it fails, read the suggested solution in the error messages.
 
-The main program is `SerialUI.py`, uses files in the `assets` and `helper` folders.
+The main programs are `SerialUI.py` and `BLESerialUI.py`, which use files in the `assets` and `helper` folders.
 
 ## How to Use This Program
 
@@ -51,7 +54,7 @@ The main program is `SerialUI.py`, uses files in the `assets` and `helper` folde
 7. Save and clear plotted data.
 
 ### Indicating data
-To display data in numeric fields ... Feature not completed yet.
+To display data in numeric fields ... Feature not implemented yet.
 
 ## More detailed usage instructions
 [Usage instructions](docs/Detailed_Usage_Instructions.md).

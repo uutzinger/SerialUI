@@ -17,7 +17,7 @@
 
 USE3DPLOT = False
 
-# QT imports
+# QT imports, QT5 or QT6
 try:
     from PyQt6 import QtCore, QtWidgets, QtGui, uic
     from PyQt6.QtCore import QThread, QTimer, QEventLoop
@@ -57,9 +57,14 @@ if not hasQt6:
     if hasattr(QtCore.Qt.ApplicationAttribute, "AA_UseHighDpiPixmaps"):
         QtWidgets.QApplication.setAttribute(QtCore.Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)
 
-###########################################################################################
-# Main Window
-###########################################################################################
+#############################################################################################################################################
+#############################################################################################################################################
+#
+#    Main Window
+#    This is the Viewer  of the Model - View - Controller (MVC) architecture.
+#
+#############################################################################################################################################
+#############################################################################################################################################
 
 class mainWindow(QMainWindow):
     """
@@ -90,7 +95,7 @@ class mainWindow(QMainWindow):
         # ----------------------------------------------------------------------------------------------------------------------
         # User Interface
         # ----------------------------------------------------------------------------------------------------------------------
-        self.ui = uic.loadUi("assets/mainWindow.ui", self)
+        self.ui = uic.loadUi("assets/serialUI.ui", self)
         icon_path = os.path.join(main_dir, "assets", "serial_48.png")
         window_icon = QIcon(icon_path)
         self.setWindowIcon(QIcon(window_icon))
@@ -265,7 +270,7 @@ class mainWindow(QMainWindow):
         Respond to tab change event
         """
         tab_name = self.tabs.tabText(index)
-        if tab_name == "Serial Monitor":
+        if tab_name == "Monitor":
             self.ui.plainTextEdit_SerialTextDisplay.verticalScrollBar().setValue(self.ui.plainTextEdit_SerialTextDisplay.verticalScrollBar().maximum())
             self.ui.plainTextEdit_SerialTextDisplay.ensureCursorVisible()
         elif tab_name == "Plotter":

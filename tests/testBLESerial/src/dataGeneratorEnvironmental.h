@@ -4,12 +4,12 @@
   This file contains the data generation function for an environmental monitoring scenario.
 */
 
-int envMessageId = 0;
+#include "src/RingBuffer.h"
+extern RingBuffer dataBuffer;
+extern char data[1024];
 
 void generateEnvironmentalData()
 {
-  envMessageId++;
-
   float tempSensor1 = random(200, 300) / 10.0;       // Temperature sensor 1
   float tempSensor2 = random(150, 250) / 10.0;       // Temperature sensor 2
   float humiditySensor = random(300, 800) / 10.0;    // Humidity sensor
@@ -20,12 +20,15 @@ void generateEnvironmentalData()
   float noiseLevel = random(30, 100);                // Noise level in dB
   float rssi = random(-90, -30);                     // RSSI value
 
-  Serial.print("TempSensor1:" + String(tempSensor1) + ",TempSensor2:" + String(tempSensor2) + ",");
-  Serial.print("HumiditySensor:" + String(humiditySensor) + ",PressureSensor:" + String(pressureSensor) + ",LightSensor:" + String(lightSensor) + ",");
-  Serial.print("CO2Sensor:" + String(co2Sensor) + ",AirQualityIndex:" + String(airQualityIndex) + ",NoiseLevel:" + String(noiseLevel) + ",RSSI:" + String(rssi) + "\n");
+  char* ptr = data;
 
-  if (envMessageId > 1000)
-  {
-    envMessageId = 0;
+  ptr += sprintf(ptr, "TempSensor1:%.1f,TempSensor2:%.1f,", tempSensor1, tempSensor2);
+  ptr += sprintf(ptr, "HumiditySensor:%.1f,PressureSensor:%.1f,LightSensor:%.1f,", humiditySensor, pressureSensor, lightSensor);
+  ptr += sprintf(ptr, "CO2Sensor:%d,AirQualityIndex:%.1f,NoiseLevel:%.1f,", co2Sensor, airQualityIndex, noiseLevel);
+  ptr += sprintf(ptr, "RSSI:%.1f\n", rssi);
+
+  size_t ret = dataBuffer.push(data, sizeof(data), false);
+  if (ret == 0) {
+    Serial.println("Ring buffer overflow");
   }
 }

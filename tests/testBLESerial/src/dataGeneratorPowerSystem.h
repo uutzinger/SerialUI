@@ -4,12 +4,12 @@
   This file contains the data generation function for a power monitoring scenario.
 */
 
-int powerMessageId = 0;
+#include "src/RingBuffer.h"
+extern RingBuffer dataBuffer;
+extern char data[1024];
 
 void generatePowerSystemData()
 {
-  powerMessageId++;
-
   float voltageSensor = random(300, 500) / 10.0;                // Voltage sensor
   float currentSensor = random(100, 200) / 10.0;                // Current sensor
   float powerSensor = voltageSensor * currentSensor;            // Power sensor
@@ -18,12 +18,14 @@ void generatePowerSystemData()
   float temperatureBattery = random(200, 450) / 10.0;           // Battery temperature
   float rssi = random(-90, -30);                                // RSSI value
 
-  Serial.print("VoltageSensor:" + String(voltageSensor) + ",CurrentSensor:" + String(currentSensor) + ",");
-  Serial.print("PowerSensor:" + String(powerSensor) + ",EnergySensor:" + String(energySensor) + ",BatteryLevel:" + String(batteryLevel) + ",");
-  Serial.print("TemperatureBattery:" + String(temperatureBattery) + ",RSSI:" + String(rssi) + "\n");
+  char* ptr = data;
 
-  if (powerMessageId > 1000)
-  {
-    powerMessageId = 0;
+  ptr += sprintf(ptr, "VoltageSensor:%.1f,CurrentSensor:%.1f,", voltageSensor, currentSensor);
+  ptr += sprintf(ptr, "PowerSensor:%.1f,EnergySensor:%.1f,BatteryLevel:%.1f,", powerSensor, energySensor, batteryLevel);
+  ptr += sprintf(ptr, "TemperatureBattery:%.1f,RSSI:%.1f\n", temperatureBattery, rssi);
+
+  size_t ret = dataBuffer.push(data, sizeof(data), false);
+  if (ret == 0) {
+    Serial.println("Ring buffer overflow");
   }
 }

@@ -73,7 +73,7 @@
         <height>12</height>
        </size>
       </property>
-      <widget class="QWidget" name="SerialMonitor">
+      <widget class="QWidget" name="Monitor">
        <property name="sizePolicy">
         <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
          <horstretch>1</horstretch>
@@ -86,7 +86,7 @@
         </font>
        </property>
        <attribute name="title">
-        <string>Serial Monitor</string>
+        <string>Monitor</string>
        </attribute>
        <layout class="QVBoxLayout" name="verticalLayout_Monitor" stretch="0,1,0">
         <item>
@@ -279,7 +279,7 @@
         </item>
        </layout>
       </widget>
-      <widget class="QWidget" name="SerialPlotter">
+      <widget class="QWidget" name="Plotter">
        <property name="sizePolicy">
         <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
          <horstretch>1</horstretch>
@@ -444,6 +444,11 @@
                   <string>With [Label:]</string>
                  </property>
                 </item>
+                <item>
+                 <property name="text">
+                  <string>Binary</string>
+                 </property>
+                </item>
                </widget>
               </item>
              </layout>
@@ -567,7 +572,7 @@
         </item>
        </layout>
       </widget>
-      <widget class="QWidget" name="SerialIndicator">
+      <widget class="QWidget" name="Indicator">
        <property name="sizePolicy">
         <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
          <horstretch>1</horstretch>
@@ -1570,6 +1575,11 @@
                 <string>With [Label:]</string>
                </property>
               </item>
+              <item>
+               <property name="text">
+                <string>Binary</string>
+               </property>
+              </item>
              </widget>
             </item>
            </layout>
@@ -1762,7 +1772,7 @@
              </font>
             </property>
             <property name="text">
-             <string>Line Termination</string>
+             <string>End of Line</string>
             </property>
            </widget>
           </item>

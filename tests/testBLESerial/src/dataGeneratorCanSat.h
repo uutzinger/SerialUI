@@ -4,12 +4,13 @@
   This file contains the data generation function for the CanSat scenario: https://github.com/charles-the-forth/data-generator
 */
 
-int messageId = 0;
+
+#include "src/RingBuffer.h"
+extern RingBuffer dataBuffer;
+extern char data[1024];
 
 void generateCanSatData()
 {
-  messageId++;
-
   uint32_t lightIntensity = random(1000, 5000);
   float uvIndex = random(10, 25) / 10.0;
   float temperatureCanSat = random(239, 256) / 10.0;
@@ -63,22 +64,34 @@ void generateCanSatData()
   float v = random(10, 500) / 10.0;
   float w = random(10, 500) / 10.0;
 
-  Serial.print("LightIntensity:" + String(lightIntensity) + ",UVIndex:" + String(uvIndex) + ",");
-  Serial.print("TemperatureCanSat:" + String(temperatureCanSat) + ",TemperatureMPU:" + String(temperatureMPU) + ",TemperatureExternal:" + String(temperatureExternal) + ",");
-  Serial.print("TemperatureSCD30:" + String(temperatureSCD30) + ",AmbientTemp:" + String(ambientTemp) + ",ObjectTemp:" + String(objectTemp) + ",");
-  Serial.print("HumidityCanSat:" + String(humidityCanSat) + ",HumidityExternal:" + String(humidityExternal) + ",HumiditySCD30:" + String(humiditySCD30) + ",");
-  Serial.print("PressureCanSat:" + String(pressureCanSat) + ",PressureExternal:" + String(pressureExternal) + ",AltitudeCanSat:" + String(altitudeCanSat) + ",");
-  Serial.print("AltitudeExternal:" + String(altitudeExternal) + ",AccelerationX:" + String(accelerationX) + ",AccelerationY:" + String(accelerationY) + ",");
-  Serial.print("AccelerationZ:" + String(accelerationZ) + ",RotationX:" + String(rotationX) + ",RotationY:" + String(rotationY) + ",");
-  Serial.print("RotationZ:" + String(rotationZ) + ",MagnetometerX:" + String(magnetometerX) + ",MagnetometerY:" + String(magnetometerY) + ",");
-  Serial.print("MagnetometerZ:" + String(magnetometerZ) + ",LatInt:" + String(latInt) + ",LonInt:" + String(lonInt) + ",");
-  Serial.print("LatAfterDot:" + String(latAfterDot) + ",LonAfterDot:" + String(lonAfterDot) + ",CO2SCD30:" + String(co2SCD30) + ",CO2CCS811:" + String(co2CCS811) + ",");
-  Serial.print("TVOC:" + String(tvoc) + ",O2Concentration:" + String(o2Concentration) + ",");
-  Serial.print("A:" + String(a) + ",B:" + String(b) + ",C:" + String(c) + ",D:" + String(d) + ",E:" + String(e) + ",F:" + String(f) + ",G:" + String(g) + ",H:" + String(h) + ",I:" + String(i) + ",J:" + String(j) + ",K:" + String(k) + ",L:" + String(l) + ",R:" + String(r) + ",S:" + String(s) + ",T:" + String(t) + ",U:" + String(u) + ",V:" + String(v) + ",W:" + String(w) + ",");
-  Serial.println("NumberOfSatellites:" + String(numberOfSatellites) + ",RSSI:" + String(rssi));
+  char* ptr = data;
 
-  if (messageId > 1000)
-  {
-    messageId = 0;
+  ptr += sprintf(ptr, "LightIntensity:%lu,UVIndex:%.1f,", 
+                  lightIntensity, uvIndex);
+  ptr += sprintf(ptr, "TemperatureCanSat:%.1f,TemperatureMPU:%.1f,TemperatureExternal:%.1f,TemperatureSCD30:%.1f,AmbientTemp:%.1f,ObjectTemp:%.1f,", 
+                  temperatureCanSat, temperatureMPU, temperatureExternal, temperatureSCD30, ambientTemp, objectTemp);
+  ptr += sprintf(ptr, "HumidityCanSat:%.1f,HumidityExternal:%.1f,HumiditySCD30:%.1f,PressureCanSat:%.1f,", 
+                  humidityCanSat, humidityExternal, humiditySCD30, pressureCanSat);
+  ptr += sprintf(ptr, "PressureExternal:%.1f,AltitudeCanSat:%.1f,AltitudeExternal:%.1f,", 
+                  pressureExternal, altitudeCanSat, altitudeExternal);
+  ptr += sprintf(ptr, "AccelerationX:%.1f,AccelerationY:%.1f,AccelerationZ:%.1f,", 
+                  accelerationX, accelerationY, accelerationZ);
+  ptr += sprintf(ptr, "RotationX:%.1f,RotationY:%.1f,RotationZ:%.1f,MagnetometerX:%.1f,", 
+                  rotationX, rotationY, rotationZ, magnetometerX);
+  ptr += sprintf(ptr, "MagnetometerY:%.1f,MagnetometerZ:%.1f,LatInt:%u,LonInt:%u,", 
+                  magnetometerY, magnetometerZ, latInt, lonInt);
+  ptr += sprintf(ptr, "LatAfterDot:%lu,LonAfterDot:%lu,CO2SCD30:%d,CO2CCS811:%d,", 
+                  latAfterDot, lonAfterDot, co2SCD30, co2CCS811);
+  ptr += sprintf(ptr, "TVOC:%d,O2Concentration:%.1f,A:%.1f,B:%.1f,C:%.1f,D:%.1f,", 
+                  tvoc, o2Concentration, a, b, c, d);
+  ptr += sprintf(ptr, "E:%.1f,F:%.1f,G:%.1f,H:%.1f,I:%.1f,J:%.1f,K:%.1f,L:%.1f,", 
+                  e, f, g, h, i, j, k, l);
+  ptr += sprintf(ptr, "R:%.1f,S:%.1f,T:%.1f,U:%.1f,V:%.1f,W:%.1f,", 
+                  r, s, t, u, v, w);
+  ptr += sprintf(ptr, "NumberOfSatellites:%u,RSSI:%d", numberOfSatellites, rssi);
+
+  size_t ret = dataBuffer.push(data, sizeof(data), false);
+  if (ret == 0) {
+    Serial.println("Ring buffer overflow");
   }
 }

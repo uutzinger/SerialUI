@@ -24,8 +24,7 @@ try:
     )
     from PyQt6.QtWidgets import (
         QFileDialog, QLineEdit, QSlider,QTabWidget,
-        QGraphicsView,QHBoxLayout, QVBoxLayout,
-        QComboBox, QLabel, QSpinBox,
+        QGraphicsView,QVBoxLayout
     )
     from PyQt6.QtGui import QBrush, QColor
     hasQt6 = True
@@ -36,9 +35,7 @@ except:
     )
     from PyQt5.QtWidgets import (
         QFileDialog, QLineEdit, QSlider,
-        QTabWidget, QGraphicsView, QHBoxLayout,
-        QVBoxLayout, QComboBox, QLabel,
-        QSpinBox,
+        QTabWidget, QGraphicsView, QVBoxLayout,
     )
     from PyQt5.QtGui import QBrush, QColor
     hasQt6 = False
@@ -459,7 +456,6 @@ class QChartUI(QObject):
             self.chartWidget.setXRange(max_x - self.maxPoints, max_x)  # set the horizontal range
         if min_y <= max_y:
             self.chartWidget.setYRange(min_y, max_y)  # set the vertical range
-        The regular expressions are defined in the init function.
 
         toc = time.perf_counter()
         self.logger.log(
@@ -535,7 +531,7 @@ class QChartUI(QObject):
             parsed_data = self.parse_lines(lines)
             # takes about 0.35 ms for 10 lines of data
 
-            # 2) Padd the data
+            # 2) Pad the data
             if self.textDataSeparator == 'No Labels (simple)':
             #    Determine the maximum number of data entries for each header
                 header_analysis = defaultdict(lambda: {'count': 0, 'max_length': 0})

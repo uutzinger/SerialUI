@@ -1,62 +1,43 @@
 ############################################################################################
-# QT Serial Helper
+# QT BLE Serial UART Helper
 ############################################################################################
-# July 2022: initial work
-# December 2023: implemented line reading
-# Summer 2024: 
-#   fixes and improvements
-#   added pyqt6 support
-# Fall 2024
-#   reconnect when same device is removed and then reinserted into USB port
+# November 2024: initial work
 #
 # This code is maintained by Urs Utzinger
 ############################################################################################
 
 ############################################################################################
 # This code has 3 sections
-# QSerialUI: Interface to GUI, runs in main thread.
-# QSerial:   Functions running in separate thread, communication through signals and slots.
-# PSerial:   Low level interaction with serial ports, called from QSerial.
+# QBLESerialUI: Interface to GUI, runs in main thread.
+# QBLESerial:   Functions running in separate thread, communication through signals and slots.
 ############################################################################################
 
-from serial import Serial as sp
-from serial import SerialException, EIGHTBITS, PARITY_NONE, STOPBITS_ONE
-from serial.tools import list_ports 
+import sys
+import os
+import asyncio
+from qasync import QEventLoop, asyncSlot  # Library to integrate asyncio with Qt
+from bleak import BleakClient, BleakScanner, BleakError 
+from bleak.backends.characteristic import BleakGATTCharacteristic
 
 import time, logging
 from math import ceil
 from enum import Enum
-import platform
 
 try: 
-    from PyQt6.QtCore import (
-        QObject, QTimer, QThread, pyqtSignal, pyqtSlot, QStandardPaths
+    from PyQt6.QtWidgets import (
+        QApplication, QMainWindow, QPushButton, QTextEdit, QVBoxLayout, QWidget
     )
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtGui import QTextCursor
-    from PyQt6.QtWidgets import QFileDialog
+    from PyQt6.QtCore import pyqtSignal, QObject
     hasQt6 = True
 except:
-    from PyQt5.QtCore import (
-        QObject, QTimer, QThread, pyqtSignal, pyqtSlot, QStandardPaths
+    from PyQt5.QtWidgets import (
+        QApplication, QMainWindow, QPushButton, QTextEdit, QVBoxLayout, QWidget
     )
-    from PyQt5.QtCore import Qt
-    from PyQt5.QtGui import QTextCursor
-    from PyQt5.QtWidgets import QFileDialog
+    from PyQt5.QtCore import pyqtSignal, QObject
     hasQt6 = False
-
-########################################################################################
-# Debug
-DEBUGSERIAL = False  # enable/disable low level serial debugging
-# try:
-#     import debugpy
-#     DEBUGPY_ENABLED = True
-# except ImportError:
-#     DEBUGPY_ENABLED = False
 
 # Constants
 ########################################################################################
-DEFAULT_BAUDRATE       = 500000      # default baud rate for serial port
 MAX_TEXTBROWSER_LENGTH = 1024 * 1024 # display window character length is trimmed to this length
                                      # lesser value results in better performance
 MAX_LINE_LENGTH        = 1024        # number of characters after which an end of line characters is expected
@@ -67,39 +48,29 @@ NUM_LINES_COLLATE      = 10          # [lines] estimated number of lines to coll
 MAX_RECEIVER_INTERVAL  = 100         # [ms]
 MIN_RECEIVER_INTERVAL  = 5           # [ms]
 
-class SerialReceiverState(Enum):
-    """
-    When data is expected on the serial input we use a QT timer to read line by line.
-    When no data is expected we are in stopped state
-    When data is expected but has not yet arrived we are in awaiting state
-    When data has arrived and there might be more data arriving we are in receiving state
-    """
-
-    stopped         = 0
-    awaitingData    = 1
-    receivingData   = 2
+# UUIDs for the UART service and characteristics
+SERVICE_UUID           = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+RX_CHARACTERISTIC_UUID = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
+TX_CHARACTERISTIC_UUID = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
+BLETIMEOUT             = 10  # Timeout for BLE operations
+BLEMTU                 = 185  # Maximum Transmission Unit for BLE
 
 
-##########################################################################################################################################        
-##########################################################################################################################################        
-#
-# QSerial interaction with Graphical User Interface
+############################################################################################
+# QBLESerial interaction with Graphical User Interface
 # This section contains routines that can not be moved to a separate thread
 # because it interacts with the QT User Interface.
-# The Serial Worker is in a separate thread and receives data through signals from this class
+# The BLE Serial UARTWorker is in a separate thread and receives data through signals from this class
 #
-# Receiving from serial port is bytes or a list of bytes
-# Sending to serial port is bytes or list of bytes
-# We need to encode/decode received/sent text in QSerialUI
-#
-#    This is the Controller (Presenter)  of the Model - View - Controller (MVC) architecture.
-#
-##########################################################################################################################################        
-##########################################################################################################################################        
+# Receiving from Serial UART port is bytes or a list of bytes
+# Sending to Serial UART port is bytes or list of bytes
+# We need to encode/decode received/sent text in QBLESerialUI
+############################################################################################
 
-class QSerialUI(QObject):
+
+class QBLESerialUI(QObject):
     """
-    Serial Interface for QT
+    BLE Serial UART Interface for QT
 
     Signals (to be emitted by UI)
         scanPortsRequest                 request that QSerial is scanning for ports
@@ -982,6 +953,23 @@ class QSerialUI(QObject):
         current_text = self.ui.plainTextEdit_SerialTextDisplay.toPlainText()
         len_current_text = len(current_text)
         numCharstoTrim = len_current_text - MAX_TEXTBROWSER_LENGTH
+        if numCharstoTrim > 0:
+            # Select the text to remove
+            self.textCursor.setPosition(0)
+            if hasQt6:
+                self.textCursor.movePosition(
+                    QTextCursor.MoveOperation.Right, 
+                    QTextCursor.MoveMode.KeepAnchor, 
+                    numCharstoTrim
+                )
+            else:
+                self.textCursor.movePosition(
+                    QTextCursor.Right, 
+                    QTextCursor.KeepAnchor, 
+                    numCharstoTrim
+            )
+            # Remove the selected text
+            self.textCursor.removeSelectedText()
 
         if numCharstoTrim > 0:
             # Select the text to remove
@@ -1081,55 +1069,28 @@ class USBMonitorWorker(QObject):
     def stop(self):
         self.running = False
 
-##########################################################################################################################################        
-##########################################################################################################################################        
-#
-# Q Serial
-# ========
-# separate thread handling serial input and output
+
+############################################################################################
+# Q BLE Serial UART
+# ==================
+# separate thread handling BLE serial UART input and output
 # these routines have no access to the user interface,
 # communication occurs through signals
 #
-# for serial write we send bytes
-# for serial read we receive bytes
-# conversion from text to bytes occurs in QSerialUI
-#
-#    This is the Model of the Model - View - Controller (MVC) architecture.
-#
-##########################################################################################################################################        
-##########################################################################################################################################        
+# for ble serial write we send bytes
+# for ble serial read we receive bytes
+# conversion from text to bytes occurs in QBLESerialUI
+############################################################################################
 
-class QSerial(QObject):
+
+class QBLESerialWorker(QObject):
     """
-    Serial Interface for QT
+    BLE Serial UART Interface for QT
 
     Worker Signals
-        textReceived bytes               received text on serial RX
-        linesReceived list               received multiple lines on serial RX
-        newPortListReady                 completed a port scan
-        newBaudListReady                 completed a baud scan
-        throughputReady                  throughput data is available
-        serialStatusReady                report on port and baudrate available
-        serialWorkerStateChanged         worker started or stopped
 
     Worker Slots
-        on_startReceiverRequest()        start timer that reads input port
-        on_stopReceiverRequest()         stop  timer that reads input port
-        on_stopWorkerRequest()           stop  timer and close serial port
-        on_sendTextRequest(bytes)        worker received request to transmit text
-        on_sendLinesRequest(list of bytes) worker received request to transmit multiple lines of text
-        on_changePortRequest(str, int, bool) worker received request to change port
-        on_changeLineTerminationRequest(bytes)
-        on_changeSerialReset(bool)       worker received request to change serial reset
-        on_change...                     worker received request to change line termination
-        on_closePortRequest()            worker received request to close current port
-        on_changeBaudRequest(int)        worker received request to change baud rate
-        on_scanPortsRequest()            worker received request to scan for serial ports
-        on_scanBaudRatesRequest()        worker received request to scan for serial baudrates
-        on_serialStatusRequest()         worker received request to report current port and baudrate
-        on_startThroughputRequest()      start timer to report throughput
-        on_stopThroughputRequest()       stop timer to report throughput
-        on_throughputTimer()             emit throughput data
+
     """
 
     # Signals
@@ -1137,20 +1098,24 @@ class QSerial(QObject):
     textReceived             = pyqtSignal(bytes)                                           # text received on serial port
     linesReceived            = pyqtSignal(list)                                            # lines of text received on serial port
     newPortListReady         = pyqtSignal(list, list)                                      # updated list of serial ports is available
-    newBaudListReady         = pyqtSignal(tuple)                                           # updated list of baudrates is available
     serialStatusReady        = pyqtSignal(str, int, bytes, float)                          # serial status is available
     throughputReady          = pyqtSignal(int,int)                                         # number of characters received/sent on serial port
     serialWorkerStateChanged = pyqtSignal(bool)                                            # worker started or stopped
     finished                 = pyqtSignal() 
-        
+    
+    device_found_signal      = pyqtSignal(str)
+    connected_signal         = pyqtSignal()
+    disconnected_signal      = pyqtSignal()
+
     def __init__(self, parent=None):
 
-        super(QSerial, self).__init__(parent)
+        super(QBLESerialWroker, self).__init__(parent)
 
-        self.logger = logging.getLogger("QSerial")
+        self.logger = logging.getLogger("QBLESerial")
 
-        self.PSer = PSerial()
-        self.PSer.scanports()
+        self.device = None
+        self.client = None
+
         self.serialPorts     = [sublist[0] for sublist in self.PSer.ports]                  # COM3 ...
         self.serialPortNames = [sublist[1] for sublist in self.PSer.ports]                  # USB ... (COM3)
         self.serialPortHWID  = [sublist[2] for sublist in self.PSer.ports]                  # USB VID:PID=1A86:7523 LOCATION=3-2
@@ -1180,6 +1145,32 @@ class QSerial(QObject):
     ########################################################################################
 
     @pyqtSlot()
+    def onScanforDevices(self):
+        """Scan for BLE devices."""
+        async def _scan():
+            devices = await BleakScanner.discover()
+
+            self._devices = [
+                [d.name, d.address, d.riss]
+                for d in self.devices
+            ]
+            return len(self._devices)
+        
+        self.run_async(_scan)
+
+
+
+        self.logger.log(
+            logging.INFO,
+            "[{}]: port(s) {} available.".format(
+                int(QThread.currentThreadId()), self.serialPortNames
+            ),
+        )
+        self.newPortListReady.emit(self.serialPorts, self.serialPortNames)
+
+
+    @pyqtSlot()
+
     def on_setupReceiverRequest(self):
         """
         Set up a QTimer for reading data from serial input line at predefined interval.
@@ -1731,37 +1722,24 @@ def compute_timeouts(baud: int, chars_per_line: int = 50):
 
 
 ################################################################################
-# Serial Low Level
+# BLE Serial UART Low Level
 ################################################################################
-import os
+import bleak
 import struct
 
-# Used for resetting ESP on Unix-like systems
-if os.name != "nt":
-    import fcntl
-    import termios
-
-    # Constants used for terminal status lines reading/setting.
-    #   taken from pySerial's backend for IO:
-    #   https://github.com/pyserial/pyserial/blob/master/serial/serialposix.py
-    TIOCMSET  = getattr(termios, "TIOCMSET",  0x5418)
-    TIOCMGET  = getattr(termios, "TIOCMGET",  0x5415)
-    TIOCM_DTR = getattr(termios, "TIOCM_DTR",  0x002)
-    TIOCM_RTS = getattr(termios, "TIOCM_RTS",  0x004)
-
-class PSerial():
+class BLESerial():
     """
-    Serial Wrapper.
+    BLE UART Serial Wrapper.
 
     read and returns bytes or list of bytes
     write bytes or list of bytes
     """
 
     def __init__(self):
-        # if DEBUGPY_ENABLED: debugpy.debug_this_thread() # this should enable debugging of all PSerial methods
 
-        self.logger             = logging.getLogger("PSerial")
-        self.ser                = None
+        self.logger             = logging.getLogger("BLESerial")
+        self.device             = None
+        self.cleint             = None
         self._port              = ""
         self._baud              = -1
         self._eol               = b""
