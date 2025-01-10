@@ -5,7 +5,7 @@
 ## Description
 **SerialUI** provides a graphical interface to send and receive text from the serial port, including a serial plotter for displaying numerical data. It optimizes high data rate visualization of signals and text, offering features beyond the Arduino IDE Serial Plotter.
 
-**BLE_SerialUI** is equivalent to SerialUI but uses the Nordic Serial UART on a BLE connection.
+**BLE_SerialUI** is equivalent to SerialUI but uses the Nordic Serial UART on a BLE connection (Experimental)
 
 <img src="docs/SerialMonitor.png" alt="Serial Monitor" width="600"/>
 <img src="docs/SerialPlotter.png" alt="Serial Plotter" width="600"/>
