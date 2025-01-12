@@ -21,6 +21,8 @@ import re
 import logging
 import time
 import warnings
+import platform
+
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 # Other standard libraries
@@ -693,9 +695,9 @@ class QBLESerialUI(QObject):
             self.device = self.ui.comboBoxDropDown_Device.itemData(index) # BLE device from BLEAK scanner
             self.handle_log(logging.INFO, f"[{self.instance_name}] Selected device: {self.device.name}, Address: {self.device.address}")
             self.ui.pushButton_Connect.setEnabled(True) # will want to connect
-            self.ui.pushButton_Pair.setEnabled(True) # uses bluetoothctl
-            self.ui.pushButton_Trust.setEnabled(True) # uses bluetoothctl
-            self.ui.pushButton_Status.setEnabled(True) # uses bluetoothctl
+            if self.hasBluetoothctl: self.ui.pushButton_Pair.setEnabled(True) # uses bluetoothctl
+            if self.hasBluetoothctl: self.ui.pushButton_Trust.setEnabled(True) # uses bluetoothctl
+            if self.hasBluetoothctl: self.ui.pushButton_Status.setEnabled(True) # uses bluetoothctl
             self.ui.pushButton_Send.setEnabled(False) # its not yet connected
             self.ui.pushButton_Pair.setText("Pair")
             self.ui.pushButton_Connect.setText("Connect")
@@ -703,9 +705,9 @@ class QBLESerialUI(QObject):
         else:
             self.handle_log(logging.WARNING, f"[{self.instance_name}] No devices found")
             self.ui.pushButton_Connect.setEnabled(False)
-            self.ui.pushButton_Pair.setEnabled(False)
-            self.ui.pushButton_Trust.setEnabled(False)
-            self.ui.pushButton_Status.setEnabled(False)
+            if self.hasBluetoothctl: self.ui.pushButton_Pair.setEnabled(False)
+            if self.hasBluetoothctl: self.ui.pushButton_Trust.setEnabled(False)
+            if self.hasBluetoothctl: self.ui.pushButton_Status.setEnabled(False)
             self.ui.pushButton_Send.setEnabled(False)
             self.ui.pushButton_Scan.setEnabled(True)
 
@@ -1139,11 +1141,11 @@ class QBLESerial(QObject):
                     future = asyncio.run_coroutine_threadsafe(coro, self.asyncEventLoop)
                     return future
                 else:
-                    self.handle_log.emit(logging.ERROR, "Asyncio event loop not running; cannot schedule async task.")
+                    self.handle_log(logging.ERROR, "Asyncio event loop not running; cannot schedule async task.")
             else:
-                self.handle_log.emit(logging.ERROR, "Asyncio event loop is None; cannot schedule async task.")
+                self.handle_log(logging.ERROR, "Asyncio event loop is None; cannot schedule async task.")
         else:
-            self.handle_log.emit(logging.ERROR, "Asyncio event loop not available; cannot schedule async task.")
+            self.handle_log(logging.ERROR, "Asyncio event loop not available; cannot schedule async task.")
 
     # Throughput
     # ----------
@@ -1818,6 +1820,11 @@ class MainWindow(QMainWindow):
             self.logger = logging.getLogger("QMain")
         else:
             self.logger = logger
+
+        if platform.system() == "Linux":
+            self.hasBluetoothctl = True
+        else:
+            self.hasBluetoothctl = False
 
         main_dir = os.path.dirname(os.path.abspath(__file__))
 
