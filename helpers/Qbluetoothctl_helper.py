@@ -35,6 +35,7 @@ except:
 import logging
 import re
 import numbers
+import time
 
 class BluetoothctlWrapper(QObject):
     """
@@ -239,12 +240,17 @@ class BluetoothctlWrapper(QObject):
         self.retry_count                = 0
         self.total_retry_time           = 0
 
+        self.instance_name = self.objectName() if self.objectName() else self.__class__.__name__
+
+        self.tic = time.perf_counter()
+
     def emit_log(self, level, message):
         """Emit the log signal with a level and message."""
         self.log_signal.emit(level, message)
 
     def start(self, expected_startup_output=C_STARTUP_EXPECTED_OUTPUT, timeout_duration=STARTUP_TIMEOUT):
         """Start the process and set up to wait for specific output."""
+        self.tic = time.perf_counter()
         self.process = QProcess()
 
         # Timer for handling the startup timeout
@@ -263,10 +269,10 @@ class BluetoothctlWrapper(QObject):
         if self.process.state() == QProcess.NotRunning:
             self.process.setProgram(self.process_command)
             self.process.start()
-            self.emit_log(logging.INFO, f"[{int(QThread.currentThreadId())}]: Started process \"{self.process_command}\"")
+            self.emit_log(logging.INFO, f"[{self.instance_name}] [{self.instance_name}] Started process \"{self.process_command}\"")
             self.startup_timeout_timer.start(timeout_duration)
         else:
-            self.emit_log(logging.WARNING, f"[{int(QThread.currentThreadId())}]: Process is already running.")
+            self.emit_log(logging.WARNING, f"[{self.instance_name}] Process is already running.")
 
     @pyqtSlot()
     def _handle_startup_output(self):
@@ -280,7 +286,7 @@ class BluetoothctlWrapper(QObject):
 
         # Check if the target startup message is present
         if not self.startup_expected_text_found and self.expected_startup_output in self.output_buffer:
-            self.emit_log(logging.INFO, f"[{int(QThread.currentThreadId())}]: \"{self.expected_startup_output}\" found.")
+            self.emit_log(logging.INFO, f"[{self.instance_name}] [{self.instance_name}] \"{self.expected_startup_output}\" found in {time.perf_counter() - self.tic:.2f} sec.")
 
             # stop the timeout timer as we found the expected output
             if self.startup_timeout_timer and self.startup_timeout_timer.isActive():
@@ -289,26 +295,26 @@ class BluetoothctlWrapper(QObject):
             try: 
                 self.startup_timeout_timer.timeout.disconnect(self._handle_startup_timeout)
             except TypeError:
-                self.emit_log(logging.WARNING, f"[{int(QThread.currentThreadId())}]: Already disconnected _handle_startup_timeout.")
+                self.emit_log(logging.WARNING, f"[{self.instance_name}] Already disconnected _handle_startup_timeout.")
 
             # Disconnect this slot as it's no longer needed after startup
             try:
                 self.process.readyReadStandardOutput.disconnect(self._handle_startup_output)
             except TypeError:
-                self.emit_log(logging.WARNING, f"[{int(QThread.currentThreadId())}]: Already disconnected _handle_startup_output.")
+                self.emit_log(logging.WARNING, f"[{self.instance_name}]Already disconnected _handle_startup_output.")
             
             # Set the flag to indicate startup text is found
             self.startup_expected_text_found = True
 
             # If the process is already in the Running state, emit the startup completed signal
             if self.process.state() == QProcess.Running:
-                self.emit_log(logging.INFO, f"[{int(QThread.currentThreadId())}]: Process is fully running.")
+                self.emit_log(logging.INFO, f"[{self.instance_name}] Process is fully running.")
                 self.startup_completed_signal.emit()
 
         # Emit the log text for general purposes
         if output:
             formatted_output = output.replace("\r\n", ", ").replace("\r", ", ").replace("\n", ", ").strip(", ")
-            self.emit_log(logging.INFO, f"[{int(QThread.currentThreadId())}]: {self.process_command}: {formatted_output}")
+            self.emit_log(logging.INFO, f"[{self.instance_name}] {self.process_command}: {formatted_output}")
 
     @pyqtSlot()
     def stop(self):
@@ -321,7 +327,7 @@ class BluetoothctlWrapper(QObject):
             self.process.terminate()
             if not self.process.waitForFinished(self.WAIT_FOR_FINISHED):
                 self.process.kill()
-            self.emit_log(logging.INFO, f"[{int(QThread.currentThreadId())}]: Process terminated.")
+            self.emit_log(logging.INFO, f"[{self.instance_name}] Process terminated.")
             self._cleanup()
         else:
             self.emit_log(logging.WARNING, "Process is not running, nothing to stop.")
@@ -334,66 +340,66 @@ class BluetoothctlWrapper(QObject):
         try:
             self.process.readyReadStandardError.disconnect()
         except TypeError:
-            self.emit_log(logging.WARNING, f"[{int(QThread.currentThreadId())}]: readyReadStandardError already disconnected.")
+            self.emit_log(logging.WARNING, f"[{self.instance_name}]readyReadStandardError already disconnected.")
 
         try:
             self.process.finished.disconnect()
         except TypeError:
-            self.emit_log(logging.WARNING, f"[{int(QThread.currentThreadId())}]: finished already disconnected.")
+            self.emit_log(logging.WARNING, f"[{self.instance_name}]finished already disconnected.")
 
         try:
             self.process.stateChanged.disconnect()
         except TypeError:
-            self.emit_log(logging.WARNING, f"[{int(QThread.currentThreadId())}]: stateChanged already disconnected.")
+            self.emit_log(logging.WARNING, f"[{self.instance_name}]Qbluetoothctl: stateChanged already disconnected.")
 
         # Reset state
         self.startup_expected_text_found = False
         self.pending_command = None
         self.output_buffer = ""
 
-        self.emit_log(logging.INFO, f"[{int(QThread.currentThreadId())}]: Cleanup complete.")
+        self.emit_log(logging.INFO, f"[{self.instance_name}] Qbluetoothctl: Cleanup complete.")
             
     @pyqtSlot()
     def _handle_error(self):
         """Handle error data from the process's standard error."""
         error = self.process.readAllStandardError().data().decode().strip()
-        self.emit_log(logging.ERROR, f"[{int(QThread.currentThreadId())}]: Process error: {error}")
+        self.emit_log(logging.ERROR, f"[{self.instance_name}] Process error: {error}")
         self.error_ready_signal.emit(error)
 
     @pyqtSlot(int, QProcess.ExitStatus)
     def _handle_finished(self, exit_code, exit_status):
         """Handle process termination."""
         if exit_status == QProcess.NormalExit:
-            self.emit_log(logging.INFO, f"[{int(QThread.currentThreadId())}]: Process finished with exit code {exit_code}.")
+            self.emit_log(logging.INFO, f"[{self.instance_name}] Process finished with exit code {exit_code}.")
         else:
-            self.emit_log(logging.INFO, f"[{int(QThread.currentThreadId())}]: Process crashed with exit code {exit_code}.")
+            self.emit_log(logging.INFO, f"[{self.instance_name}] Process crashed with exit code {exit_code}.")
         self.finished_signal.emit()
 
     @pyqtSlot(QProcess.ProcessState)
     def _handle_state_changed(self, new_state):
         """Handle state changes of the QProcess from starting to running."""
         if new_state == QProcess.Running and self.startup_expected_text_found:
-            self.emit_log(logging.INFO, f"[{int(QThread.currentThreadId())}]: Process is now running.")
+            self.emit_log(logging.INFO, f"[{self.instance_name}] Process is now running.")
             self.startup_completed_signal.emit()
 
     @pyqtSlot()
     def _handle_startup_timeout(self):
         """Handle the case when waiting for expected startup times out."""
-        self.emit_log(logging.ERROR, f"Timeout occurred while waiting for expected output: \"{self.expected_startup_output}\"")
+        self.emit_log(logging.ERROR, f"[{self.instance_name}] Timeout occurred while waiting for expected output: \"{self.expected_startup_output}\"")
 
         try:
             self.startup_timeout_timer.timeout.disconnect(self._handle_startup_timeout)
             self.process.readyReadStandardOutput.disconnect(self._handle_startup_output)
             self.process.readyReadStandardError.disconnect(self._handle_error)
         except TypeError:
-            self.emit_log(logging.ERROR, f"[{int(QThread.currentThreadId())}]: Already disconnected the signals for _handle_startup_output and _handle_error.")
+            self.emit_log(logging.ERROR, f"[{self.instance_name}] Already disconnected the signals for _handle_startup_output and _handle_error.")
 
         # Stop the process if it's still running
         if self.process.state() == QProcess.Running or self.process.state() == QProcess.Starting:
             self.process.terminate()
             if not self.process.waitForFinished(2000):  # Grace period of 2 seconds to stop
                 self.process.kill()
-            self.emit_log(logging.INFO, f"[{int(QThread.currentThreadId())}]: Process terminated due to timeout.")
+            self.emit_log(logging.INFO, f"[{self.instance_name}] Process terminated due to timeout.")
 
         # Emit the timeout signal to notify that we have timed out while waiting for the expected output
         self.timeout_signal.emit()
@@ -460,7 +466,7 @@ class BluetoothctlWrapper(QObject):
 
             command_str = command + "\n"
             self.process.write(command_str.encode())
-            self.emit_log(logging.INFO, f"Sent command: {command}")
+            self.emit_log(logging.INFO, f"[{self.instance_name}] Sent command: {command}")
             
             # Set the expected output and start the verification timer
             with QMutexLocker(self.mutex):
@@ -493,26 +499,26 @@ class BluetoothctlWrapper(QObject):
         # Emit the log text for general purposes
         if output:
             formatted_output = output.replace("\r\n", ", ").replace("\r", ", ").replace("\n", ", ").strip(", ")
-            self.emit_log(logging.INFO, f"[{int(QThread.currentThreadId())}]: {self.process_command}: {formatted_output}")
+            self.emit_log(logging.INFO, f"[{self.instance_name}] {self.process_command}: {formatted_output}")
 
     @pyqtSlot()
     def _verify_command_result(self):
         """Verify if the expected output is present in the output buffer."""
 
         # if self.stop_verification:
-        #     self.emit_log(logging.WARNING, f"[{int(QThread.currentThreadId())}]: Verification should be stopped.")
+        #     self.emit_log(logging.WARNING, f"[{self.instance_name}]Verification should be stopped.")
         #     return
         
         # Check for expected responses
         if any(key in self.output_buffer for key in self.expected_command_response):
-            self.emit_log(logging.INFO, f"Command '{self.pending_command}' verified successfully.")
+            self.emit_log(logging.INFO, f"[{self.instance_name}] Command '{self.pending_command}' verified successfully.")
             self._command_cleanup()
             self.command_completed_signal.emit()
             return
     
         # Check for failed responses
         if any(key in self.output_buffer for key in self.failed_command_response):
-            self.emit_log(logging.INFO, f"Command '{self.pending_command}' failed.")
+            self.emit_log(logging.INFO, f"[{self.instance_name}] Command '{self.pending_command}' failed.")
             self._command_cleanup()
             self.command_failed_signal.emit()
             return
@@ -523,10 +529,10 @@ class BluetoothctlWrapper(QObject):
         self.total_retry_time += next_interval
 
         if self.total_retry_time < self.max_total_retry_time:
-            self.emit_log(logging.INFO, f"[{int(QThread.currentThreadId())}]: Expected output from {self.pending_command} not found. Retrying in {next_interval} ms ({self.retry_count})...")
+            self.emit_log(logging.INFO, f"[{self.instance_name}] Expected output from {self.pending_command} not found. Retrying in {next_interval} ms ({self.retry_count})...")
             QTimer.singleShot(next_interval, self._verify_command_result)
         else:
-            self.emit_log(logging.ERROR, f"Command '{self.pending_command}' failed to verify after maximum retry time.")
+            self.emit_log(logging.ERROR, f"[{self.instance_name}] Command '{self.pending_command}' failed to verify after maximum retry time.")
             self._command_cleanup()
             self.command_expired_signal.emit()
 
@@ -534,7 +540,7 @@ class BluetoothctlWrapper(QObject):
         try:
             self.process.readyReadStandardOutput.disconnect(self._handle_command_output)
         except TypeError:
-            self.emit_log(logging.WARNING, f"[{int(QThread.currentThreadId())}]: readyReadStandardOutput already disconnected.")
+            self.emit_log(logging.WARNING, f"[{self.instance_name}]readyReadStandardOutput already disconnected.")
 
     @pyqtSlot(list, list, list, object, object)
     def send_multiple_commands(self, 
@@ -608,12 +614,12 @@ class BluetoothctlWrapper(QObject):
 
     def _on_multicommand_failed(self):
         # Command failed, decide whether to stop or continue
-        self.emit_log(logging.ERROR, f"Command '{self.pending_command}' failed.")
+        self.emit_log(logging.ERROR, f"[{self.instance_name}] Command '{self.pending_command}' failed.")
         self._send_next_command()
 
     def _on_multicommand_expired(self):
         # Commands timed out, handle accordingly
-        self.emit_log(logging.ERROR, f"Command '{self.pending_command}' expired.")
+        self.emit_log(logging.ERROR, f"[{self.instance_name}] Command '{self.pending_command}' expired.")
         self._send_next_command()
 
     # Wrapped Commands
@@ -664,15 +670,15 @@ class BluetoothctlWrapper(QObject):
         try:
             self.command_completed_signal.disconnect(self._on_scan_started_success)
         except TypeError:
-            self.emit_log(logging.WARNING, f"[{int(QThread.currentThreadId())}]: Already disconnected _on_scan_started_success.")
+            self.emit_log(logging.WARNING, f"[{self.instance_name}]Already disconnected _on_scan_started_success.")
         try:
             self.command_failed_signal.disconnect(self._on_scan_started_failure)
         except TypeError:
-            self.emit_log(logging.WARNING, f"[{int(QThread.currentThreadId())}]: Already disconnected _on_scan_started_failure.")
+            self.emit_log(logging.WARNING, f"[{self.instance_name}]Already disconnected _on_scan_started_failure.")
         try:
             self.command_expired_signal.disconnect(self._on_scan_started_failure)
         except TypeError:
-            self.emit_log(logging.WARNING, f"[{int(QThread.currentThreadId())}]: Already disconnected _on_scan_started_failure.")
+            self.emit_log(logging.WARNING, f"[{self.instance_name}]Already disconnected _on_scan_started_failure.")
 
     ######
 
@@ -718,15 +724,15 @@ class BluetoothctlWrapper(QObject):
         try:
             self.command_completed_signal.disconnect(self._on_scan_stopped_success)
         except TypeError:
-            self.emit_log(logging.WARNING, f"[{int(QThread.currentThreadId())}]: Already disconnected _on_scan_stopped_success.")
+            self.emit_log(logging.WARNING, f"[{self.instance_name}]Already disconnected _on_scan_stopped_success.")
         try:
             self.command_failed_signal.disconnect(self._on_scan_stopped_failure)
         except TypeError:
-            self.emit_log(logging.WARNING, f"[{int(QThread.currentThreadId())}]: Already disconnected _on_scan_stopped_failure.")
+            self.emit_log(logging.WARNING, f"[{self.instance_name}]Already disconnected _on_scan_stopped_failure.")
         try:
             self.command_expired_signal.disconnect(self._on_scan_stopped_failure)
         except TypeError:
-            self.emit_log(logging.WARNING, f"[{int(QThread.currentThreadId())}]: Already disconnected _on_scan_stopped_failure.")
+            self.emit_log(logging.WARNING, f"[{self.instance_name}]Already disconnected _on_scan_stopped_failure.")
 
     # Find Device
     # ==========================================================================================
@@ -768,7 +774,7 @@ class BluetoothctlWrapper(QObject):
         try:
             self.device_scan_started_signal.disconnect(self._on_scanning_started_for_find_device)
         except TypeError:
-            self.emit_log(logging.WARNING, f"[{int(QThread.currentThreadId())}]: Already disconnected _on_scanning_started_for_find_device.")
+            self.emit_log(logging.WARNING, f"[{self.instance_name}]Already disconnected _on_scanning_started_for_find_device.")
 
         # Wait for `scan_time` milliseconds to allow scanning to discover devices
         QTimer.singleShot(self.scan_time, self._stop_scanning_and_get_devices)
@@ -787,7 +793,7 @@ class BluetoothctlWrapper(QObject):
         try:
             self.device_scan_stopped_signal.disconnect(self._on_scanning_stopped_for_find_device)
         except TypeError:
-            self.emit_log(logging.WARNING, f"[{int(QThread.currentThreadId())}]: Already disconnected _on_scanning_stopped_for_find_device.")
+            self.emit_log(logging.WARNING, f"[{self.instance_name}]Already disconnected _on_scanning_stopped_for_find_device.")
 
         # Connect to readyReadStandardOutput to collect devices output
         self.process.readyReadStandardOutput.connect(self._handle_devices_output)
@@ -797,7 +803,7 @@ class BluetoothctlWrapper(QObject):
         self.devices_output_buffer = ""
         command_str = "devices\n"
         self.process.write(command_str.encode())
-        self.emit_log(logging.INFO, f"Sent command: devices")
+        self.emit_log(logging.INFO, f"[{self.instance_name}] Sent command: devices")
 
         # Set up a timer to delay the initial parsing of devices output
         QTimer.singleShot(200, self._parse_devices_output)
@@ -820,7 +826,7 @@ class BluetoothctlWrapper(QObject):
         # Emit the log text for general purposes
         if output:
             formatted_output = output.replace("\r\n", ", ").replace("\r", ", ").replace("\n", ", ").strip(", ")
-            self.emit_log(logging.INFO, f"[{int(QThread.currentThreadId())}]: {self.process_command}: {formatted_output}")
+            self.emit_log(logging.INFO, f"[{self.instance_name}] {self.process_command}: {formatted_output}")
 
 
     def _parse_devices_output(self):
@@ -865,13 +871,13 @@ class BluetoothctlWrapper(QObject):
                     try:
                         self.process.readyReadStandardOutput.disconnect(self._handle_devices_output)
                     except TypeError:
-                        self.emit_log(logging.WARNING, f"[{int(QThread.currentThreadId())}]: Already disconnected _handle_devices_output.")
+                        self.emit_log(logging.WARNING, f"[{self.instance_name}]Already disconnected _handle_devices_output.")
                     self.parse_device_timeout_timer.stop()
                     try:
                         self.parse_device_timeout_timer.timeout.disconnect(self._handle_parse_devices_output_timeout)
                     except:
-                        self.emit_log(logging.WARNING, f"[{int(QThread.currentThreadId())}]: Already disconnected _handle_parse_devices_output_timeout.")
-                    self.emit_log(logging.INFO, f"[{int(QThread.currentThreadId())}]: Device found: {mac} {name}")
+                        self.emit_log(logging.WARNING, f"[{self.instance_name}]Already disconnected _handle_parse_devices_output_timeout.")
+                    self.emit_log(logging.INFO, f"[{self.instance_name}] Device found: {mac} {name}")
                     self.device_found_signal.emit(mac, name)
                     return
 
@@ -887,13 +893,13 @@ class BluetoothctlWrapper(QObject):
             try:
                 self.process.readyReadStandardOutput.disconnect(self._handle_devices_output)
             except TypeError:
-                self.emit_log(logging.WARNING, f"[{int(QThread.currentThreadId())}]: Already disconnected _handle_devices_output.")
+                self.emit_log(logging.WARNING, f"[{self.instance_name}]Already disconnected _handle_devices_output.")
             try:
                 self.parse_device_timeout_timer.timeout.disconnect(self._handle_parse_devices_output_timeout)
             except:
-                self.emit_log(logging.WARNING, f"[{int(QThread.currentThreadId())}]: Already disconnected _handle_parse_devices_output_timeout.")
+                self.emit_log(logging.WARNING, f"[{self.instance_name}]Already disconnected _handle_parse_devices_output_timeout.")
 
-            self.emit_log(logging.ERROR, f"[{int(QThread.currentThreadId())}]: Device '{self.target_device}' not found.")
+            self.emit_log(logging.ERROR, f"[{self.instance_name}] Device '{self.target_device}' not found.")
             self.device_not_found_signal.emit(self.target_device)
 
     # get device info
@@ -936,7 +942,7 @@ class BluetoothctlWrapper(QObject):
         # Send the 'info <MAC>' command
         command_str = f"info {self.target_mac}\n"
         self.process.write(command_str.encode())
-        self.emit_log(logging.INFO, f"[{int(QThread.currentThreadId())}]: Sent command: info {self.target_mac}")
+        self.emit_log(logging.INFO, f"[{self.instance_name}] Sent command: info {self.target_mac}")
 
         # Set up a timer to delay the initial parsing of info output
         QTimer.singleShot(200, self._parse_info_output)
@@ -959,7 +965,7 @@ class BluetoothctlWrapper(QObject):
         # Emit the log text for general purposes
         if output:
             formatted_output = output.replace("\r\n", ", ").replace("\r", ", ").replace("\n", ", ").strip(", ")
-            self.emit_log(logging.INFO, f"[{int(QThread.currentThreadId())}]: {self.process_command}: {formatted_output}")
+            self.emit_log(logging.INFO, f"[{self.instance_name}] {self.process_command}: {formatted_output}")
 
     def _parse_info_output(self):
         """Parse the output of 'info <MAC>' command to obtain device info."""
@@ -1022,27 +1028,27 @@ class BluetoothctlWrapper(QObject):
                     self.device_info["rssi"] = rssi_value
                     self.rssi_found = True
                 except ValueError:
-                    self.emit_log(logging.WARNING, f"[{int(QThread.currentThreadId())}]: Failed to parse RSSI value for {self.target_mac}.")
+                    self.emit_log(logging.WARNING, f"[{self.instance_name}]Failed to parse RSSI value for {self.target_mac}.")
 
         # Emit relevant logs
         if self.connected_found:
             status = "connected" if self.device_info["connected"] else "not connected"
-            self.emit_log(logging.INFO, f"[{int(QThread.currentThreadId())}]: {self.target_mac} is {status}.")
+            self.emit_log(logging.INFO, f"[{self.instance_name}] {self.target_mac} is {status}.")
 
         if self.trusted_found:
             status = "trusted" if self.device_info["trusted"] else "not trusted"
-            self.emit_log(logging.INFO, f"[{int(QThread.currentThreadId())}]: {self.target_mac} is {status}.")
+            self.emit_log(logging.INFO, f"[{self.instance_name}] {self.target_mac} is {status}.")
 
         if self.paired_found:
             status = "paired" if self.device_info["paired"] else "not paired"
-            self.emit_log(logging.INFO, f"[{int(QThread.currentThreadId())}]: {self.target_mac} is {status}.")
+            self.emit_log(logging.INFO, f"[{self.instance_name}] {self.target_mac} is {status}.")
 
         if self.blocked_found:
             status = "blocked" if self.device_info["paired"] else "not blocked"
-            self.emit_log(logging.INFO, f"[{int(QThread.currentThreadId())}]: {self.target_mac} is {status}.")
+            self.emit_log(logging.INFO, f"[{self.instance_name}] {self.target_mac} is {status}.")
 
         if self.rssi_found:
-            self.emit_log(logging.INFO, f"[{int(QThread.currentThreadId())}]: {self.target_mac} RSSI: {self.device_info['rssi']} dBm.")
+            self.emit_log(logging.INFO, f"[{self.instance_name}] {self.target_mac} RSSI: {self.device_info['rssi']} dBm.")
 
         self.info_found = (
             self.name_found and self.paired_found and
@@ -1064,12 +1070,12 @@ class BluetoothctlWrapper(QObject):
             try:
                 self.process.readyReadStandardOutput.disconnect(self._handle_info_output)
             except TypeError:
-                self.emit_log(logging.WARNING, f"[{int(QThread.currentThreadId())}]: Already disconnected _handle_info_output.")
+                self.emit_log(logging.WARNING, f"[{self.instance_name}]Already disconnected _handle_info_output.")
             self.collecting_info_output = False
             if self.info_found:
                 self.device_info_ready_signal.emit(self.device_info)
             else:
-                self.emit_log(logging.ERROR, f"[{int(QThread.currentThreadId())}]: Failed to retrieve full info for {self.target_mac}")
+                self.emit_log(logging.ERROR, f"[{self.instance_name}] Failed to retrieve full info for {self.target_mac}")
                 self.device_info_failed_signal.emit(self.target_mac)
 
     def _handle_parse_info_output_timeout(self):
@@ -1079,13 +1085,13 @@ class BluetoothctlWrapper(QObject):
             try:
                 self.process.readyReadStandardOutput.disconnect(self._handle_info_output)
             except TypeError:
-                self.emit_log(logging.WARNING, f"[{int(QThread.currentThreadId())}]: Already disconnected _handle_info_output.")
+                self.emit_log(logging.WARNING, f"[{self.instance_name}]Already disconnected _handle_info_output.")
             try:
                 self.parse_info_timeout_timer.timeout.disconnect(self._handle_parse_info_output_timeout)
             except:
-                self.emit_log(logging.WARNING, f"[{int(QThread.currentThreadId())}]: Already disconnected _handle_parse_info_output_timeout.")
+                self.emit_log(logging.WARNING, f"[{self.instance_name}]Already disconnected _handle_parse_info_output_timeout.")
             self.collecting_info_output = False
-            self.emit_log(logging.ERROR, f"[{int(QThread.currentThreadId())}]: Timeout occurred while retrieving info for {self.target_mac}")
+            self.emit_log(logging.ERROR, f"[{self.instance_name}] Timeout occurred while retrieving info for {self.target_mac}")
             self.device_info_failed_signal.emit(self.target_mac)
 
     # Pair / Remove Device
@@ -1124,7 +1130,7 @@ class BluetoothctlWrapper(QObject):
         try:
             self.device_scan_started_signal.disconnect(self._on_scanning_started_for_pair_device)
         except:
-            self.emit_log(logging.WARNING, f"[{int(QThread.currentThreadId())}]: Already disconnected _on_scanning_started_for_pair_device.")
+            self.emit_log(logging.WARNING, f"[{self.instance_name}]Already disconnected _on_scanning_started_for_pair_device.")
 
         # Wait for `scan_time` milliseconds to allow scanning to discover devices
         QTimer.singleShot(self.scan_time, self._stop_scanning_and_pair_device)
@@ -1138,7 +1144,7 @@ class BluetoothctlWrapper(QObject):
         # Send the 'pair <MAC>' command
         command_str = f"pair {self.target_mac}\n"
         self.process.write(command_str.encode())
-        self.emit_log(logging.INFO, f"[{int(QThread.currentThreadId())}]: Sent command: pair {self.target_mac}")
+        self.emit_log(logging.INFO, f"[{self.instance_name}] Sent command: pair {self.target_mac}")
 
         # Set up a timer to delay the initial parsing of pair output
         QTimer.singleShot(200, self._parse_pair_output)
@@ -1161,7 +1167,7 @@ class BluetoothctlWrapper(QObject):
         # Emit the log text for general purposes
         if output:
             formatted_output = output.replace("\r\n", ", ").replace("\r", ", ").replace("\n", ", ").strip(", ")
-            self.emit_log(logging.INFO, f"[{int(QThread.currentThreadId())}]: {self.process_command}: {formatted_output}")
+            self.emit_log(logging.INFO, f"[{self.instance_name}] {self.process_command}: {formatted_output}")
 
     def _parse_pair_output(self):
         """Parse the output of 'pair <MAC>' command."""
@@ -1193,7 +1199,7 @@ class BluetoothctlWrapper(QObject):
                 self.pin_found = True
                 command_str = f"{self.pin}\n"
                 self.process.write(command_str.encode())
-                self.emit_log(logging.INFO, f"[{int(QThread.currentThreadId())}]: Sent PIN code for {self.target_mac}.")
+                self.emit_log(logging.INFO, f"[{self.instance_name}] Sent PIN code for {self.target_mac}.")
                 self.pair_output_buffer = ""
                 break
 
@@ -1214,20 +1220,20 @@ class BluetoothctlWrapper(QObject):
             self.parse_pair_timeout_timer.stop()
             self.collecting_pair_output = False
             if self.pin_found:
-                self.emit_log(logging.ERROR, f"[{int(QThread.currentThreadId())}]: {self.target_mac} pairing failed with PIN.")
+                self.emit_log(logging.ERROR, f"[{self.instance_name}] {self.target_mac} pairing failed with PIN.")
             else:
-                self.emit_log(logging.ERROR, f"[{int(QThread.currentThreadId())}]: {self.target_mac} pairing failed.")
+                self.emit_log(logging.ERROR, f"[{self.instance_name}] {self.target_mac} pairing failed.")
             self._pairing_cleanup()
             self.device_pair_failed_signal.emit(self.target_mac)
         elif self.pairing_completed:
             self.parse_pair_timeout_timer.stop()
             # Disconnect the signal
             self.collecting_pair_output = False
-            self.emit_log(logging.INFO, f"[{int(QThread.currentThreadId())}]: {self.target_mac} pairing completed.")
+            self.emit_log(logging.INFO, f"[{self.instance_name}] {self.target_mac} pairing completed.")
             self._pairing_cleanup()
             self.device_pair_succeeded_signal.emit(self.target_mac)
         else:
-            self.emit_log(logging.ERROR, f"[{int(QThread.currentThreadId())}]: Pairing command program logic failed for {self.target_mac}")
+            self.emit_log(logging.ERROR, f"[{self.instance_name}] Pairing command program logic failed for {self.target_mac}")
             self._pairing_cleanup()
             self.device_pair_failed_signal.emit(self.target_mac)
 
@@ -1235,7 +1241,7 @@ class BluetoothctlWrapper(QObject):
         """Handle the timeout of parsing pairing device output."""
         # Disconnect the signal
         self.collecting_pair_output = False
-        self.emit_log(logging.ERROR, f"[{int(QThread.currentThreadId())}]: Timeout occurred while pairing {self.target_mac}")
+        self.emit_log(logging.ERROR, f"[{self.instance_name}] Timeout occurred while pairing {self.target_mac}")
         self._pairing_cleanup()
         self.device_pair_failed_signal.emit(self.target_mac)
 
@@ -1243,11 +1249,11 @@ class BluetoothctlWrapper(QObject):
         try:
             self.process.readyReadStandardOutput.disconnect(self._handle_pair_output)
         except TypeError:
-            self.emit_log(logging.WARNING, f"[{int(QThread.currentThreadId())}]: Already disconnected _handle_pair_output.")
+            self.emit_log(logging.WARNING, f"[{self.instance_name}]Already disconnected _handle_pair_output.")
         try:
             self.parse_pair_timeout_timer.timeout.disconnect(self._handle_parse_pair_output_timeout)
         except:
-            self.emit_log(logging.WARNING, f"[{int(QThread.currentThreadId())}]: Already disconnected _handle_parse_pair_output_timeout.")
+            self.emit_log(logging.WARNING, f"[{self.instance_name}]Already disconnected _handle_parse_pair_output_timeout.")
 
         self.disable_scan()
 
@@ -1279,12 +1285,12 @@ class BluetoothctlWrapper(QObject):
         )
 
     def _handle_remove_success(self):
-        self.emit_log(logging.INFO, f"[{int(QThread.currentThreadId())}]: Device {self.target_mac} has been removed.")
+        self.emit_log(logging.INFO, f"[{self.instance_name}] Device {self.target_mac} has been removed.")
         self._disconnect_remove_command_signals()
         self.device_remove_succeeded_signal.emit(self.target_mac)
 
     def _handle_remove_failure(self):
-        self.emit_log(logging.ERROR, f"[{int(QThread.currentThreadId())}]: Failed to remove device {self.target_mac}.")
+        self.emit_log(logging.ERROR, f"[{self.instance_name}] Failed to remove device {self.target_mac}.")
         self._disconnect_remove_command_signals()
         self.device_remove_failed_signal.emit(self.target_mac)
 
@@ -1293,17 +1299,17 @@ class BluetoothctlWrapper(QObject):
         try:
             self.command_completed_signal.disconnect(self._handle_remove_success)
         except TypeError:
-            self.emit_log(logging.WARNING, f"[{int(QThread.currentThreadId())}]: Already disconnected remove command complete signals.")
+            self.emit_log(logging.WARNING, f"[{self.instance_name}]Already disconnected remove command complete signals.")
 
         try:
             self.command_failed_signal.disconnect(self._handle_remove_failure)
         except TypeError:
-            self.emit_log(logging.WARNING, f"[{int(QThread.currentThreadId())}]: Already disconnected remove command failed signals.")
+            self.emit_log(logging.WARNING, f"[{self.instance_name}]Already disconnected remove command failed signals.")
 
         try:
             self.command_expired_signal.disconnect(self._handle_remove_failure)
         except TypeError:
-            self.emit_log(logging.WARNING, f"[{int(QThread.currentThreadId())}]: Already disconnected remove command expired signals.")
+            self.emit_log(logging.WARNING, f"[{self.instance_name}]Already disconnected remove command expired signals.")
 
     # Trust / Distrust Device
     # ==========================================================================================
@@ -1334,12 +1340,12 @@ class BluetoothctlWrapper(QObject):
         )
 
     def _handle_trust_success(self):
-        self.emit_log(logging.INFO, f"[{int(QThread.currentThreadId())}]: Device {self.target_mac} is trusted.")
+        self.emit_log(logging.INFO, f"[{self.instance_name}] Device {self.target_mac} is trusted.")
         self._disconnect_trust_command_signals()
         self.device_trust_succeeded_signal.emit(self.target_mac)
 
     def _handle_trust_failure(self):
-        self.emit_log(logging.ERROR, f"[{int(QThread.currentThreadId())}]: Failed to distrust device {self.target_mac}.")
+        self.emit_log(logging.ERROR, f"[{self.instance_name}] Failed to distrust device {self.target_mac}.")
         self._disconnect_trust_command_signals()
         self.device_trust_failed_signal.emit(self.target_mac)
 
@@ -1348,15 +1354,15 @@ class BluetoothctlWrapper(QObject):
         try:
             self.command_completed_signal.disconnect(self._handle_trust_success)
         except TypeError:
-            self.emit_log(logging.WARNING, f"Failed to disconnect \"command_completed_signal\" for trust command.")
+            self.emit_log(logging.WARNING, f"[{self.instance_name}]Failed to disconnect \"command_completed_signal\" for trust command.")
         try:
             self.command_failed_signal.disconnect(self._handle_trust_failure)
         except TypeError:
-            self.emit_log(logging.WARNING, f"Failed to disconnect \"command_failed_signal\" for trust command.")
+            self.emit_log(logging.WARNING, f"[{self.instance_name}]Failed to disconnect \"command_failed_signal\" for trust command.")
         try:
             self.command_expired_signal.disconnect(self._handle_trust_failure)
         except TypeError:
-            self.emit_log(logging.WARNING, f"Failed to disconnect \"command_expired_signal\" for trust command.")
+            self.emit_log(logging.WARNING, f"[{self.instance_name}]Failed to disconnect \"command_expired_signal\" for trust command.")
 
     ######
 
@@ -1386,12 +1392,12 @@ class BluetoothctlWrapper(QObject):
         )
 
     def _handle_distrust_success(self):
-        self.emit_log(logging.INFO, f"[{int(QThread.currentThreadId())}]: Device {self.target_mac} is distrusted.")
+        self.emit_log(logging.INFO, f"[{self.instance_name}] Device {self.target_mac} is distrusted.")
         self._disconnect_distrust_command_signals()
         self.device_distrust_succeeded_signal.emit(self.target_mac)
 
     def _handle_distrust_failure(self):
-        self.emit_log(logging.ERROR, f"[{int(QThread.currentThreadId())}]: Failed to distrust device {self.target_mac}.")
+        self.emit_log(logging.ERROR, f"[{self.instance_name}] Failed to distrust device {self.target_mac}.")
         self._disconnect_distrust_command_signals()
         self.device_distrust_failed_signal.emit(self.target_mac)
 
@@ -1400,15 +1406,15 @@ class BluetoothctlWrapper(QObject):
         try:
             self.command_completed_signal.disconnect(self._handle_distrust_success)
         except TypeError:
-            self.emit_log(logging.WARNING, f"Failed to disconnect \"command_completed_signal\" for distrust command.")
+            self.emit_log(logging.WARNING, f"[{self.instance_name}]Failed to disconnect \"command_completed_signal\" for distrust command.")
         try:
             self.command_failed_signal.disconnect(self._handle_distrust_failure)
         except TypeError:
-            self.emit_log(logging.WARNING, f"Failed to disconnect \"command_failed_signal\" for distrust command.")
+            self.emit_log(logging.WARNING, f"[{self.instance_name}]Failed to disconnect \"command_failed_signal\" for distrust command.")
         try:
             self.command_expired_signal.disconnect(self._handle_distrust_failure)
         except TypeError:
-            self.emit_log(logging.WARNING, f"Failed to disconnect \"command_expired_signal\" for distrust command.")
+            self.emit_log(logging.WARNING, f"[{self.instance_name}]Failed to disconnect \"command_expired_signal\" for distrust command.")
 
     # Connect / Disconnect Device
     # ==========================================================================================
@@ -1439,12 +1445,12 @@ class BluetoothctlWrapper(QObject):
         )
 
     def _handle_connect_success(self):
-        self.emit_log(logging.INFO, f"[{int(QThread.currentThreadId())}]: Device {self.target_mac} is connected.")
+        self.emit_log(logging.INFO, f"[{self.instance_name}] Device {self.target_mac} is connected.")
         self._disconnect_connect_command_signals()
         self.device_connect_succeeded_signal.emit(self.target_mac)
 
     def _handle_connect_failure(self):
-        self.emit_log(logging.ERROR, f"[{int(QThread.currentThreadId())}]: Failed to connect device {self.target_mac}.")
+        self.emit_log(logging.ERROR, f"[{self.instance_name}] Failed to connect device {self.target_mac}.")
         self._disconnect_connect_command_signals()
         self.device_connect_failed_signal.emit(self.target_mac)
 
@@ -1453,15 +1459,15 @@ class BluetoothctlWrapper(QObject):
         try:
             self.command_completed_signal.disconnect(self._handle_connect_success)
         except TypeError:
-            self.emit_log(logging.WARNING, f"Failed to disconnect \"command_completed_signal\" for connect command.")
+            self.emit_log(logging.WARNING, f"[{self.instance_name}]Failed to disconnect \"command_completed_signal\" for connect command.")
         try:
             self.command_failed_signal.disconnect(self._handle_connect_failure)
         except TypeError:
-            self.emit_log(logging.WARNING, f"Failed to disconnect \"command_failed_signal\" for connect command.")
+            self.emit_log(logging.WARNING, f"[{self.instance_name}]Failed to disconnect \"command_failed_signal\" for connect command.")
         try:
             self.command_expired_signal.disconnect(self._handle_connect_failure)
         except TypeError:
-            self.emit_log(logging.WARNING, f"Failed to disconnect \"command_expired_signal\" for connect command.")
+            self.emit_log(logging.WARNING, f"[{self.instance_name}]Failed to disconnect \"command_expired_signal\" for connect command.")
 
     ######
 
@@ -1491,12 +1497,12 @@ class BluetoothctlWrapper(QObject):
         )
 
     def _handle_disconnect_success(self):
-        self.emit_log(logging.INFO, f"[{int(QThread.currentThreadId())}]: Device {self.target_mac} is disconnected.")
+        self.emit_log(logging.INFO, f"[{self.instance_name}] Device {self.target_mac} is disconnected.")
         self._disconnect_disconnect_command_signals()
         self.device_disconnect_succeeded_signal.emit(self.target_mac)
 
     def _handle_disconnect_failure(self):
-        self.emit_log(logging.ERROR, f"[{int(QThread.currentThreadId())}]: Failed to disconnect device {self.target_mac}.")
+        self.emit_log(logging.ERROR, f"[{self.instance_name}] Failed to disconnect device {self.target_mac}.")
         self._disconnect_disconnect_command_signals()
         self.device_disconnect_failed_signal.emit(self.target_mac)
 
@@ -1505,7 +1511,7 @@ class BluetoothctlWrapper(QObject):
         try:
             self.command_completed_signal.disconnect(self._handle_disconnect_success)
         except TypeError:
-            self.emit_log(logging.WARNING, f"Failed to disconnect \"command_completed_signal\" for disconnect command.")
+            self.emit_log(logging.WARNING, f"[{self.instance_name}]Failed to disconnect \"command_completed_signal\" for disconnect command.")
         try:
             self.command_failed_signal.disconnect(self._handle_disconnect_failure)
         except TypeError:

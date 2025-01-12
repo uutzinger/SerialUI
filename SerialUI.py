@@ -129,7 +129,7 @@ class mainWindow(QMainWindow):
         self.serialThread.start()                                          # start thread which will start worker
 
         # Create serial worker
-        self.serialWorker = QSerial()                                      # create serial worker object
+        self.serialWorker = QSerial()     f                                 # create serial worker object
 
         # Create user interface hook for serial
         self.serialUI = QSerialUI(ui=self.ui, worker=self.serialWorker)    # create serial user interface object
