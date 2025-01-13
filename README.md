@@ -1,3 +1,5 @@
+Note: this is a development branch, archived as it was never properly merged into the main: [uutzinger/SerialUI](https://github.com/uutzinger/SerialUI) due to async work done by original author who merged these changes here manually.
+
 # Graphical User Interface for Serial Communication
 ![Serial Monitor](assets/serial_96.png)
 
