@@ -8,7 +8,7 @@
 extern RingBuffer dataBuffer;
 extern char data[1024];
 
-void generatePowerSystemData()
+size_t generatePowerSystemData()
 {
   float voltageSensor = random(300, 500) / 10.0;                // Voltage sensor
   float currentSensor = random(100, 200) / 10.0;                // Current sensor
@@ -24,8 +24,5 @@ void generatePowerSystemData()
   ptr += sprintf(ptr, "PowerSensor:%.1f,EnergySensor:%.1f,BatteryLevel:%.1f,", powerSensor, energySensor, batteryLevel);
   ptr += sprintf(ptr, "TemperatureBattery:%.1f,RSSI:%.1f\n", temperatureBattery, rssi);
 
-  size_t ret = dataBuffer.push(data, sizeof(data), false);
-  if (ret == 0) {
-    Serial.println("Ring buffer overflow");
-  }
+  return(dataBuffer.push(data, sizeof(data), false));
 }

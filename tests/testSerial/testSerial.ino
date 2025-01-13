@@ -49,6 +49,7 @@ void loop()
 {
 
   unsigned long currentTime = micros();
+  size_t ret;
 
   // Handle Commands
   // -----------------------------------------------------------------------
@@ -64,7 +65,10 @@ void loop()
     if (currentTime - lastMeasurementTime >= interval)
     {
       lastMeasurementTime = currentTime;
-      generateData();
+      ret = generateData();
+      if (ret == 0) {
+        Serial.println("Ring buffer overflow");
+      }
     }
   }
 
@@ -123,24 +127,24 @@ void handleSerialCommands()
   }
 }
 
-void generateData()
+size_t generateData()
 {
   switch (scenario)
   {
   case 1:
-    generateAgriculturalMonitoringData();
+    return(generateAgriculturalMonitoringData());
     break;
-  case 2:
-    generateCanSatData();
+  case 2)
+    return(generateCanSatData());
     break;
   case 3:
-    generateEnvironmentalData();
+    return(generateEnvironmentalData());
     break;
   case 4:
-    generateMedicalMonitoringData();
+    return(generateMedicalMonitoringData());
     break;
   case 5:
-    generatePowerSystemData();
+    return(generatePowerSystemData());
     break;
   default:
     Serial.println("Invalid scenario selected.");

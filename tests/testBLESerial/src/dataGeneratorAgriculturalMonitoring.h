@@ -8,7 +8,7 @@
 extern RingBuffer dataBuffer;
 extern char data[1024];
 
-void generateAgriculturalMonitoringData()
+size_t generateAgriculturalMonitoringData()
 {
 
   float soilMoisture = random(200, 800) / 10.0;          // Soil moisture in percentage
@@ -25,7 +25,6 @@ void generateAgriculturalMonitoringData()
   sprintf(data,"SoilMoisture: %f, SoilTemperature: %f, AirTemperature: %f,AirHumidity: %f,LightIntensity: %f, PHLevel: %f, LeafWetness: %d, CO2Level: %f, WindSpeed: %f,RSSI: %f\n", 
           soilMoisture, soilTemperature, airTemperature, airHumidity,lightIntensity,pHLevel,leafWetness,co2Level,windSpeed,rssi);
 
-  size_t ret = dataBuffer.push(data, sizeof(data), false);
-  if (ret == 0) { Serial.println("Ring buffer overflow"); }
+  return(dataBuffer.push(data, sizeof(data), false));
 
 }

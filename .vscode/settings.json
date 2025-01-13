@@ -2,6 +2,7 @@
     "cSpell.words": [
         "ADPCM",
         "bauderates",
+        "baudrate",
         "baudrates",
         "BIOZ",
         "BLEMTUMAX",
@@ -27,6 +28,7 @@
         "frombuffer",
         "gasync",
         "hstack",
+        "hwid",
         "idct",
         "Indx",
         "leneol",

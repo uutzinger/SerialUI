@@ -8,7 +8,7 @@
 extern RingBuffer dataBuffer;
 extern char data[1024];
 
-void generateEnvironmentalData()
+size_t generateEnvironmentalData()
 {
   float tempSensor1 = random(200, 300) / 10.0;       // Temperature sensor 1
   float tempSensor2 = random(150, 250) / 10.0;       // Temperature sensor 2
@@ -27,8 +27,5 @@ void generateEnvironmentalData()
   ptr += sprintf(ptr, "CO2Sensor:%d,AirQualityIndex:%.1f,NoiseLevel:%.1f,", co2Sensor, airQualityIndex, noiseLevel);
   ptr += sprintf(ptr, "RSSI:%.1f\n", rssi);
 
-  size_t ret = dataBuffer.push(data, sizeof(data), false);
-  if (ret == 0) {
-    Serial.println("Ring buffer overflow");
-  }
+  return(dataBuffer.push(data, sizeof(data), false));
 }

@@ -8,7 +8,7 @@
 extern RingBuffer dataBuffer;
 extern char data[1024];
 
-void generateMedicalMonitoringData()
+size_t generateMedicalMonitoringData()
 {
   float bodyTemp = random(360, 380) / 10.0;          // Body temperature in Celsius
   int heartRate = random(60, 100);                   // Heart rate in BPM
@@ -27,8 +27,5 @@ void generateMedicalMonitoringData()
   ptr += sprintf(ptr, "RespirationRate:%.1f,GlucoseLevel:%.1f,StepCount:%d,", respirationRate, glucoseLevel, stepCount);
   ptr += sprintf(ptr, "RSSI:%.1f\n", rssi);
 
-  size_t ret = dataBuffer.push(data, sizeof(data), false);
-  if (ret == 0) {
-    Serial.println("Ring buffer overflow");
-  }
+  return(dataBuffer.push(data, sizeof(data), false));
 }

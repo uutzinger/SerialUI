@@ -59,16 +59,16 @@ size_t              bytesSent            = 0;
 
 RingBuffer dataBuffer(BLE_BUFFERSIZE); // Create a ring buffer
 
-int           scenario = 1; // Default scenario (1: CanSat, 2: Environmental, 3: Power, 4: Medical, 5: Agricultural)
+int           scenario = 4; // Default scenario (1: CanSat, 2: Environmental, 3: Power, 4: Medical, 5: Agricultural)
 unsigned long currentTime;
 unsigned long interval = MEASUREMENT_INTERVAL; // Default interval at which to generate data
 unsigned long lastMeasurementTime  = 0;                     // Last time data was produced
-bool          paused = false;          // Flag to pause the data generation
+bool          paused = true;          // Flag to pause the data generation
 String        receivedCommand = "";
 char          data[1024];
 
 void handleBLECommands();
-void generateData();
+size_t generateData();
 
 class MyBLEServerCallbacks : public BLEServerCallbacks
 {
@@ -215,6 +215,7 @@ void loop()
 {
 
   unsigned long currentTime = micros();
+  size_t ret;
 
   if (deviceConnected && !receivedCommand.isEmpty())
   {
@@ -230,7 +231,11 @@ void loop()
     {
       lastMeasurementTime = currentTime;
       unsigned int measurementTime = (unsigned int) currentTime;
-      generateData();
+      ret = generateData();
+      if (ret == 0) {
+        pTxCharacteristic->setValue("Buffer overflow!");
+        pTxCharacteristic->notify();
+      }
     }
   }
 
@@ -242,6 +247,8 @@ void loop()
       size_t bytesRead = dataBuffer.pop(data, FRAME_SIZE);
       pTxCharacteristic->setValue((uint8_t*)data, bytesRead);
       pTxCharacteristic->notify();  // Send the chunk
+      Serial.println("Sent chunk.");
+
     }
   }
 
@@ -251,6 +258,9 @@ void loop()
 
 void handleBLECommands()
 {
+
+  Serial.println("Command: " + receivedCommand);
+
   if (receivedCommand.length() >= 8 && receivedCommand.startsWith("interval"))
   {
     int newInterval = receivedCommand.substring(8).toInt();
@@ -301,28 +311,28 @@ void handleBLECommands()
 }
 
 
-void generateData()
+size_t generateData()
 {
+  size_t ret;
   switch (scenario)
   {
   case 1:
-    generateAgriculturalMonitoringData();
+    return(generateAgriculturalMonitoringData());
     break;
   case 2:
-    generateCanSatData();
+    return(generateCanSatData());
     break;
   case 3:
-    generateEnvironmentalData();
+    return(generateEnvironmentalData());
     break;
   case 4:
-    generateMedicalMonitoringData();
+    return(generateMedicalMonitoringData());
     break;
   case 5:
-    generatePowerSystemData();
+    return(generatePowerSystemData());
     break;
   default:
-    pTxCharacteristic->setValue("Invalid scenario selected.");
-    pTxCharacteristic->notify();
+    return(generateMedicalMonitoringData());
     break;
   }
 }

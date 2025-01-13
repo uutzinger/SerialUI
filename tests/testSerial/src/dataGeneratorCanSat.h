@@ -9,7 +9,7 @@
 extern RingBuffer dataBuffer;
 extern char data[1024];
 
-void generateCanSatData()
+size_t generateCanSatData()
 {
   uint32_t lightIntensity = random(1000, 5000);
   float uvIndex = random(10, 25) / 10.0;
@@ -90,8 +90,6 @@ void generateCanSatData()
                   r, s, t, u, v, w);
   ptr += sprintf(ptr, "NumberOfSatellites:%u,RSSI:%d", numberOfSatellites, rssi);
 
-  size_t ret = dataBuffer.push(data, sizeof(data), false);
-  if (ret == 0) {
-    Serial.println("Ring buffer overflow");
-  }
+  return(dataBuffer.push(data, sizeof(data), false));
+
 }
