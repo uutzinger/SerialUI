@@ -11,7 +11,7 @@
 # with the device. It will allow you to send text to the BLE device and receive text.
 #############################################################################################
 
-# Need to rewrite code. I can not run bluetoothctl wrapper with Bleak simultanously. 
+# Need to rewrite code. I can not run bluetoothctl wrapper with Bleak simultaneously. 
 # I need to start it up each time I use trust/distrust, pair/remove, status.
 
 # Basic libraries

@@ -1,21 +1,13 @@
 #!/usr/bin/env python3
-# ################################################################################################
+#############################################################################################################################################
 # Serial Communication GUI
 # ========================
 #
-# Provides serial interface to send and receive text to/from serial port.
-# Plots of data on chart with zoom, save and clear.
-#
-# This framework was setup to visualize signals at high data rates.
-# Its implemented in python and QT and can be adapted to users needs. 
+# - Provides serial interface to send and receive text to/from serial port.
+# - Plots of data on chart with zoom, save and clear.
 #
 # This code is maintained by Urs Utzinger
-################################################################################################
-
-# Future release will include option for displaying data in indicators
-#  and 3D vector plots.
-
-USE3DPLOT = False
+#############################################################################################################################################
 
 # QT imports, QT5 or QT6
 try:
@@ -57,11 +49,16 @@ if not hasQt6:
     if hasattr(QtCore.Qt.ApplicationAttribute, "AA_UseHighDpiPixmaps"):
         QtWidgets.QApplication.setAttribute(QtCore.Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)
 
+# Future release will include option for displaying data in indicators
+#  and 3D vector plots.
+USE3DPLOT = False
+
 #############################################################################################################################################
 #############################################################################################################################################
 #
-#    Main Window
-#    This is the Viewer  of the Model - View - Controller (MVC) architecture.
+# Main Window
+#
+#    This is the Viewer of the Model - View - Controller (MVC) architecture.
 #
 #############################################################################################################################################
 #############################################################################################################################################
@@ -71,11 +68,11 @@ class mainWindow(QMainWindow):
     Create the main window that stores all of the widgets necessary for the application.
     """
 
-    # -------------------------------------------------------------------------------------
+    # ----------------------------------------------------------------------------------------------------------------------
     # Initialize
-    # -------------------------------------------------------------------------------------
+    # ----------------------------------------------------------------------------------------------------------------------
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, logger=None):
         """
         Initialize the components of the main window.
         This will create the connections between slots and signals in both directions.
@@ -88,7 +85,11 @@ class mainWindow(QMainWindow):
         """
         super(mainWindow, self).__init__(parent)  # parent constructor
 
-        self.logger = logging.getLogger("Main___")
+        if logger is None:
+            self.logger = logging.getLogger("Main___")
+        else:
+            self.logger = logger
+        
 
         main_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -132,7 +133,7 @@ class mainWindow(QMainWindow):
         self.serialWorker = QSerial()                                      # create serial worker object
 
         # Create user interface hook for serial
-        self.serialUI = QSerialUI(ui=self.ui, worker=self.serialWorker)    # create serial user interface object
+        self.serialUI = QSerialUI(ui=self.ui, worker=self.serialWorker, logger=self.logger)    # create serial user interface object
 
         # Connect worker / thread
         self.serialWorker.finished.connect(self.serialThread.quit)         # if worker emits finished quite worker thread
@@ -148,6 +149,7 @@ class mainWindow(QMainWindow):
         self.serialWorker.serialStatusReady.connect(self.serialUI.on_serialStatusReady)   # connect display serial status to ready signal
         self.serialWorker.throughputReady.connect(  self.serialUI.on_throughputReceived)  # connect display throughput status
         self.serialWorker.serialWorkerStateChanged.connect( self.serialUI.on_serialWorkerStateChanged) # mirror serial worker state to serial UI
+        self.serialWorker.logSignal.connect(        self.serialUI.on_logSignal)           # connect log messages to BLE UI
 
         # Signals from Serial-UI to Serial
         # ---------------------------------
@@ -173,6 +175,7 @@ class mainWindow(QMainWindow):
         # --------------------------------------------
         self.serialWorker.moveToThread(self.serialThread)  # move worker to thread
         self.serialUI.scanPortsRequest.emit()              # request to scan for serial ports
+        self.serialUI.scanBaudRatesRequest.emit()              # request to scan for serial ports
         self.serialUI.setupReceiverRequest.emit()          # establishes QTimer in the QThread above
         # do not initialize baud rate, serial port or line termination, user will need to select at startup
 
@@ -208,7 +211,8 @@ class mainWindow(QMainWindow):
         self.chartUI = QChartUI(ui=self.ui, serialUI=self.serialUI, serialWorker=self.serialWorker)  # create chart user interface object
         self.ui.pushButton_ChartStartStop.clicked.connect(self.chartUI.on_pushButton_StartStop)
         self.ui.pushButton_ChartClear.clicked.connect(    self.chartUI.on_pushButton_Clear)
-        self.ui.pushButton_ChartSave.clicked.connect(     self.chartUI.on_pushButton_Save)
+        self.ui.pushButton_ChartSave.clicked.connect(     self.chartUI.on_pushButton_ChartSave)
+        self.ui.pushButton_ChartSaveFigure.clicked.connect(self.chartUI.on_pushButton_ChartSaveFigure)
 
         self.ui.comboBoxDropDown_DataSeparator.currentIndexChanged.connect(self.chartUI.on_changeDataSeparator)
 
@@ -256,10 +260,11 @@ class mainWindow(QMainWindow):
         
         # Connect signals and slots
         self.usbThread.started.connect(   self.usbWorker.run)
-        self.usbWorker.finished.connect(  self.usbThread.quit                       ) # if worker emits finished quite worker thread
-        self.usbWorker.finished.connect(  self.usbWorker.deleteLater                ) # delete worker at some time
-        self.usbThread.finished.connect(  self.usbThread.deleteLater                ) # delete thread at some time
+        self.usbWorker.finished.connect(  self.usbThread.quit)          # if worker emits finished quite worker thread
+        self.usbWorker.finished.connect(  self.usbWorker.deleteLater)   # delete worker at some time
+        self.usbThread.finished.connect(  self.usbThread.deleteLater)   # delete thread at some time
         self.usbWorker.usb_event_detected.connect(self.serialUI.on_usb_event_detected)
+        self.usbWorker.logSignal.connect( self.serialUI.on_logSignal)
         self.usbThread.started.connect(   self.usbWorker.run)
 
         # Start the USB monitor thread
@@ -375,9 +380,9 @@ class mainWindow(QMainWindow):
         dialog.exec()
 
 
-###########################################################################################
-# Testing Main Window
-###########################################################################################
+#############################################################################################################################################
+# Main 
+#############################################################################################################################################
 
 if __name__ == "__main__":
 
@@ -391,12 +396,12 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging.INFO)
 
-    root_logger = logging.getLogger()
+    root_logger = logging.getLogger("SerialUI")
     current_level = root_logger.getEffectiveLevel()
 
     app = QtWidgets.QApplication(sys.argv)
 
-    win = mainWindow()
+    win = mainWindow(logger=root_logger)
     screen = app.primaryScreen()
     scalingX = screen.logicalDotsPerInchX() / 96.0
     scalingY = screen.logicalDotsPerInchY() / 96.0

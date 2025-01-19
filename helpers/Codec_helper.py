@@ -831,7 +831,7 @@ class ArduinoTextStreamProcessor:
         
         # Regular expression pattern to separate data values
         # This precompiles the text parsers
-        self.labeled_data_re  = re.compile(r'\s+(?=\w+:)')   # separate labeled data into segments
+        self.labeled_data_re  = re.compile(r',(?=\s*\w+:)')  # separate labeled data into segments
         self.label_data_re    = re.compile(r'(\w+):\s*(.+)') # separate segments into label and data
         self.vector_scalar_re = re.compile(r'[,]\s*')        # split on commas
 
@@ -854,16 +854,19 @@ class ArduinoTextStreamProcessor:
         scalar_count = 0
         vector_count = 0
 
-        decoded_line = line.decode(self.encoding)
+        _decoded_line = line.decode(self.encoding)
+        decoded_line = _decoded_line.replace(';', ',') # replace semicolons with commas
+
         # 1) Separate groups: "label1: value1 label2: value2" to "label1: value1" and "label2: value2".
         segments = self.labeled_data_re.split(decoded_line) if labels else [decoded_line]
 
-   
-        for segment in filter(None, segments):
+        for raw_segment in filter(None, segments):
+
+            # remove trailing or preceding commas or spaces
+            segment = raw_segment.strip(" ,")
 
             label = None
             data = segment
-
             # 2) For each group separate labels from values: "label1: value1" to ("label1", "value1")  
             if labels:
                 match = self.label_data_re.match(segment)
@@ -871,8 +874,7 @@ class ArduinoTextStreamProcessor:
                     label, data = match.groups()
 
             # 3) Split data into scalar or vector elements
-            _data = data.replace(';', ',') # replace semicolons with commas
-            data_elements = self.vector_scalar_re.split(_data)
+            data_elements = self.vector_scalar_re.split(data)
 
             for element in filter(None, data_elements):  # Filter out empty elements
                 try:

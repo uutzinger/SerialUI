@@ -13,14 +13,12 @@
 # General Imports
 import logging, time
 import re
-from collections import defaultdict
-from typing import List, Tuple
 
 # QT Libraries
 try:
     from PyQt6.QtCore import (
         QObject, QTimer, QThread, 
-        pyqtSlot, QStandardPaths
+        pyqtSlot, QStandardPaths, pyqtSignal
     )
     from PyQt6.QtWidgets import (
         QFileDialog, QLineEdit, QSlider,QTabWidget,
@@ -31,7 +29,7 @@ try:
 except:
     from PyQt5.QtCore import (
         QObject, QTimer, QThread, 
-        pyqtSlot, QStandardPaths
+        pyqtSlot, QStandardPaths, pyqtSignal
     )
     from PyQt5.QtWidgets import (
         QFileDialog, QLineEdit, QSlider,
@@ -42,6 +40,7 @@ except:
 
 # QT Graphing for chart plotting
 import pyqtgraph as pg
+import pyqtgraph.exporters
 
 # Numerical Math
 import numpy as np
@@ -53,80 +52,172 @@ except:
 
 # Constants
 ########################################################################################
-MAX_ROWS = 44100         # data history length
+MAX_ROWS = 131072        # data history length
 MAX_COLS = len(COLORS)   # maximum number of columns [available colors]
-#MAX_COLS = 16            # maximum number of columns (after this it begins to overflow off bottom of chart)
 DEF_COLS = 2             # default number of columns
 UPDATE_INTERVAL = 100    # milliseconds, visualization does not improve with updates faster than 10 Hz
+MAX_ROWS_LINEDATA = 512  # maximum number of rows for temporary array when parsing line data
 
+# 131072 * 16 * size_of(float)[8] = 16 MByte
 ########################################################################################
 # Support Functions and Classes
 ########################################################################################
+
+# "Power: 1 2 3 4" > "Power" , "1 2 3 4"
+# "Power: 1 2 3 4; 4 5 6 7" > "Power" , "1 2 3 4; 4 5 6 7"
+# "Power: 1 2 3 4, 4 5 6 7" > "Power" , "1 2 3 4, 4 5 6 7"
+# "Speed: 1 2 3 4, Power: 1 2 3 4" > "Speed", "1 2 3 4, ", "Power" , "1 2 3 4"
+# "Speed: 1 2 3 4, 5 6 7 8, Power: 1 2 3 4" > "Speed", "1 2 3 4, 5 6 7 8,", "Power" , "1 2 3 4"
+NAMED_SEGMENT_REGEX = re.compile(r'(\w+):([\d\s;,]+)')
+#NAMED_SEGMENT_REGEX = re.compile(r'\s*,?(\w+):\s*([\d\s;,]+)')
+#NAMED_SEGMENT_REGEX = re.compile(r'(\w+):([\d\s;,]+?)(?=\s*\w+:|$)')
+
+# "1 2 3 4, 4 5 6 7" > ["1 2 3 4", "4 5 6 7"] 
+# "1 2 3 4; 4 5 6 7" > ["1 2 3 4", "4 5 6 7"]
+SEGMENT_SPLIT_REGEX = re.compile(r'[,;]+')
 
 def clip_value(value, min_value, max_value):
     return max(min_value, min(value, max_value))
 
 class CircularBuffer:
     '''
-    This is a circular buffer to store numpy data.
+    Circular buffer for storing numpy data.
 
-    It adjusts the number of columns dynamically.
-    It is initialized to the maximum number of rows and an initial number of columns.
-    The buffer adjusts the columns based on incoming data, padding with NaNs as needed.
-    '''    
-    def __init__(self,max_rows, initial_columns):
+    - Dynamically adjusts columns based on incoming data.
+    - Uses a rolling approach to keep the most recent data.
+    - Ensures retrieval provides only valid rows and columns.
+    - Tracks sample numbers for continuous measurements.
+    '''
+
+    def __init__(self, initial_rows, initial_columns, dtype=float):
         ''' Initialize the circular buffer '''
-        self.max_rows = max_rows
-        self.columns = initial_columns
-        self._data = np.full((max_rows, initial_columns), np.nan)
-        self._index = 0
-        
-    def push(self, data_array):
+        self._nrows = initial_rows
+        self._ncols = initial_columns
+        self._dtype = dtype
+        # _data shape is [nrows x ncols]
+        self._data = np.full((initial_rows, initial_columns), np.nan, dtype=self._dtype)
+
+        self._head = 0         # Next insert position
+        self._num_entries = 0  # Number of valid (populated) row entries
+        self._num_columns = 0  # Tracks how many columns have been populated
+        self._oldest = 0       # Tracks the oldest "measurement number"
+        self._latest = 0       # Tracks the newest "measurement number"
+
+    def push(self, data_array: np.ndarray):
         ''' Add new data to the circular buffer '''
+
+        # 1 Determine size of new data
         num_new_rows, num_new_cols = data_array.shape
 
-        # Adjust the number of columns of the buffer if necessary
-        if num_new_cols > self.columns:
-            new_data = np.full((self.max_rows, num_new_cols), np.nan)
-            new_data[:, :self.columns] = self._data
+        # 2 Expand columns if necessary
+        if num_new_cols > self._ncols:
+            columns_to_add = max(self._ncols // 2, num_new_cols - self._ncols)
+            new_cols = self._ncols + columns_to_add
+            new_data = np.full((self._nrows, new_cols), np.nan, dtype=self._dtype)
+
+            # Preserve old data
+            # We only copy up to self._ncols since that's what existed
+            new_data[:, :self._ncols] = self._data
             self._data = new_data
-            self.columns = num_new_cols            
-        elif num_new_cols < self.columns:
-            if not np.isnan(self._data[:, num_new_cols:]).all():
-                # Need to pad the incoming data to match existing columns
-                padded_data_array = np.full((num_new_rows, self.columns), np.nan)
-                padded_data_array[:, :num_new_cols] = data_array
-                data_array = padded_data_array
-            else:
-                # Trim the buffer columns
-                self._data = self._data[:, :num_new_cols]
-                self.columns = num_new_cols
+            self._ncols = new_cols
 
-        # Insert data
-        end_index = (self._index + num_new_rows) % self.max_rows # where new data will be inserted
-        if end_index < self._index:
-            # Wrapping is necessary when inserting new data
-            self._data[self._index:self.max_rows] = data_array[:self.max_rows - self._index]
-            self._data[:end_index] = data_array[self.max_rows - self._index:]
+        # 3 Expand rows by if necessary
+        if num_new_rows > self._nrows:
+            rows_to_add = max(self._nrows // 2, num_new_rows - self._nrows)
+            new_rows = self._nrows + rows_to_add
+            new_data = np.full((new_rows, self._ncols), np.nan, dtype=self._dtype)
+
+            # Preserve old data
+            new_data[:self._nrows, :] = self._data
+            self._data = new_data
+            self._nrows = new_rows  
+
+        # 4 If new data exactly fills the buffer we overwrite all at once
+        if num_new_rows == self._nrows:
+            self._data[:self._nrows, :num_new_cols] = data_array[-self._nrows:, :num_new_cols]
+            self._head = 0 
+            self._num_entries = self._nrows
+            self._num_columns = max(num_new_cols, self._num_columns)
+            self._latest += num_new_rows
+            self._oldest = self._latest - self._num_entries + 1
+            return
+
+        # 5 Write new data at _head
+        end_pos = (self._head + num_new_rows) % self._nrows
+
+        if end_pos < self._head:
+            # Wraparound insertion: Split into two parts
+            first_part = self._nrows - self._head
+            self._data[self._head:self._nrows, :num_new_cols] = data_array[:first_part, :num_new_cols]
+            self._data[0:end_pos, :num_new_cols] = data_array[first_part:, :num_new_cols]
         else:
-            # No wrapping necessary, new data fits into the buffer
-            self._data[self._index:end_index] = data_array                    
+            # Direct insertion (no wrap around)
+            self._data[self._head:end_pos, :num_new_cols] = data_array[:, :num_new_cols]
 
-        self._index = end_index
+        # 6 Update index and counters
+        self._head = end_pos
+        self._num_entries = min(self._num_entries + num_new_rows, self._nrows)
+        self._num_columns = max(self._num_columns, num_new_cols)
+        self._latest += num_new_rows
+        self._oldest = self._latest - self._num_entries + 1
 
     def clear(self):
-        ''' Set all buffer values to NaN '''
-        self._data = np.full((self.max_rows, self.columns), np.nan)
-    
+        ''' Clear the buffer (set all values to NaN) '''
+        self._data.fill(np.nan)
+        self._head = 0
+        self._num_entries = 0
+        self._num_columns = 0
+        self._oldest = 0
+        self._latest = 0
+
     @property
     def data(self):
-        ''' Obtain the data from the buffer '''
-        if self._index == 0:
-            return self._data
-        else:
-            # Rearrange the data so that the newest data is at the end
-            return np.roll(self._data, -self._index, axis=0)
+        ''' Retrieve valid data ordered from oldest to newest '''
+        if self._num_entries == 0:
+            return np.empty((0, self._num_columns), dtype=self.dtype)
 
+        start = (self._head - self._num_entries) % self._nrows
+        end = (start + self._num_entries) % self._nrows
+
+        if start < end:
+            # No wrap needed
+            return self._data[start:end, :self._num_columns]
+        else:
+            # Wrap around
+            return np.vstack([
+                self._data[start:self._nrows, :self._num_columns],
+                self._data[0:end, :self._num_columns]
+            ])
+        
+    @property
+    def shape(self):
+        ''' Return the shape (populated rows, populated columns) of the buffer '''
+        return (self._num_entries, self._num_columns) 
+
+    @property
+    def capacity(self):
+        ''' Return the capacity (rows, columns) of the buffer '''
+        return (self._nrows, self._ncols) 
+
+    @property
+    def ncols(self):
+        ''' Return the number of columns of the buffer '''
+        return self._ncols 
+
+    @property
+    def nrows(self):
+        ''' Return the number of rows of the buffer '''
+        return self._nrows 
+
+    @property
+    def counter(self):
+        ''' Return the oldest and newest measurement number'''
+        return (self._oldest, self._latest)
+
+    @property
+    def dtype(self):
+        ''' Return the data type '''
+        return self._dtype 
 
 ############################################################################################
 # QChart interaction with Graphical User Interface
@@ -145,7 +236,8 @@ class QChartUI(QObject):
     Slots (functions available to respond to external signals)
         on_pushButton_StartStop
         on_pushButton_Clear
-        on_pushButton_Save
+        on_pushButton_ChartSave
+        on_pushButton_ChartSaveFigure
         on_HorizontalSliderChanged(int)
         on_HorizontalLineEditChanged
         on_newLinesReceived(list)
@@ -161,38 +253,40 @@ class QChartUI(QObject):
     ########################################################################################
     # No Signals, no worker all in the main thread
 
-    def __init__(self, parent=None, ui=None, serialUI=None, serialWorker=None):
-        # super().__init__()
-        super(QChartUI, self).__init__(parent)
+    def __init__(self, parent=None, ui=None, serialUI=None, serialWorker=None, logger=None, encoding="utf-8"):
 
-        self.logger = logging.getLogger("QChartUI_")
+        super().__init__(parent)
+
+        self.thread_id = int(QThread.currentThreadId()) if QThread.currentThreadId() else "N/A"
+
+
+        if logger is None:
+            self.logger = logging.getLogger("QChartUI")
+        else:
+            self.logger = logger
 
         if ui is None:
             self.logger.log(
                 logging.ERROR,
-                "[{}]: Need to have access to User Interface".format(
-                    int(QThread.currentThreadId())
-                ),
+                f"[{self.thread_id}]: Need to have access to User Interface"
             )
         self.ui = ui
 
         if serialUI is None:
             self.logger.log(
                 logging.ERROR,
-                "[{}]: Need to have access to Serial User Interface".format(
-                    int(QThread.currentThreadId())
-                ),
+                f"[{self.thread_id}]: Need to have access to Serial User Interface"
             )
         self.serialUI = serialUI
 
         if serialWorker is None:
             self.logger.log(
                 logging.ERROR,
-                "[{}]: Need to have access to Serial Worker".format(
-                    int(QThread.currentThreadId())
-                ),
+                f"[{self.thread_id}]: Need to have access to Serial Worker"
             )
         self.serialWorker = serialWorker
+
+        self.encoding = encoding
 
         # Create the chart
         self.chartWidget = pg.PlotWidget()
@@ -229,8 +323,13 @@ class QChartUI(QObject):
 
         self.maxPoints = (1024) # maximum number of points to show in a plot from now to the past
 
-        self.buffer = CircularBuffer(MAX_ROWS, MAX_COLS)
-        self.legends = []
+        self.buffer = CircularBuffer(MAX_ROWS, MAX_COLS, dtype=float)
+        self.data_array = np.full((MAX_ROWS_LINEDATA, MAX_COLS), np.nan)
+        self.data_array_rows, self.data_array_cols = self.data_array.shape
+        self.legends = []        # stores the variable names
+        self.variable_index = {} # stores the variable names and their column index in the buffer
+
+        self.sample_number = 0 
 
         # Initialize the plot axis ranges
         self.chartWidget.setXRange(0, self.maxPoints)
@@ -244,17 +343,12 @@ class QChartUI(QObject):
         self.lineEdit = self.ui.findChild(QLineEdit, "lineEdit_Horizontal")
         self.lineEdit.setText(str(self.maxPoints))
         
-        self.logger = logging.getLogger("QChartUI_")
-
         self.textDataSeparator = 'No Labels (simple)'                                 # default data separator
         index = self.ui.comboBoxDropDown_DataSeparator.findText("No Labels (simple)") # find default data separator in drop down
         self.ui.comboBoxDropDown_DataSeparator.setCurrentIndex(index)                 # update data separator combobox
         self.logger.log(
             logging.DEBUG, 
-            "[{}]: Data separator {}.".format(
-                int(QThread.currentThreadId()), 
-                repr(self.textDataSeparator)
-            )
+            f"[{int(QThread.currentThreadId())}]: Data separator {repr(self.textDataSeparator)}."
         )
 
         self.ui.pushButton_ChartStartStop.setText("Start")
@@ -264,360 +358,351 @@ class QChartUI(QObject):
         self.ChartTimer.setInterval(100)  # milliseconds, we can not see more than 50 Hz
         self.ChartTimer.timeout.connect(self.updatePlot)
 
-        # Regular expression pattern to separate data values
-        # This precompiles the text parsers
-        self.labeled_data_re  = re.compile(r'\s+(?=\w+:)')   # separate labeled data into segments
-        self.label_data_re    = re.compile(r'(\w+):\s*(.+)') # separate segments into label and data
-        self.vector_scalar_re = re.compile(r'[;,]\s*')       # split on commas or semicolons
-
-        # [[label:][{'\s' '\t' ''} value {',' ';', ''}]]
-        # ----------------------------------------------
-        # "label1: value1 label2: value2" to "label1: value1" and "label2: value2".
-        # "label1: value1" to ("label1", "value1")
-        # "value1, value2; value3" to ["value1", "value2", "value3"].
-
         self.logger.log(
             logging.INFO, 
-            "[{}]: Initialized.".format(
-                int(QThread.currentThreadId())
-            )
+            f"[{self.thread_id}]: Initialized."
         )
 
     # Utility functions
     ########################################################################################
 
-    def parse_lines(self, lines: List[bytes]) -> List[dict]:
-        """
-        Takes a text line and parses it for labels, vectors, scalars, or unlabeled data.
-
-        [[label:][{'\s' '\t' ''} value {',' ';', ''}]]
-        The regular expressions are defined in the init function.
-
-        A vector has a label and several values separated by commas or semicolons.
-        """
-
-        data_structure = []
-
-        for line in lines:
-            # First, extract potential labeled parts
-            segments = self.labeled_data_re.split(line.decode(self.serialUI.encoding))
-            scalar_count = 0
-            vector_count = 0
-
-            for segment in segments:
-                if not segment:
-                    continue
-                match = self.label_data_re.match(segment)
-                if match:
-                    # labeled data
-                    label, data = match.groups()
-                    data_elements = self.vector_scalar_re.split(data)
-                else:
-                    # unlabeled data
-                    data_elements = self.vector_scalar_re.split(segment)
-                    label = None
-
-                for data in data_elements:
-                    try:
-                        numbers = list(map(float, data.split()))
-                    except ValueError:
-                        continue  # Skip entries that cannot be converted to float
-                    
-                    if not numbers:
-                        continue  # Skip empty data elements
-
-                    if label:
-                        header = f"{label}"
-                    elif len(numbers) == 1:
-                        scalar_count += 1
-                        header = f"S{scalar_count}"
-                    else:
-                        vector_count += 1
-                        header = f"V{vector_count}"
-
-                    data_structure.append({'header': header, 'values': numbers, 'length': len(numbers)})
-
-        return data_structure
-
-    def parse_lines_simple(self, lines: List[bytes]) -> Tuple[List[np.ndarray], List[str]]:
-        """
-        Takes a text line and parses it.
-
-        No headers are expected
-        Each line is expected to have the same format.
-        Scalars and vectors are separated by commas or semicolons.
-        Vector elements are separated by whitespace.
-        The regular expressions are defined in the init function.
-        """
-
-        component_lists = []    # List of lists, each sub-list will be converted to a numpy array
-        header_list = []        # List of headers
-        initialized = False     #
-
-        for line in lines:
-            # Decode the line from bytes to string
-            decoded_line = line.decode(self.serialUI.encoding)
-
-            # Split into major components (scalars or vector groups)
-            components = self.vector_scalar_re.split(decoded_line)
-
-            if not initialized:
-                scalar_count=0
-                vector_count=0
-                # Initialize lists for each component
-                for idx, component in enumerate(components):
-                    component_lists.append([])
-                    # Check if the component is a scalar or vector
-                    values = component.strip().split()
-                    if len(values) == 1:
-                        scalar_count += 1
-                        header_list.append(f"S{scalar_count}")
-                    else:
-                        vector_count
-                        header_list.append(f"V{vector_count}")
-                initialized = True
-
-            for idx, component in enumerate(components):
-                # Split potential vectors by whitespace and convert to float
-                # values = [float(value) for value in component.strip().split() if value]
-                values = []
-                for value in component.strip().split():
-                    try:
-                        values.append(float(value))
-                    except ValueError:
-                        continue
-                component_lists[idx].append(values)
-
-        # Convert each component list to a numpy array
-        data_array_list = [np.array(component) for component in component_lists]
-
-        return data_array_list, header_list
-
-    # Response Functions to User Interface Signals
-    ########################################################################################
-
     def updatePlot(self):
         """
-        Update the chart plot
+        Update the chart plot.
 
-        Plots data that is not np.nan.
-        Populate the data_line traces with the data.
-        Set the horizontal range to show newest data to go back in time maxPoints.
-        Set vertical range to min and max of data.
+        - Plots only valid (non-nan) data.
+        - Dynamically updates the legend.
+        - Sets the horizontal range to show the newest data up to maxPoints.
+        - Sets vertical range dynamically based on min/max values of the data.
         """
 
         tic = time.perf_counter()
-        data = self.buffer.data
-        num_rows, num_cols = data.shape
+        data = self.buffer.data  # Retrieve circular buffer data
+        num_rows, num_cols = self.buffer.shape
+        oldest_sample, newest_sample = self.buffer.counter
 
-        self.legend.clear()                      # Clear the existing legend
+        self.legend.clear()  # Clear the existing legend
 
-        # Ensure there are enough data_line objects for each data column
-        while len(self.data_line) < num_cols - 1:
+        # 1 Ensure there are enough data_line objects for each data column
+        while len(self.data_line) < num_cols:
             new_line_index = len(self.data_line)
             new_line = self.chartWidget.plot([], [], pen=self.pen[new_line_index % len(self.pen)], name=str(new_line_index))
             self.data_line.append(new_line)
 
-        # Where do we have valid data?
+        #  2 Legends
+
+        # Sort variable names for consistent legend display
+        sorted_variables = sorted(self.variable_index.items(), key=lambda x: x[1])
+        variable_names = [name for name, _ in sorted_variables]
+
+        # 3 Determine x-values using sample numbers
+        if num_rows > 0:
+            x = np.arange(oldest_sample, newest_sample + 1)  # ✅ Generate x-values dynamically
+        else:
+            x = np.array([])
+
+        # Find valid data (non-NaN values)
         have_data = ~np.isnan(data)
-        max_legends = len(self.legends)
 
-        max_y = -np.inf
-        min_y =  np.inf
-        max_x = -np.inf
-        min_x =  np.inf
-        for i in range(num_cols-1):              # for each column
-            have_column_data = have_data[:, i + 1]
-            x = data[have_column_data, 0]        # extract the sample numbers
-            y = data[have_column_data, i + 1]    # extract the data
+        # Compute min/max Y values for scaling
+        max_y = np.nanmax(data, initial=-np.inf)  # ✅ Compute across all columns
+        min_y = np.nanmin(data, initial=np.inf)
 
-            # max and min of data
-            if x.size > 0:                       # avoid empty numpy array
-                max_x = max([np.max(x), max_x])  # update max and min
-                min_x = min([np.min(x), min_x])
-            if y.size > 0:                       # avoid empty numpy array
-                max_y = max([np.max(y), max_y])  # update max and min
-                min_y = min([np.min(y), min_y])
-            self.data_line[i].setData(x, y)      # update the plot
+        # 5 Iterate through data columns, updating traces and legends
+        for i in range(num_cols):
+            have_column_data = have_data[:, i]
+            y = data[have_column_data, i]  # Extract non-NaN values for this column
 
-            # update the plot name
-            if i < max_legends:
-                self.data_line[i].opts["name"] = self.legends[i]
+            # Ensure x and y have the same length
+            valid_x = x[have_column_data] if len(x) > 0 else np.array([])
+
+            self.data_line[i].setData(valid_x, y)  # ✅ Update plot data with computed x-values
+
+            # Update the plot name from variable_index
+            if i < len(variable_names):
+                self.data_line[i].opts["name"] = variable_names[i]
             else:
                 self.data_line[i].opts["name"] = str(i)
 
-            # update the legend
-            self.legend.addItem(
-                self.data_line[i], self.data_line[i].opts["name"]
-            )  # Re-add the items with updated names to the legend
+            # Update the legend dynamically
+            self.legend.addItem(self.data_line[i], self.data_line[i].opts["name"])
 
-        # adjust range
-        if min_x <= max_x:  # we found valid data
-            self.chartWidget.setXRange(max_x - self.maxPoints, max_x)  # set the horizontal range
+        # 6 Adjust axis ranges dynamically
+        if num_rows > 0 and len(x) > 0:
+            min_x, max_x = x[0], x[-1]
+            self.chartWidget.setXRange(max_x - self.maxPoints, max_x)  # ✅ Adjust based on computed sample numbers
+
         if min_y <= max_y:
-            self.chartWidget.setYRange(min_y, max_y)  # set the vertical range
+            self.chartWidget.setYRange(min_y, max_y)
 
         toc = time.perf_counter()
         self.logger.log(
             logging.DEBUG,
-            "[{}]: Plot updated in {} ms".format(
-                int(QThread.currentThreadId()), 1000 * (toc - tic)
-            ),
+            f"[{self.thread_id}]: Plot updated in {1000 * (toc - tic):.2f} ms"
         )
+
+    ########################################################################################
+    # Process Lines Function without Headers
+    ########################################################################################
+
+    def process_lines_simple(self, lines, encoding="utf-8"):
+        """Fast processing of data without headers, dynamically expanding the buffer."""
+
+        row_idx = 0             # Tracks row position in data_array
+        max_segment_length = 0  # Track longest segment
+        num_columns = 0         # Track maximum column index
+        new_samples = 0         # Track number of new samples
+        self.data_array_rows, self.data_array_cols = self.data_array.shape 
+
+        for line in lines:
+            # Decode byte string if necessary
+            decoded_line = line.decode(encoding)
+
+            # Split into components efficiently
+            segments = SEGMENT_SPLIT_REGEX.split(decoded_line.strip(" ,;"))
+
+            # Convert segments to NumPy arrays
+            for col_idx, segment in enumerate(segments):
+                try:
+                    segment_data = np.array(segment.split(), dtype=float)
+                except:
+                    self.logger.log(
+                        logging.ERROR,
+                        f"[{self.thread_id}]: Could not convert '{segment}' to float. Line '{line}'. "
+                    )
+                    continue
+
+                len_segment = len(segment_data)
+                row_end = row_idx + len_segment
+                max_segment_length = max(max_segment_length, len_segment)
+
+                # Expand rows if needed (memory-efficient)
+                if row_end >= self.data_array_rows:
+                    rows_to_add = max(self.data_array_rows // 2, row_end - self.data_array_rows)
+                    new_rows = self.data_array_rows + rows_to_add
+                    new_data_array = np.full((new_rows, self.data_array_cols), np.nan, dtype=self.data_array.dtype)
+                    new_data_array[:self.data_array_rows, :] = self.data_array
+                    self.data_array = new_data_array
+                    self.data_array_rows = new_rows
+
+                # Expand columns if needed
+                if col_idx >= self.data_array_cols:
+                    cols_to_add = max(self.data_array_cols // 2, col_idx - self.data_array_cols + 1)
+                    new_cols = self.data_array_cols + cols_to_add
+                    new_data_array = np.full((self.data_array_rows, new_cols), np.nan, dtype=self.data_array.dtype)
+                    new_data_array[:, :self.data_array_cols] = self.data_array  # Copy old data
+                    self.data_array = new_data_array
+                    self.data_array_cols = new_cols
+
+                # Store the values in `data_array`
+                self.data_array[row_idx:row_end, col_idx] = segment_data
+
+            new_samples += max_segment_length
+
+            # Advance row_idx after processing a full line
+            row_idx += max_segment_length  
+            max_segment_length = 0  
+            num_columns = max(col_idx + 1, num_columns)  
+
+        # Update variable index dynamically
+        self.variable_index = {str(i + 1): i for i in range(num_columns)}
+
+        # Push only the valid portion of data_array to the buffer
+        self.buffer.push(self.data_array[:new_samples, :num_columns])
+
+        # Clear only the used portion of `data_array`
+        self.data_array[:new_samples, :num_columns] = np.nan  
+
+    ########################################################################################
+    # Process Lines Function with Headers
+    ########################################################################################
+
+    # Line 1: "Power: 1 2 3 4, Speed: 5 6 7 8"
+    # Line 2: "Power: 4 3 2 1, Speed: 8 7 6 5"
+    # Result:
+    #   Variable index: {"Power:0, "Speed":1}
+    #   Data: [[1,5],
+    #          [2,6],
+    #          [3,7],
+    #          [4,8],
+    #          [4,8],
+    #          [3,7],
+    #          [2,6],
+    #          [1,5]] 
+    #
+    # Line 1: "Power: 1, 2, 3, 4 Speed: 5, 6, 7, 8"
+    # Line 2: "Power: 4, 3, 2, 1 Speed: 8, 7, 6, 5"
+    # Result:
+    #   Variable index: {"Power_1":0, "Power_2":1, "Power_3":2, "Power_4":3, "Speed_1":4, "Speed_2":5, "Speed_3":6, "Speed_4":7}
+    #   Data: [[1,2,3,4,5,6,7,8],
+    #          [4,3,2,1,8,7,6,5]] 
+    #
+    # Line 1: "Power: 1 2 3 4; 5 6 7 8 Speed:  9 10 11 12; 13 14 15 16" 
+    # Line 2: "Power: 4 3 2 1; 8 7 6 5 Speed: 12 11 10  9; 16 15 14 13"
+    # Result:
+    #   Variable index {"Power_1":0, "Power_2":1, "Speed_1":2, "Speed_2":3
+    #   Data: [[1,5, 9,13],
+    #          [2,6,10,14],
+    #          [3,7,11,15],
+    #          [4,8,12,16],
+    #          [4,8,12,16],
+    #          [3,7,11,15],
+    #          [2,6,10,14],
+    #          [1,5, 9,13]]
+    #
+
+    # Line 1: "Sound: 1 2 3 4"
+    # Line 2: "Sound: 5 6 7 Blood Pressure: 121"
+    # Line 3: "Sound: 8 9 10 11 12"
+    # Line 4: "Sound: 13 14 Sound: 15 16, Oxygenation: 99"
+
+    # Result:
+    #   Variable index: {"Sound}":0, "Blood Pressure":1, "Oxygenation":2}
+    #   Data: 
+    #   [[  1.  nan  nan]
+    #   [   2.  nan  nan]
+    #   [   3.  nan  nan]
+    #   [   4.  nan  nan]
+    #   [   5. 121.  nan]
+    #   [   6.  nan  nan]
+    #   [   7.  nan  nan]
+    #   [   8.  nan  nan]
+    #   [   9.  nan  nan]
+    #   [  10.  nan  nan]
+    #   [  11.  nan  nan]
+    #   [  12.  nan  nan]
+    #   [  13.  nan  nan]
+    #   [  14.  nan  nan]
+    #   [  15.  nan  99.]  # Moved to new row before inserting second "Sound"
+    #   [  16.  nan  nan]]
+
+    def process_lines(self, lines, encoding="utf-8"):
+
+        # Initialize variables
+        row_idx = 0
+        processed_vars = set()  # Track variables already processed in this line
+        max_segment_length = 0  # Track longest segment
+        new_samples = 0  # Track new samples added
+        self.data_array_rows, self.data_array_cols = self.data_array.shape
+
+        for line in lines:
+            # Decode the line if it's a byte object
+            decoded_line = line.decode(encoding)
+
+            # Match named segments (e.g., "Power: 1 2 3 4")
+            named_segments = NAMED_SEGMENT_REGEX.findall(decoded_line)
+            
+            for name, data in named_segments:
+                # Split data by semicolon or comma for multiple components
+                segments = SEGMENT_SPLIT_REGEX.split(data.strip(" ,;"))
+
+                for i, segment in enumerate(segments):
+                    # Convert segment to NumPy array
+                    segment_data = np.array(segment.split(), dtype=float)
+
+                    # Assign correct variable name (with index for subsegments)
+                    name_ext = name if len(segments) == 1 else f"{name}_{i + 1}"
+
+                    # Efficient variable indexing
+                    col_idx = self.variable_index.setdefault(name_ext, len(self.variable_index))
+
+                    len_segment = len(segment_data)
+
+                    # Restart new columns after a line is completed
+                    if name_ext in processed_vars:
+                        row_idx += max_segment_length  
+                        new_samples += max_segment_length
+                        processed_vars.clear()  
+                        max_segment_length = 0  
+
+                    # Track that this variable has been processed
+                    processed_vars.add(name_ext)
+
+                    row_end = row_idx + len_segment  
+
+                    # Keep track of the maximum segment length (to increment `row_idx` later)
+                    max_segment_length = max(max_segment_length, len_segment)
+
+                    # Expand rows dynamically as needed
+                    if row_end >= self.data_array_rows:
+                        rows_to_add = max(self.data_array_rows // 2, row_end - self.data_array_rows)
+                        new_rows = self.data_array_rows + rows_to_add
+                        new_data_array = np.full((new_rows, self.data_array_cols), np.nan, dtype=self.data_array.dtype)
+                        new_data_array[:self.data_array_rows, :] = self.data_array
+                        self.data_array = new_data_array
+                        self.data_array_rows = new_rows  
+
+                    # Expand columns dynamically as needed
+                    if col_idx >= self.data_array_cols:
+                        cols_to_add = max(self.data_array_cols // 2, col_idx - self.data_array_cols + 1)
+                        new_cols = self.data_array_cols + cols_to_add
+                        new_data_array = np.full((self.data_array_rows, new_cols), np.nan, dtype=self.data_array.dtype)
+                        new_data_array[:, :self.data_array_cols] = self.data_array  
+                        self.data_array = new_data_array
+                        self.data_array_cols = new_cols  
+
+                    # Store the values in `data_array`
+                    self.data_array[row_idx:row_end, col_idx] = segment_data
+
+            # After processing a full line, move to the next row
+            row_idx += max_segment_length  
+            new_samples += max_segment_length  
+            max_segment_length = 0  
+            processed_vars.clear()  
+
+        # Update buffer and variable index
+        num_columns = max(self.variable_index.values(), default=0) + 1
+
+        # Push only the valid portion of `data_array`
+        self.buffer.push(self.data_array[:new_samples, :num_columns])
+
+        # Clear only the used portion of `data_array`
+        self.data_array[:new_samples, :num_columns] = np.nan  
+
+    ########################################################################################
+    ########################################################################################
+    # Response Functions to User Interface Signals
+    ########################################################################################
+    ########################################################################################
+
+    @pyqtSlot(list)
+    def on_newLinesReceived(self, lines: list):
+        """
+        Decode/Parse a list of lines for data and add it to the circular buffer
+        """
+
+        tic = time.perf_counter()
+
+        # Make a copy of the lines
+        # lines_copy = [item[:] for item in lines]
+
+        if self.textDataSeparator == 'No Labels (simple)':
+            self.process_lines_simple(lines, encoding = self.encoding)
+
+        elif self.textDataSeparator == 'With [Label:]':
+            self.process_lines(lines, encoding = self.encoding)
+
+        else:
+            self.logger.log(
+                logging.WARNING,
+                f"[{self.thread_id}]: Data separator {repr(self.textDataSeparator)} not available."
+            )
+
+        toc = time.perf_counter()
+        self.logger.log(
+            logging.DEBUG,
+            f"[{self.thread_id}]: Data points received: parsing took {1000 * (toc - tic)} ms"
+        )        
 
     @pyqtSlot()
     def on_changeDataSeparator(self):
         ''' user wants to change the data separator '''
         self.textDataSeparator = self.ui.comboBoxDropDown_DataSeparator.currentText()
-        self.logger.log(logging.INFO, "[{}]: Data separator {}".format(int(QThread.currentThreadId()), self.textDataSeparator))
-        self.ui.statusBar().showMessage('Data Separator changed.', 2000)            
-
-    @pyqtSlot(list)
-    def on_newLinesReceived(self, lines: list):
-        """
-        Decode a received list of bytes lines and add data to the circular buffer
-        """
-        tic = time.perf_counter()
-
-        if self.textDataSeparator == 'No Labels (simple)':
-            # Simple approach with no labels
-            # ------------------------------
-
-            # 1) Parse the data
-            data_array_list, header_list = self.parse_lines_simple(lines)
-    
-            # 2) Stack the data and convert to numpy array, add sample numbers
-            if data_array_list:
-                # 2a) Stack horizontally
-                data_array = np.hstack(data_array_list)
-
-                # 2b) Add sample numbers as first column
-                data_array_shape = data_array.shape
-                if len(data_array_shape) == 2:
-                    num_rows = data_array_shape[0]
-                    sample_numbers = np.arange(self.sample_number, self.sample_number + num_rows).reshape(-1, 1)
-                    self.sample_number += num_rows
-
-                    data_array = np.hstack([sample_numbers, data_array])
-                else:
-                    data_array = None
-            else:
-                data_array = None
-
-            # 3) Update headers
-            if header_list and data_array_list:
-                legends = []
-                for idx, array in enumerate(data_array_list):
-                    if array.ndim > 1:  # Ensure the array is multi-dimensional
-                        num_cols = array.shape[1]
-                    else:
-                        num_cols = 1  # A 1D array is treated as having one column
-
-                    if num_cols > 1:
-                        header_labels = [f"{header_list[idx]}_{i+1}" for i in range(num_cols)]
-                        legends.extend(header_labels)
-                    else:
-                        legends.append(header_list[idx])  
-            else:
-                legends = []
-            
-            # have numpy data_array and list of legends
-
-        else: 
-            # Complicated approach with labels
-            # --------------------------------
-
-            # 1) Parse the data
-            parsed_data = self.parse_lines(lines)
-            # takes about 0.35 ms for 10 lines of data
-
-            # 2) Pad the data
-            if self.textDataSeparator == 'No Labels (simple)':
-            #    Determine the maximum number of data entries for each header
-                header_analysis = defaultdict(lambda: {'count': 0, 'max_length': 0})
-                for entry in parsed_data:
-                    header = entry['header']
-                    length = len(entry['values'])
-                    header_analysis[header]['count'] += 1
-                    header_analysis[header]['max_length'] = max(header_analysis[header]['max_length'], length)
-                # no padding
-                padded_parsed_results = parsed_data
-            else:
-            #    Determine the maximum number of data entries for each header
-                header_analysis = defaultdict(lambda: {'count': 0, 'max_length': 0})
-                for entry in parsed_data:
-                    header = entry['header']
-                    length = len(entry['values'])
-                    header_analysis[header]['count'] += 1
-                    header_analysis[header]['max_length'] = max(header_analysis[header]['max_length'], length)
-
-                #    Find the maximum occurrence of any header
-                max_header_occurrence = max(details['count'] for details in header_analysis.values())
-
-                #    Pad the data to ensure all data the same length for each header
-                padded_parsed_results = []
-
-                for header, details in header_analysis.items():
-                    # Existing entries for each header
-                    existing_entries = [entry for entry in parsed_data if entry['header'] == header]
-                    for entry in existing_entries:
-                        max_length = details['max_length']
-                        padded_values = entry['values'] + [float('nan')] * (max_length - len(entry['values']))
-                        padded_parsed_results.append({'header': header, 'values': padded_values, 'length': max_length})
-
-                    # Padding for headers to match max occurrence
-                    padding_count = max_header_occurrence - details['count']
-                    max_length = details['max_length']
-                    padding_entry = {'header': header, 'values': [float('nan')] * max_length, 'length': max_length}
-                    padded_parsed_results.extend([padding_entry] * padding_count)
-
-            # takes about 0.175 ms for 10 lines of data
-
-            # 3) Convert the parsed data to a numpy array
-
-            data_array_list = []
-            legends = []
-
-            # Create numpy data array for each header
-            for header, details in header_analysis.items():
-                entries = [entry for entry in padded_parsed_results if entry['header'] == header]
-                num_cols = details['max_length']
-
-                # Prepare data for stacking
-                data = np.array([entry['values'] for entry in entries], dtype=float)
-                data_array_list.append(data)
-
-                # Stack headers
-                if num_cols > 1:
-                    header_labels = [f"{header}_{i+1}" for i in range(num_cols)]
-                    legends.extend(header_labels)
-                else:
-                    legends.append(header)  
-
-            # Stack horizontally
-            if data_array_list:
-                # Stack arrays
-                data_array = np.hstack(data_array_list)
-
-                # Add sample numbers as first column
-                data_array_shape = data_array.shape
-                if len(data_array_shape) == 2:
-                    num_rows, num_cols = data_array_shape
-                    sample_numbers = np.arange(self.sample_number, self.sample_number + num_rows).reshape(-1, 1)
-                    self.sample_number += num_rows
-
-                    data_array = np.hstack([sample_numbers, data_array])
-
-        self.buffer.push(data_array)
-        self.legends = legends
-        
-        toc = time.perf_counter()
         self.logger.log(
-            logging.DEBUG,
-            "[{}]: {} Data points received: parsing took {} ms".format(
-                int(QThread.currentThreadId()), num_rows, 1000 * (toc - tic)
-            ),
+            logging.INFO, 
+            f"[{self.thread_id}]: Data separator {self.textDataSeparator}"
         )
+        self.ui.statusBar().showMessage('Data Separator changed.', 2000)            
 
     @pyqtSlot()
     def on_pushButton_StartStop(self):
@@ -632,9 +717,7 @@ class QChartUI(QObject):
             if self.serialUI.textLineTerminator == "":
                 self.logger.log(
                     logging.ERROR,
-                    "[{}]: Plotting of of raw data not yet supported".format(
-                        int(QThread.currentThreadId())
-                    ),
+                    f"[{self.thread_id}]: Plotting of of raw data not yet supported"
                 )
                 return
             self.serialWorker.linesReceived.connect(
@@ -647,7 +730,7 @@ class QChartUI(QObject):
             self.ui.pushButton_ChartStartStop.setText("Stop")
             self.logger.log(
                 logging.INFO,
-                "[{}]: Start plotting".format(int(QThread.currentThreadId())),
+                f"[{self.thread_id}]: Start plotting"
             )
             self.ui.statusBar().showMessage("Chart update started.", 2000)
         else:
@@ -659,15 +742,11 @@ class QChartUI(QObject):
             except:
                 self.logger.log(
                     logging.WARNING,
-                    "[{}]: lines-received signal was not connected the chart".format(
-                        int(QThread.currentThreadId())
-                    ),
+                    f"[{self.thread_id}]: lines-received signal was not connected the chart"
                 )
             self.logger.log(
                 logging.INFO,
-                "[{}]: Stopped plotting".format(
-                    int(QThread.currentThreadId())
-                ),
+                f"[{self.thread_id}]: Stopped plotting"
             )
             self.ui.statusBar().showMessage("Chart update stopped.", 2000)
 
@@ -683,12 +762,12 @@ class QChartUI(QObject):
         self.updatePlot()
         self.logger.log(
             logging.INFO,
-            "[{}]: Cleared plotted data.".format(int(QThread.currentThreadId())),
+            f"[{self.thread_id}]: Cleared plotted data."
         )
         self.ui.statusBar().showMessage("Chart cleared.", 2000)
 
     @pyqtSlot()
-    def on_pushButton_Save(self):
+    def on_pushButton_ChartSave(self):
         """
         Save data into Text File
         """
@@ -702,9 +781,54 @@ class QChartUI(QObject):
         np.savetxt(fname, self.buffer.data, delimiter=",")
         self.logger.log(
             logging.INFO,
-            "[{}]: Saved plotted data.".format(int(QThread.currentThreadId())),
+            f"[{self.thread_id}]: Saved plotted data."
         )
         self.ui.statusBar().showMessage("Chart data saved.", 2000)
+
+    @pyqtSlot()
+    def on_pushButton_ChartSaveFigure(self):
+        """
+        Save plot figure into SVG file
+        """
+
+        stdFileName = (
+            QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
+            + "/chart.svg"
+        )
+        fname, _ = QFileDialog.getSaveFileName(
+            self.ui, "Save as", stdFileName, "PNG files (*.png)"
+        )
+
+        if not fname:  # User canceled the dialog
+            return
+        
+        was_running = self.ChartTimer.isActive()
+
+        try:
+            if was_running:
+                self.ChartTimer.stop() # Can not update plot while its saved
+
+            exporter = pg.exporters.ImageExporter(self.chartWidget.getPlotItem())
+            exporter.export(fname)
+
+        except Exception as e:
+            self.logger.log(
+                logging.ERROR,
+                f"[{self.thread_id}]: Error saving chart."
+            )
+            self.ui.statusBar().showMessage(f"Error saving chart: {str(e)}", 3000)
+            if was_running:
+                self.ChartTimer.start()  # Ensure the timer restarts if something goes wrong
+
+        self.logger.log(
+            logging.INFO,
+            f"[{self.thread_id}]: Chart saved as {fname}."
+        )
+        self.ui.statusBar().showMessage(f"Chart saved as {fname}.", 2000)
+
+        # Restart timer if it was previously running
+        if was_running:
+            self.ChartTimer.start()
 
     @pyqtSlot(int)
     def on_HorizontalSliderChanged(self, value):
@@ -723,9 +847,7 @@ class QChartUI(QObject):
         self.horizontalSlider.blockSignals(False)
         self.logger.log(
             logging.DEBUG,
-            "[{}]: Horizontal zoom set to {}.".format(
-                int(QThread.currentThreadId()), int(value)
-            ),
+            f"[{self.thread_id}]: Horizontal zoom set to {value}."
         )
         self.updatePlot()
 
@@ -747,9 +869,7 @@ class QChartUI(QObject):
         self.maxPoints = int(value)
         self.logger.log(
             logging.DEBUG,
-            "[{}]: Horizontal zoom line edit set to {}.".format(
-                int(QThread.currentThreadId()), value
-            ),
+            f"[{self.thread_id}]: Horizontal zoom line edit set to {value}."
         )
         self.updatePlot()
 
