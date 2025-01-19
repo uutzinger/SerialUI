@@ -63,7 +63,7 @@ To display data in numeric fields ... Feature not implemented yet.
 In the test folder are example programs that should run on microcontrollers.
 
 ## Author
-Urs Utzinger, 2022-2024 (University of Arizona)
+Urs Utzinger, 2022-2025 (University of Arizona)
 
 ## Contributors
 Cameron K Brooks, 2024 (Western University)
