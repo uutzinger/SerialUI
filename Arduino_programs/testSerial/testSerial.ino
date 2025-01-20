@@ -30,7 +30,7 @@
 // Measurement
 #define BUFFERSIZE              2048  // Buffer to hold data, should be a few times larger than FRAME_SIZE
 #define FRAME_SIZE               128  // Max size in bytes to send at once.
-#define TABLESIZE                64  // Number of samples in one full cycle for sine, sawtooth etc
+#define TABLESIZE                 64  // Number of samples in one full cycle for sine, sawtooth etc
 
 int           scenario = 7; // Default scenario 
                             // 1 Agriculture,   2 Satelite, 3 Environmental,
@@ -142,6 +142,10 @@ void handleSerialCommands()
     {
       samplerate = newSamplerate;
       Serial.println("Samplerate set to " + String(samplerate) + " Hz");
+      if ((samplerate > 10000) && (interval > 5000)) {
+        interval = 1000;
+        Serial.println("Interval set to " + String(interval) + " micro seconds");
+      }
     }
     else
     {
@@ -301,7 +305,7 @@ size_t generateDataStereo(int samplerate, unsigned long interval) {
     return dataBuffer.push(data, length, false);
 }
 
-const char FIXED_64_CHAR1[65] =  "ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZ.0123456789\n"; 
+const char FIXED_64_CHAR[65] =  "ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZ.0123456789\n"; 
 
 size_t generate64Chars() {
     return dataBuffer.push(FIXED_64_CHAR, 64, false);  // Push 64 bytes to ring buffer

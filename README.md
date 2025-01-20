@@ -3,7 +3,9 @@
 ![BLE Serial Monitor](assets/BLE_96.png)
 
 ## Description
-**SerialUI** provides a graphical interface to send and receive text from the serial port, including a serial plotter for displaying numerical data. It optimizes high data rate visualization of signals and text, offering features beyond the Arduino IDE Serial Plotter.
+**SerialUI** provides a graphical interface to send and receive text from the serial port, including a serial plotter for displaying numerical data. It offers features beyond the Arduino IDE Serial Plotter. 
+
+From an ESP32 we can retrieve about 400kBytes/s. For simulated data on an ESP32, more than 20k samples/second can be retrieved and plotted.
 
 **BLESerialUI** is equivalent to SerialUI but uses the Nordic Serial UART on a BLE connection (Experimental)
 
