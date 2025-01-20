@@ -240,7 +240,7 @@ class QChartUI(QObject):
         on_pushButton_ChartSaveFigure
         on_HorizontalSliderChanged(int)
         on_HorizontalLineEditChanged
-        on_newLinesReceived(list)
+        on_SerialReceivedLines(list)
         on_changeDataSeparator
 
     Functions
@@ -251,7 +251,7 @@ class QChartUI(QObject):
 
     # Signals
     ########################################################################################
-    # No Signals, no worker all in the main thread
+    plottingRunning = pyqtSignal(bool)  # emit True if plotting, False if not plotting
 
     def __init__(self, parent=None, ui=None, serialUI=None, serialWorker=None, logger=None, encoding="utf-8"):
 
@@ -355,7 +355,7 @@ class QChartUI(QObject):
 
         # Plot update frequency
         self.ChartTimer = QTimer()
-        self.ChartTimer.setInterval(100)  # milliseconds, we can not see more than 50 Hz
+        self.ChartTimer.setInterval(50)  # milliseconds, we can not see more than 50 Hz, it takes about 4ms to update plot
         self.ChartTimer.timeout.connect(self.updatePlot)
 
         self.logger.log(
@@ -366,6 +366,24 @@ class QChartUI(QObject):
     # Utility functions
     ########################################################################################
 
+    def cleanup(self):
+        """
+        Cleanup the chart UI.
+
+        - Disconnects the updatePlot function from the timer.
+        - Clears the plot data and legend.
+        - Resets the plot axis ranges.
+        """
+        if hasattr(self.ChartTimer, "isActive") and self.ChartTimer.isActive():
+            self.ChartTimer.stop()  
+            self.ChartTimer.timeout.disconnect()
+        self.data_line.clear()
+        self.chartWidget.clear()
+        self.logger.log(
+            logging.INFO, 
+            f"[{self.thread_id}]: cleaned up."
+        )
+        
     def updatePlot(self):
         """
         Update the chart plot.
@@ -666,7 +684,7 @@ class QChartUI(QObject):
     ########################################################################################
 
     @pyqtSlot(list)
-    def on_newLinesReceived(self, lines: list):
+    def on_SerialReceivedLines(self, lines: list):
         """
         Decode/Parse a list of lines for data and add it to the circular buffer
         """
@@ -720,14 +738,10 @@ class QChartUI(QObject):
                     f"[{self.thread_id}]: Plotting of of raw data not yet supported"
                 )
                 return
-            self.serialWorker.linesReceived.connect(
-                self.on_newLinesReceived
-            )  # enable plot data feed
+            self.plottingRunning.emit(True)
             self.ChartTimer.start()
-            if self.serialUI.receiverIsRunning == False:
-                self.serialUI.startReceiverRequest.emit()
-                self.serialUI.startThroughputRequest.emit()
             self.ui.pushButton_ChartStartStop.setText("Stop")
+
             self.logger.log(
                 logging.INFO,
                 f"[{self.thread_id}]: Start plotting"
@@ -736,14 +750,9 @@ class QChartUI(QObject):
         else:
             # We want to stop plotting
             self.ChartTimer.stop()
+            self.plottingRunning.emit(False)
             self.ui.pushButton_ChartStartStop.setText("Start")
-            try:
-                self.serialWorker.linesReceived.disconnect(self.on_newLinesReceived)
-            except:
-                self.logger.log(
-                    logging.WARNING,
-                    f"[{self.thread_id}]: lines-received signal was not connected the chart"
-                )
+
             self.logger.log(
                 logging.INFO,
                 f"[{self.thread_id}]: Stopped plotting"
@@ -855,23 +864,40 @@ class QChartUI(QObject):
     def on_HorizontalLineEditChanged(self):
         """
         Serial Plotter Horizontal Line Edit Handling
-        Same as above but entering the number manually
-
-        When text is entered manually into the horizontal edit field,
-          update the slider and update the history range
+        Updates the slider and the history range when text is entered manually.
         """
-        sender = self.sender()
-        value = int(sender.text())
+        sender = self.sender() # obtain the name of the sender of the signal so we can access its text
+        if sender is None:
+            self.logger.log(logging.WARNING, f"[{self.thread_id}]: No sender found for Horizontal Line Edit change.")
+            return
+
+        try:
+            value = int(sender.text().strip())  # Strip spaces to prevent errors
+        except ValueError:
+            self.logger.log(logging.WARNING, f"[{self.thread_id}]: Invalid input in Horizontal Line Edit.")
+            return  # Exit without applying changes if input is invalid
+
+        # Ensure value is within the allowed range
         value = clip_value(value, 16, MAX_ROWS)
+
+        # Prevent signal loops
+        sender.blockSignals(True)
+        sender.setText(str(value))  # Update text in case it was out of bounds
+        sender.blockSignals(False)
+
         self.horizontalSlider.blockSignals(True)
-        self.horizontalSlider.setValue(int(value))
+        self.horizontalSlider.setValue(value)
         self.horizontalSlider.blockSignals(False)
-        self.maxPoints = int(value)
+
+        self.maxPoints = value  # Update maxPoints
+
         self.logger.log(
             logging.DEBUG,
             f"[{self.thread_id}]: Horizontal zoom line edit set to {value}."
         )
+
         self.updatePlot()
+
 
 #####################################################################################
 # Testing

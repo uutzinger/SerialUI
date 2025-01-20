@@ -7,7 +7,8 @@
 
   Serial Commands:
 
-    interval <value>: Sets the data generation interval to the specified value in milliseconds.
+    interval <value>: Sets the data generation interval to the specified value in micro seconds.
+    frequency <value> sets the frequency of the sine, saw tooth or squarewave in Hz
     scenario <value>: Changes the scenario to the specified value (1 to 5).
     pause: Pauses the data generation.
     resume: Resumes the data generation if it was paused.
@@ -27,36 +28,63 @@
 #define BAUDRATE               500000 // 500 kBaud
 
 // Measurement
-#define MEASUREMENT_INTERVAL      10  // 10 milli seconds
 #define BUFFERSIZE              2048  // Buffer to hold data, should be a few times larger than FRAME_SIZE
 #define FRAME_SIZE               128  // Max size in bytes to send at once.
+#define TABLESIZE                64  // Number of samples in one full cycle for sine, sawtooth etc
 
-int           scenario = 6; // Default scenario (1: CanSat, 2: Environmental, 3: Power, 4: Medical, 5: Agricultural)
+int           scenario = 7; // Default scenario 
+                            // 1 Agriculture,   2 Satelite, 3 Environmental,
+                            // 4  Medical,      5 Power,    6 Stereo Sinewave, 
+                            // 7 Mono Sinewave, 8 Mono Sinewave Header, 
+                            // 9 Mono Sawtooth, 10 64 Chars"
+
 unsigned long currentTime;
-unsigned long interval = MEASUREMENT_INTERVAL; // Default interval at which to generate data
-unsigned long lastMeasurementTime  = 0;                     // Last time data was produced
-bool          paused = true;          // Flag to pause the data generation
+unsigned long interval = 10000;             // Default interval at which to generate data
+int           samplerate =  1000;           //
+unsigned long lastMeasurementTime  = 0;     // Last time data was produced
+bool          paused = true;                // Flag to pause the data generation
 String        receivedCommand = "";
 char          data[1024];
+static float  loc = 0;
+
+// Configuration (adjustable frequencyuencies and amplitudes)
+float frequency   = 500.0;   // High frequency (Hz)
+float amplitude   = 1024;    // Amplitude for Channel 1
+int16_t signalTable[TABLESIZE];
 
 RingBuffer dataBuffer(BUFFERSIZE); // Create a ring buffer
 
 void setup()
 {
   Serial.begin(BAUDRATE);
-  Serial.println("System Ready");
+
+  Serial.println("=================================");
   Serial.println("Commands are:");
   Serial.println("pause");
   Serial.println("resume");
-  Serial.print("scenario number: ");
-  Serial.println("1 Agricultur, 2 Satelite, 3 Environmental, 4 Medical, 5 Power, 6 Stereo Sinewave, 7 Mono Sinewave");
-  lastMeasurementTime = millis();
+  Serial.println("interval >=0 ms");
+  Serial.println("samplerate");
+  Serial.println("scenario number: ");
+  Serial.println("   1 Agriculture, 2 Satelite, 3 Environmental, 4 Medical, 5 Power");
+  Serial.println("   6 Stereo Sinewave, 7 Mono Sinewave, 8 Mono Sinewave Header, 9 Mono Sawtooth, 10 Squarewave");
+  Serial.println("  11 64 Chars");
+  // Prints current settings
+  Serial.println("=================================");
+  Serial.println("Current Settings:");
+  Serial.println("Interval:   " + String(interval) + " microseconds");
+  Serial.println("Samplerate: " + String(samplerate) + " Hz");
+  Serial.println("Scenario:   " + String(scenario));
+  Serial.println("Paused:     " + String(paused ? "Yes" : "No"));
+
+  updateSignalTable(scenario);
+
+  lastMeasurementTime = micros();
 }
 
 void loop()
 {
 
-  unsigned long currentTime = millis();
+  unsigned long currentTime = micros();
   size_t ret;
 
   // Handle Commands
@@ -99,7 +127,21 @@ void handleSerialCommands()
     if (newInterval > 0)
     {
       interval = newInterval;
-      Serial.println("Interval set to " + String(interval) + " ms");
+      Serial.println("Interval set to " + String(interval) + " micro seconds");
+      updateSignalTable(scenario);
+    }
+    else
+    {
+      Serial.println("Invalid interval value.");
+    }
+  }
+  else if (command.startsWith("samplerate"))
+  {
+    int newSamplerate = command.substring(10).toInt();
+    if (newSamplerate > 0)
+    {
+      samplerate = newSamplerate;
+      Serial.println("Samplerate set to " + String(samplerate) + " Hz");
     }
     else
     {
@@ -109,9 +151,10 @@ void handleSerialCommands()
   else if (command.startsWith("scenario"))
   {
     int newScenario = command.substring(8).toInt();
-    if (newScenario >= 1 && newScenario <= 8)
+    if (newScenario >= 1 && newScenario <= 11)
     {
       scenario = newScenario;
+      updateSignalTable(scenario);
       Serial.println("Scenario set to " + String(scenario));
     }
     else
@@ -129,9 +172,29 @@ void handleSerialCommands()
     paused = false;
     Serial.println("Data generation resumed.");
   }
+  else if (command.equals("?"))
+    {
+        // Prints current settings
+        Serial.println("=================================");
+        Serial.println("Current Settings:");
+        Serial.println("Interval:   " + String(interval) + " microseconds");
+        Serial.println("Samplerate: " + String(samplerate) + " Hz");
+        Serial.println("Scenario:   " + String(scenario));
+        Serial.println("Frequency:  " + String(frequency) + " Hz");
+        Serial.println("Paused:     " + String(paused ? "Yes" : "No"));
+    }
   else
   {
-    Serial.println("Unknown command.");
+    Serial.println("=================================");
+    Serial.println("Commands are:");
+    Serial.println("pause");
+    Serial.println("resume");
+    Serial.println("interval >=0 ms");
+    Serial.println("samplerate");
+    Serial.println("scenario number: ");
+    Serial.println("   1 Agriculture, 2 Satelite, 3 Environmental, 4 Medical, 5 Power");
+    Serial.println("   6 Stereo Sinewave, 7 Mono Sinewave, 8 Mono Sinewave Header, 9 Mono Sawtooth, 10 Squarewave");
+    Serial.println("  11 64 Chars");
   }
 }
 
@@ -155,17 +218,148 @@ size_t generateData()
     return(generatePowerSystemData());
     break;
   case 6:
-    return(generateSineWaveData());
+    return(generateDataStereo(samplerate, interval));
     break;
   case 7:
-    return(generateSineWaveDataMono());
+    return(generateData(samplerate, interval));
     break;
   case 8:
-    return(generateSineWaveDataMonoHeader());
+    return(generateData(samplerate, interval));
+    break;
+  case 9:
+    return(generateData(samplerate, interval));
+    break;
+  case 10:
+    return(generateData(samplerate, interval));
+    break;
+  case 11:
+    return(generate64Chars());
     break;
   default:
     Serial.println("Invalid scenario selected.");
     return 1;
     break;
   }
+}
+
+size_t generateDataHeader(int samplerate, unsigned long interval, String header) {
+    char* ptr = data;
+    int samples = (samplerate * interval) / 1000000;
+    float stepSize = (TABLESIZE * frequency) / float(samplerate);
+
+    for (int i = 0; i < samples; i++) {
+        int idx = int(loc) % TABLESIZE;
+        int16_t value = signalTable[idx];
+
+        if (ptr >= data + sizeof(data) - 10) break; 
+        ptr += snprintf(ptr, data + sizeof(data) - ptr, "%s: %d\n", header.c_str(), value);
+
+        loc += stepSize;
+    }
+
+size_t length = min((size_t)strlen(data), sizeof(data) - 1);
+    return dataBuffer.push(data, length, false);
+}
+
+
+size_t generateData(int samplerate, unsigned long interval) {
+    char* ptr = data;
+    int samples = (samplerate * interval) / 1000000;
+    float stepSize = (TABLESIZE * frequency) / float(samplerate);
+
+    for (int i = 0; i < samples; i++) {
+        int idx = int(loc) % TABLESIZE;
+        int16_t value = signalTable[idx];
+        
+        if (ptr >= data + sizeof(data) - 10) break; 
+        ptr += snprintf(ptr, data + sizeof(data) - ptr, "%d\n", value);
+
+        loc += stepSize;
+    }
+
+    size_t length = min((size_t)strlen(data), sizeof(data) - 1);
+    return dataBuffer.push(data, length, false);
+}
+
+size_t generateDataStereo(int samplerate, unsigned long interval) {
+    char* ptr = data;
+    int samples = (samplerate * interval) / 1000000;
+    float stepSize = (TABLESIZE * frequency) / float(samplerate);
+
+    for (int i = 0; i < samples; i++) {
+        int idx = int(loc) % TABLESIZE;
+        int16_t value = signalTable[idx];
+
+        if (ptr >= data + sizeof(data) - 10) break; 
+        ptr += snprintf(ptr, data + sizeof(data) - ptr, "%d, %d\n", value, value);
+
+        loc += stepSize;
+    }
+
+    size_t length = min((size_t)strlen(data), sizeof(data) - 1);
+
+    return dataBuffer.push(data, length, false);
+}
+
+const char FIXED_64_CHAR1[65] =  "ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZ.0123456789\n"; 
+
+size_t generate64Chars() {
+    return dataBuffer.push(FIXED_64_CHAR, 64, false);  // Push 64 bytes to ring buffer
+}
+
+void updateSignalTable(int scenario){
+  switch (scenario)
+  {
+    case 6:
+      updateSineWaveTable();
+      break;
+    case 7:
+      updateSineWaveTable();
+      break;
+    case 8:
+      updateSineWaveTable();
+      break;
+    case 9:
+      updateSawToothTable();
+      break;
+    case 10:
+      updateSquareWaveTable();
+      break;
+    default:
+      break;
+  }
+}
+
+// Corrected updateSineWaveTable function
+void updateSineWaveTable() {
+    Serial.println("Updating sine table...");
+    for (int i = 0; i < TABLESIZE; i++) {
+        int16_t value1 = int16_t(amplitude       * sin(( 2.0 * M_PI * i) / float(TABLESIZE))); 
+        int16_t value2 = int16_t((amplitude / 4) * sin((10.0 * M_PI * i) / float(TABLESIZE))); // Adjusted frequency
+        signalTable[i] = value1 + value2;
+    }
+}
+
+
+void updateSawToothTable() {
+    Serial.println("Updating sawtooth table...");
+
+    for (int i = 0; i < TABLESIZE; i++) {
+        int16_t value = int16_t(-amplitude + 2.* amplitude * (float(i) / float(TABLESIZE)));
+        signalTable[i] = value;
+    }
+}
+
+void updateSquareWaveTable() {
+    Serial.println("Updating square table...");
+
+    for (int i = 0; i < TABLESIZE; i++) {
+        int16_t value;
+        if (i < TABLESIZE / 2) {  // Corrected missing parentheses
+            value = int16_t(amplitude);
+        } else {
+            value = int16_t(-amplitude);
+        }
+        signalTable[i] = value;
+    }
 }

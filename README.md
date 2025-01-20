@@ -11,27 +11,29 @@
 <img src="docs/SerialPlotter.png" alt="Serial Plotter" width="600"/>
 
 ## Installation Requirements
-- `pip3 install pyqt5` or `pip3 install pyqt6` user interface
-- `pip3 install pyqtgraph` display
-- `pip3 install numpy` data gathering and manipulation
-- `pip3 install pyserial` serial interface
-- `pip3 install markdown` help file
-- `pip3 install wmi` on Windows for USB device notifications
-- `pip3 install pyudev` on Linux  for USB device notifications
-- *One liner Windows:* 
+*One liner Windows:* 
     - `pip3 install pyqt5 pyqtgraph numpy pyserial markdown wmi`
-- *One liner Linux:* 
+
+*One liner Linux:* 
     - `pip3 install pyqt5 pyqtgraph numpy pyserial markdown pyudev`
+
+- `pyqt5` or `pyqt6` user interface
+- `pyqtgraph` display
+- `numpy` data gathering and manipulation
+- `pyserial` serial interface
+- `markdown` help file
+- `wmi` on Windows for USB device notifications
+- `pyudev` on Linux  for USB device notifications
 
 Installation of PyQt5/6 has its own dependencies. If it fails, read the suggested solution in the error messages.
 
-The main programs are `SerialUI.py` and `BLESerialUI.py`, which use files in the `assets` and `helper` folders.
+The main programs are `SerialUI.py` and `BLESerialUI.py`. The use files in the `assets` and `helper` folders.
 
 ## How to Use This Program
 
 ### Setting Serial Port
 1. Plug in your device and hit scan ports.
-2. Select serial port, baud rate, and line termination (`\r\n` is most common).
+2. Select serial port, baud rate, and line termination (`\r\n` or `\n` are most common).
 
 ### Receiving Data for Text Display
 1. Set serial port as described above.
@@ -53,14 +55,14 @@ The main programs are `SerialUI.py` and `BLESerialUI.py`, which use files in the
 6. Click stop and zoom with the mouse.
 7. Save and clear plotted data.
 
-### Indicating data
-To display data in numeric fields ... Feature not implemented yet.
+### Indicating Data
+Feature not implemented yet.
 
-## More detailed usage instructions
+## More Detailed Usage Instructions
 [Usage instructions](docs/Detailed_Usage_Instructions.md).
 
-## Testing
-In the test folder are example programs that should run on microcontrollers.
+## Arduino Test Programs
+In the `Arduino_programs` folder are example programs that simulate data for display.
 
 ## Author
 Urs Utzinger, 2022-2025 (University of Arizona)

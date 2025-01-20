@@ -30,6 +30,8 @@ import time, logging
 from math import ceil
 from enum import Enum
 import platform
+from pathlib import Path
+from collections import deque
 
 try: 
     from PyQt6.QtCore import (
@@ -37,7 +39,7 @@ try:
     )
     from PyQt6.QtCore import Qt
     from PyQt6.QtGui import QTextCursor
-    from PyQt6.QtWidgets import QFileDialog
+    from PyQt6.QtWidgets import QFileDialog, QMessageBox
     hasQt6 = True
 except:
     from PyQt5.QtCore import (
@@ -45,7 +47,7 @@ except:
     )
     from PyQt5.QtCore import Qt
     from PyQt5.QtGui import QTextCursor
-    from PyQt5.QtWidgets import QFileDialog
+    from PyQt5.QtWidgets import QFileDialog, QMessageBox
     hasQt6 = False
 
 ########################################################################################
@@ -60,7 +62,7 @@ DEBUGSERIAL = False  # enable/disable low level serial debugging
 # Constants
 ########################################################################################
 DEFAULT_BAUDRATE       = 500000      # default baud rate for serial port
-MAX_TEXTBROWSER_LENGTH = 1024 * 1024 # display window character length is trimmed to this length
+MAX_TEXTBROWSER_LENGTH = 4096        # display window is trimmed to these number of lines
                                      # lesser value results in better performance
 MAX_LINE_LENGTH        = 1024        # number of characters after which an end of line characters is expected
 RECEIVER_FINISHCOUNT   = 10          # [times] If we encountered a timeout 10 times we slow down serial polling
@@ -263,6 +265,7 @@ class QSerialUI(QObject):
     finishWorkerRequest          = pyqtSignal()                                            # request worker to finish
     closePortRequest             = pyqtSignal()                                            # close the current serial Port
     serialSendFileRequest        = pyqtSignal(str)                                         # request to open file and send over serial port
+    displayingRunning            = pyqtSignal(bool)                                        # signal to indicate that serial monitor is running
            
     # Init
     ########################################################################################
@@ -295,6 +298,12 @@ class QSerialUI(QObject):
         self.serialBaudRate_backup = DEFAULT_BAUDRATE
         self.esp_reset_backup      = False
         self.awaitingReconnection  = False
+        self.record                = False                                                 # record serial data
+        self.recordingFileName     = ""
+        self.recordingFile         = None
+        self.textBrowserLength     = MAX_TEXTBROWSER_LENGTH + 1
+
+        # self.textDisplayLineCount  = 1 # it will have at least the initial line
 
         self.thread_id = int(QThread.currentThreadId()) if QThread.currentThreadId() else "N/A"
 
@@ -318,10 +327,18 @@ class QSerialUI(QObject):
         self.serialWorker = worker
 
         # Text display window on serial text display
+        self.ui.plainTextEdit_SerialTextDisplay.setReadOnly(True)   # Prevent user edits
+        self.ui.plainTextEdit_SerialTextDisplay.setWordWrapMode(0)  # No wrapping for better performance
+
         self.textScrollbar = self.ui.plainTextEdit_SerialTextDisplay.verticalScrollBar()
         self.ui.plainTextEdit_SerialTextDisplay.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOn
         )
+        self.textScrollbar.setSingleStep(1)                          # Highest resolution
+
+        # Efficient text storage
+        self.lineBuffer = deque(maxlen=MAX_TEXTBROWSER_LENGTH)       # Circular buffer
+
 
         # Disable closing serial port button
         self.ui.pushButton_SerialOpenClose.setText("Open")
@@ -438,13 +455,8 @@ class QSerialUI(QObject):
         Transmitting text from UI to serial TX line
         """
         text = self.ui.lineEdit_SerialText.text()                                # obtain text from send input window
-        self.serialSendHistory.append(text)                                      # keep history of previously sent commands
-        if self.receiverIsRunning == False:
-            self.serialWorker.linesReceived.connect(self.on_SerialReceivedLines) # connect text display to serial receiver signal
-            self.serialWorker.textReceived.connect(self.on_SerialReceivedText)   # connect text display to serial receiver signal            
-            QTimer.singleShot(0,  lambda: self.startReceiverRequest.emit())      # request to start receiver
-            QTimer.singleShot(50, lambda: self.startThroughputRequest.emit())    # request to start throughput            
-            self.ui.pushButton_SerialStartStop.setText("Stop")
+        self.displayingRunning.emit(True)            
+        self.ui.pushButton_SerialStartStop.setText("Stop")
         
         try:
             text_bytearray = text.encode(self.encoding) + self.textLineTerminator # add line termination
@@ -525,6 +537,7 @@ class QSerialUI(QObject):
         Clearing text display window
         """
         self.ui.plainTextEdit_SerialTextDisplay.clear()
+        self.lineBuffer.clear()
         self.ui.statusBar().showMessage("Text Display Cleared.", 2000)
 
     @pyqtSlot()
@@ -535,25 +548,23 @@ class QSerialUI(QObject):
         if self.ui.pushButton_SerialStartStop.text() == "Start":
             # START text display
             self.ui.pushButton_SerialStartStop.setText("Stop")
-            self.serialWorker.linesReceived.connect(self.on_SerialReceivedLines) # connect text display to serial receiver signal
-            self.serialWorker.textReceived.connect(self.on_SerialReceivedText)   # connect text display to serial receiver signal
-            QTimer.singleShot( 0,lambda: self.startReceiverRequest.emit())
-            QTimer.singleShot(50,lambda: self.startThroughputRequest.emit())
+            self.displayingRunning.emit(True)
+
             self.logger.log(
                 logging.DEBUG,
-                f"[{self.thread_id}]: text display is on."
+                f"[{self.thread_id}]: turning text display on."
             )
-            self.ui.statusBar().showMessage("Text Display Started.", 2000)
+            self.ui.statusBar().showMessage("Text Display Starting", 2000)
         else:
             # STOP text display
             self.ui.pushButton_SerialStartStop.setText("Start")
-            self.serialWorker.linesReceived.disconnect(self.on_SerialReceivedLines) # connect text display to serial receiver signal
-            self.serialWorker.textReceived.disconnect(self.on_SerialReceivedText)   # connect text display to serial receiver signal
+            self.displayingRunning.emit(False)
+            
             self.logger.log(
                 logging.DEBUG, 
-                f"[{self.thread_id}]: text display is off."
+                f"[{self.thread_id}]: turning text display off."
             )
-            self.ui.statusBar().showMessage('Text Display Stopped.', 2000)            
+            self.ui.statusBar().showMessage('Text Display Stopping.', 2000)            
 
     @pyqtSlot()
     def on_pushButton_SerialSave(self):
@@ -594,6 +605,67 @@ class QSerialUI(QObject):
     @pyqtSlot()
     def on_resetESPonOpen(self):
         self.esp_reset = self.ui.radioButton_ResetESPonOpen.isChecked()
+
+    @pyqtSlot()
+    def on_SerialRecord(self):
+        self.record = self.ui.radioButton_SerialRecord.isChecked()
+        if self.record:
+    
+            if self.recordingFileName == "":
+                stdFileName = (
+                    QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation)
+                    + "/QSerial.txt"
+                ) 
+            else:
+                stdFileName = self.recordingFileName
+    
+            self.recordingFileName, _ = QFileDialog.getOpenFileName(
+                self.ui, "Open", stdFileName, "Text files (*.txt)"
+            )
+
+            if not self.recordingFileName:
+                self.record = False
+                self.ui.radioButton_SerialRecord.setChecked(self.record)
+            else:
+                file_path = Path(self.recordingFileName)
+
+                if file_path.exists():  # Check if file already exists
+                    msg_box = QMessageBox()
+                    msg_box.setIcon(QMessageBox.Warning)
+                    msg_box.setWindowTitle("File Exists")
+                    msg_box.setText(f"The file '{file_path.name}' already exists. What would you like to do?")
+                    msg_box.addButton("Overwrite", QMessageBox.YesRole)
+                    msg_box.addButton("Append", QMessageBox.NoRole)
+
+                    choice = msg_box.exec_()
+
+                    if choice == 0:  # Overwrite
+                        mode = "wb"
+                    elif choice == 1:  # Append
+                        mode = "ab"
+                    else: 
+                        self.logger.log(logging.INFO, f"[{self.thread_id}]: Overwrite choice aborted.")  
+                        self.record = False
+                        self.ui.radioButton_SerialRecord.setChecked(self.record)
+                        return
+                else:
+                    mode = "wb"  # Default to write mode if file doesn't exist
+
+                try:
+                    self.recordingFile = open(file_path, mode)
+                    self.logger.log(logging.INFO, f"[{self.thread_id}]: Recording to file {file_path.name} in mode {mode}.")
+                except Exception as e:
+                    self.logger.log(logging.ERROR, f"[{self.thread_id}]: Could not open file {file_path.name} in mode {mode}.")
+                    self.record = False
+                    self.ui.radioButton_SerialRecord.setChecked(self.record)
+        else:
+            if self.recordingFile:
+                try:
+                    self.recordingFile.close()
+                    self.logger.log(logging.INFO, f"[{self.thread_id}]: Recording to file {self.recordingFile.name} stopped.")
+                except Exception as e:
+                    self.logger.log(logging.ERROR, f"[{self.thread_id}]: Could not close file {self.recordingFile.name}.")
+                self.recordingFile = None
 
     @pyqtSlot()
     def on_pushButton_SerialOpenClose(self):
@@ -963,122 +1035,107 @@ class QSerialUI(QObject):
         self.ui.comboBoxDropDown_BaudRates.blockSignals(False)
         self.ui.statusBar().showMessage("Baudrates updated", 2000)
 
+
+    # Helper function for decoding text safely
+    def safe_decode(self, byte_data, encoding="utf-8"):
+        """
+        Safely decodes a byte array to a string, replacing invalid characters.
+        """
+        try:
+            return byte_data.decode(encoding)
+        except UnicodeDecodeError as e:
+            return byte_data.decode(encoding, errors="replace").replace("\ufffd", "¿")
+        except Exception as e:
+            return ""  # Return empty string if decoding completely fails
+
+
     @pyqtSlot(bytes)
     def on_SerialReceivedText(self, byte_array: bytes):
         """
-        Received text (byte_array) on serial port
-        Display it in the text display window
+        Receives a raw byte array from the serial port, decodes it, stores it in a line-based buffer,
+        and updates the text display efficiently.
         """
-        self.logger.log(
-            logging.DEBUG, 
-            f"[{self.thread_id}]: text received."
-        )
-        try:
-            text = byte_array.decode(self.encoding)
-            if DEBUGSERIAL:
-                self.logger.log(
-                    logging.DEBUG,
-                    f"[{self.thread_id}]: {text}"
-                )
-        except UnicodeDecodeError as e:
-            self.logger.log(logging.WARNING, f"[{self.thread_id}]: Unicode decoding error: {e}")
-            text = byte_array.decode(self.encoding, errors="replace")  # Decode with replacement
-            text = text.replace("\ufffd", "¿")  # Replace unknown characters with ¿
-            if DEBUGSERIAL:
-                self.logger.log(
-                    logging.WARNING,
-                    f"[{self.thread_id}]: Decoding error handled. Replaced invalid characters. Original error: {e}"
-                )
-        except Exception as e:
-            # Handle other exceptions
-            self.logger.log(
-                logging.ERROR,
-                f"[{self.thread_id}]: Unexpected error: {e}"
-            )
-            text = ""
+        self.logger.log(logging.DEBUG, f"[{self.thread_id}]: text received.")
 
+        # 1. Decode byte array
+        text = self.safe_decode(byte_array, self.encoding)
+        
+        if DEBUGSERIAL:
+            self.logger.log(logging.DEBUG, f"[{self.thread_id}]: {text}")
+
+        # 2. Record text to a file if recording is enabled
+        if self.record:
+            try:
+                self.recordingFile.write(byte_array)
+            except Exception as e:
+                self.logger.log(logging.ERROR, f"[{self.thread_id}]: Could not write to file {self.recordingFileName}. Error: {e}")
+                self.record = False
+                self.ui.radioButton_SerialRecord.setChecked(self.record)
+
+        # 3. Append new text to the display and buffer
         if text:
-            # Insert text at the end of the document
+            scrollbar = self.textScrollbar
+            at_bottom = scrollbar.value() >= scrollbar.maximum() - 20
 
-            if self.textScrollbar.value() >= self.textScrollbar.maximum() - 20:
-                self.isScrolling = True
-            else:
-                self.isScrolling = False
+            # Append text to display
+            self.ui.plainTextEdit_SerialTextDisplay.appendPlainText(text)
 
-            if hasQt6:
-                self.textCursor.movePosition(QTextCursor.MoveOperation.End)
-            else:
-                self.textCursor.movePosition(QTextCursor.End)
+            # 4. Store lines in the `deque`
+            new_lines = text.split("\n")
+            self.lineBuffer.extend(new_lines)  # Automatically trims excess lines
 
-            self.textCursor.insertText(text)
+            # 5. Update the line count
+            # self.textDisplayLineCount += len(new_lines)  # Update the line count
 
-            if self.isScrolling:
-                self.ui.plainTextEdit_SerialTextDisplay.ensureCursorVisible()
-
+            # 6. Maintain scroll position if at the bottom
+            if at_bottom:
+                scrollbar = self.textScrollbar
+                scrollbar.setValue(scrollbar.maximum())
 
     @pyqtSlot(list)
     def on_SerialReceivedLines(self, lines: list):
         """
-        Received lines of text on serial port
-        Display the lines in the text display window
+        Receives lines of text from the serial port, stores them in a circular buffer,
+        and updates the text display efficiently.
         """
-        # make a copy of the list of byte arrays
-        # lines_copy = [item[:] for item in lines]
+        self.logger.log(logging.DEBUG, f"[{self.thread_id}]: text lines received.")
 
-        self.logger.log(
-            logging.DEBUG,
-            f"[{self.thread_id}]: text lines received."
-        )
-
-        # decode each line to string and join them with newline
-        decoded_lines = []
-        for line in lines:
+        # 1. Record lines to file if recording is enabled
+        if self.record:
             try:
-                decoded_line = line.decode(self.encoding)
-                if DEBUGSERIAL:
-                    self.logger.log(
-                        logging.DEBUG,
-                        f"[{self.thread_id}]: {decoded_line}"
-                    )
-
-            except UnicodeDecodeError as e:
-                decoded_line = line.decode(self.encoding, errors="replace").replace(
-                    "\ufffd", "¿"
-                )  # replace unknown characters with ¿
-                if DEBUGSERIAL:
-                    self.logger.log(
-                        logging.WARNING,
-                        f"[{self.thread_id}]: Decoding error handled. Replaced invalid characters. Original error: {e}"
-                    )
-
+                self.recordingFile.writelines(lines)
             except Exception as e:
-                # Handle other exceptions
-                self.logger.log(
-                    logging.ERROR,
-                    f"[{self.thread_id}]: Unexpected error: {e}"
-                )
-                decoded_line = ""
+                self.logger.log(logging.ERROR, f"[{self.thread_id}]: Could not write to file {self.recordingFileName}. Error: {e}")
+                self.record = False
+                self.ui.radioButton_SerialRecord.setChecked(self.record)
 
-            decoded_lines.append(decoded_line)
-        text = "\n".join(decoded_lines)
+        # 2. Decode all lines efficiently
+        decoded_lines = [self.safe_decode(line, self.encoding) for line in lines]
 
-        # insert text at end of the document
+        if DEBUGSERIAL:
+            for decoded_line in decoded_lines:
+                self.logger.log(logging.DEBUG, f"[{self.thread_id}]: {decoded_line}")
 
-        if text:
-            if self.textScrollbar.value() >= self.textScrollbar.maximum() - 20:
-                self.isScrolling = True
-            else:
-                self.isScrolling = False
+        # 3. Append to `deque` (automatically trims when max length is exceeded)
+        self.lineBuffer.extend(decoded_lines)
 
-            if hasQt6:
-                self.textCursor.movePosition(QTextCursor.MoveOperation.End)
-            else:
-                self.textCursor.movePosition(QTextCursor.End)
+        # 4. Append text to display
+        if decoded_lines:
+            text = "\n".join(decoded_lines)
 
-            self.textCursor.insertText(text + "\n")
+            # Check if user has scrolled to the bottom
+            scrollbar = self.textScrollbar
+            at_bottom = scrollbar.value() >= scrollbar.maximum() - 20
 
-            if self.isScrolling:
-                self.ui.plainTextEdit_SerialTextDisplay.ensureCursorVisible()
+            self.ui.plainTextEdit_SerialTextDisplay.appendPlainText(text)
+
+            # If the user was at the bottom, keep scrolling
+            if at_bottom:
+                scrollbar = self.textScrollbar
+                scrollbar.setValue(scrollbar.maximum())
+
+        # 5 Update total line count
+        # self.textDisplayLineCount += len(decoded_lines)
 
     @pyqtSlot(bool)
     def on_serialWorkerStateChanged(self, running: bool):
@@ -1103,9 +1160,11 @@ class QSerialUI(QObject):
         tx = numSent - self.lastNumSent
         if rx < 0: rx = self.rx # self.lastNumReceived is not cleared when we clear the serial buffer, take care of it here
         if tx < 0: tx = self.tx
-        # poor man's low pass
-        self.rx = 0.5 * self.rx + 0.5 * rx
-        self.tx = 0.5 * self.tx + 0.5 * tx
+        # # poor man's low pass
+        # self.rx = 0.5 * self.rx + 0.5 * rx
+        # self.tx = 0.5 * self.tx + 0.5 * tx
+        self.rx = rx
+        self.tx = tx
         self.ui.throughput.setText(
             "{:<5.1f} {:<5.1f} kB/s".format(self.rx / 1000, self.tx / 1000)
         )
@@ -1117,46 +1176,69 @@ class QSerialUI(QObject):
         Reduce the amount of text kept in the text display window
         Attempt to keep the scrollbar location
         """
-        # Where is the scrollbar?
-        scrollbarMax = self.textScrollbar.maximum()
-        if scrollbarMax != 0:
-            proportion = self.textScrollbar.value() / scrollbarMax
-        else:
-            proportion = 1.0
-        # How much do we need to trim?
-        current_text = self.ui.plainTextEdit_SerialTextDisplay.toPlainText()
-        len_current_text = len(current_text)
-        numCharstoTrim = len_current_text - MAX_TEXTBROWSER_LENGTH
 
-        if numCharstoTrim > 0 and len_current_text > 2 * MAX_TEXTBROWSER_LENGTH:
-            # Select the text to remove
-            self.textCursor.setPosition(0)
-            if hasQt6:
-                self.textCursor.movePosition(
-                    QTextCursor.MoveOperation.Right,
-                    QTextCursor.MoveMode.KeepAnchor,
-                    numCharstoTrim,
-                )
+        tic = time.perf_counter()
+
+        # 0 Do we need to trim?
+        textDisplayLineCount = self.ui.plainTextEdit_SerialTextDisplay.document().blockCount() # 70 micros
+ 
+        if textDisplayLineCount > self.textBrowserLength:
+
+            old_textDisplayLineCount = textDisplayLineCount
+            scrollbar = self.textScrollbar  # Avoid redundant calls
+
+            #  1 Where is the current scrollbar? (scrollbar value is pixel based)
+            old_scrollbarMax = scrollbar.maximum()
+            old_scrollbarValue = scrollbar.value()
+
+            old_proportion = (old_scrollbarValue / old_scrollbarMax) if old_scrollbarMax > 0 else 1.0            
+            old_linePosition = round(old_proportion * old_textDisplayLineCount)
+
+            # 2 Replace text with the line buffer
+            # lines_inTextBuffer  = len(self.lineBuffer)
+            text = "\n".join(self.lineBuffer)
+            self.ui.plainTextEdit_SerialTextDisplay.setPlainText(text)
+            new_textDisplayLineCount = self.ui.plainTextEdit_SerialTextDisplay.document().blockCount()
+            # new_textDisplayLineCount = lines_inTextBuffer + 1
+
+            # 3 Update the scrollbar position
+            new_scrollbarMax = self.textScrollbar.maximum()            
+            if new_textDisplayLineCount > 0:
+                new_linePosition = max(0, (old_linePosition - (old_textDisplayLineCount - new_textDisplayLineCount)))
+                new_proportion = new_linePosition / new_textDisplayLineCount
+                new_scrollbarValue = round(new_proportion * new_scrollbarMax)
             else:
-                self.textCursor.movePosition(
-                    QTextCursor.Right,
-                    QTextCursor.KeepAnchor,
-                    numCharstoTrim,
-                )
-            # Remove the selected text
-            self.textCursor.removeSelectedText()
-            if hasQt6:
-                self.textCursor.movePosition(QTextCursor.MoveOperation.End)
+                new_scrollbarValue = 0
+
+            # 4 Ensure that text is scrolling when we set cursor towards the end
+
+            if new_scrollbarValue >= new_scrollbarMax - 20:
+                self.textScrollbar.setValue(new_scrollbarMax)  # Scroll to the bottom
             else:
-                self.textCursor.movePosition(QTextCursor.End)
-            # update scrollbar position
-            new_max = self.textScrollbar.maximum()
-            new_value = round(proportion * new_max)
-            self.textScrollbar.setValue(new_value)
-            # ensure that text is scrolling when we set cursor towards the end
-            if new_value >= new_max - 20:
-                self.ui.plainTextEdit_SerialTextDisplay.ensureCursorVisible()
+                self.textScrollbar.setValue(new_scrollbarValue)
+
+
+            toc = time.perf_counter()
+            self.logger.log(
+                logging.INFO,
+                f"[{self.thread_id}]: trimmed text display in {(toc-tic)*1000:.2f} ms."
+            )
+
         self.ui.statusBar().showMessage('Trimmed Text Display Window', 2000)
+    
+    def cleanup(self):
+        if hasattr(self.recordingFile, "close"):
+            try:
+                self.recordingFile.close()
+            except:
+                self.logger.log(
+                    logging.ERROR, 
+                    f"[{self.thread_id}]: Could not close file {self.recordingFileName}."
+                )
+        self.logger.log(
+            logging.INFO, 
+            f"[{self.thread_id}]: cleaned up."
+        )
 
 ##########################################################################################################################################        
 ##########################################################################################################################################        
@@ -1626,6 +1708,8 @@ class QSerial(QObject):
         """
         Request to close port received
         """
+        self.on_stopReceiverRequest()
+        self.on_stopThroughputRequest()
         self.PSer.close()
 
     @pyqtSlot(int)
@@ -1742,7 +1826,7 @@ class QSerial(QObject):
         """
         self.handle_log(
             logging.INFO,
-            f"[{self.thread_id}]: provided serial status"
+            f"[{self.thread_id}]: provided serial status."
         )
         if self.PSer.connected:
             self.serialStatusReady.emit(
@@ -1857,11 +1941,11 @@ class PSerial():
             ]
             num_ports = len(self._ports)
 
-            self.handle_log(logging.DEBUG, f"[SER]: Found {num_ports} available serial ports.")
+            self.handle_log(logging.DEBUG, f"[SER            ]: Found {num_ports} available serial ports.")
             for port in self._ports:
                 self.handle_log(
                     logging.DEBUG, 
-                    f"[SER]: Port: {port[0]}, Desc: {port[1]}, HWID: {port[2]}"
+                    f"[SER            ]: Port: {port[0]}, Desc: {port[1]}, HWID: {port[2]}"
             )
 
             return num_ports
@@ -1869,7 +1953,7 @@ class PSerial():
         except Exception as e:
             self.handle_log(
                 logging.ERROR, 
-                f"[SER]: Error scanning ports - {e}"
+                f"[SER            ]: Error scanning ports - {e}"
             )
             self._ports = []  # Ensure `_ports` is empty on failure
             return 0
@@ -1895,7 +1979,7 @@ class PSerial():
         except SerialException as e:
             self.handle_log(
                 logging.ERROR, 
-                f"[SER]: SerialException: {e}; Failed to open {port} with baud {baud}."
+                f"[SER            ]: SerialException: {e}; Failed to open {port} with baud {baud}."
             )
             self._ser_open = False
             self.ser = None
@@ -1904,17 +1988,25 @@ class PSerial():
         except OSError as e:
             self.handle_log(
                 logging.ERROR,
-                f"[SER]: OSError: {e}; Failed to access port {port}."
+                f"[SER            ]: OSError: {e}; Failed to access port {port}."
             )
             self._ser_open = False
             self.ser = None
             self._port = ""
             return False
 
+        try:
+            self.ser.set_buffer_size(rx_size=16384, tx_size=16384)
+        except Exception as e:
+            self.handle_log(
+                logging.ERROR, 
+                f"[SER            ]: Error setting buffer size - {e}"
+            )
+
         # If no exceptions occurred, the port was successfully opened
         self.handle_log(
             logging.INFO, 
-            f"[SER]: Opened {port} at {baud} baud, timeout {timeout}."
+            f"[SER            ]: Opened {port} at {baud} baud, timeout {timeout}."
         )
 
         # Mark serial as open
@@ -1930,20 +2022,20 @@ class PSerial():
         if esp_reset:
             try:
                 self.espHardReset()
-                self.handle_log(logging.INFO, f"[SER]: {port} - ESP hard reset completed.")
+                self.handle_log(logging.INFO, f"[SER            ]: {port} - ESP hard reset completed.")
             except Exception as e:
-                self.handle_log(logging.ERROR, f"[SER]: {port} - ESP reset failed: {e}.")
+                self.handle_log(logging.ERROR, f"[SER            ]: {port} - ESP reset failed: {e}.")
 
         # Clear buffers
         try:
             self.ser.reset_input_buffer()
         except Exception as e:
-            self.handle_log(logging.ERROR, f"[SER]: Failed to clear input buffer: {e}")
+            self.handle_log(logging.ERROR, f"[SER            ]: Failed to clear input buffer: {e}")
 
         try:
             self.ser.reset_output_buffer()
         except Exception as e:
-            self.handle_log(logging.ERROR, f"[SER]: Failed to clear output buffer: {e}")
+            self.handle_log(logging.ERROR, f"[SER            ]: Failed to clear output buffer: {e}")
 
         # Reset statistics and internal buffers
         self.totalCharsReceived = 0
@@ -1962,9 +2054,9 @@ class PSerial():
                 self.ser.reset_input_buffer()
                 self.ser.reset_output_buffer()
                 self.ser.close()
-                self.handle_log(logging.INFO, "[SER]: Serial port closed.")
+                self.handle_log(logging.INFO, "[SER            ]: Serial port closed.")
             except Exception as e:
-                self.handle_log(logging.ERROR, f"[SER]: Failed to close port - {e}")
+                self.handle_log(logging.ERROR, f"[SER            ]: Failed to close port - {e}")
 
         self._ser_open = False
         self._port = None
@@ -1983,7 +2075,7 @@ class PSerial():
         )  # opening the port also clears its buffers
         self.handle_log(
             logging.INFO,
-            f"[SER]: changed port to {port} with baud {baud} and eol {repr(eol)}"
+            f"[SER            ]: changed port to {port} with baud {baud} and eol {repr(eol)}"
         )
 
     def read(self) -> bytes:
@@ -1994,13 +2086,13 @@ class PSerial():
         startTime = time.perf_counter()
 
         if not self._ser_open:
-            self.handle_log(logging.ERROR, "[SER]: serial port not available.")
+            self.handle_log(logging.ERROR, "[SER            ]: serial port not available.")
             return b""
 
         bytes_to_read = self.ser.in_waiting
         if bytes_to_read == 0:
             self.handle_log(logging.DEBUG, 
-                f"[SER]: end of read, buffer empty in {1000 * (time.perf_counter() - startTime):.2f} ms."
+                f"[SER            ]: end of read, buffer empty in {1000 * (time.perf_counter() - startTime):.2f} ms."
             )
             return b""
 
@@ -2012,7 +2104,7 @@ class PSerial():
 
         # Log time taken to read
         self.handle_log(logging.DEBUG,
-            f"[SER]: read: read {bytes_to_read} bytes in {1000 * (time.perf_counter() - startTime):.2f} ms."
+            f"[SER            ]: read: read {bytes_to_read} bytes in {1000 * (time.perf_counter() - startTime):.2f} ms."
         )
 
         return byte_array
@@ -2026,7 +2118,7 @@ class PSerial():
         startTime = time.perf_counter()
 
         if not self._ser_open:
-            self.handle_log(logging.ERROR, "[SER]: serial port not available.")
+            self.handle_log(logging.ERROR, "[SER            ]: serial port not available.")
             return b""
 
         try:
@@ -2052,14 +2144,14 @@ class PSerial():
         except Exception as e:
             self.handle_log(
                 logging.ERROR, 
-                f"[SER]: could not read from port - {e}"
+                f"[SER            ]: could not read from port - {e}"
             )
             return b""
 
         endTime = time.perf_counter()
         self.handle_log(
             logging.DEBUG,
-            f"[SER]: read line: read {len(line)} bytes in {1000 * (endTime - startTime):.2f} ms."
+            f"[SER            ]: read line: read {len(line)} bytes in {1000 * (endTime - startTime):.2f} ms."
         )
 
         return line
@@ -2075,7 +2167,7 @@ class PSerial():
         lines = []
 
         if not self._ser_open:
-            self.handle_log(logging.ERROR,"[SER]: serial port not available.")
+            self.handle_log(logging.ERROR,"[SER            ]: serial port not available.")
             return []
         
         try:
@@ -2101,7 +2193,7 @@ class PSerial():
             endTime = time.perf_counter()
             self.handle_log(
                 logging.DEBUG,
-                f"[SER]: read lines: {bytes_to_read} bytes / {len(lines)} lines in {1000 * (endTime - startTime):.2f} ms."
+                f"[SER            ]: read lines: {bytes_to_read} bytes / {len(lines)} lines in {1000 * (endTime - startTime):.2f} ms."
             )
 
             return lines
@@ -2109,7 +2201,7 @@ class PSerial():
         except Exception as e:
             self.handle_log(
                 logging.ERROR, 
-                f"[SER]: could not read from port - {e}"
+                f"[SER            ]: could not read from port - {e}"
             )
             return []
 
@@ -2223,19 +2315,19 @@ class PSerial():
                 if DEBUGSERIAL:
                     self.handle_log(
                         logging.DEBUG,
-                        f"[SER]: wrote {l} chars."
+                        f"[SER            ]: wrote {l} chars."
                     )
                 return l
             except:
                 self.handle_log(
                     logging.ERROR,
-                    f"[SER]: failed to write with timeout {self.timeout}."
+                    f"[SER            ]: failed to write with timeout {self.timeout}."
                 )
                 return l
         else:
             self.handle_log(
                 logging.ERROR,
-                f"[SER]: serial port not available."
+                f"[SER            ]: serial port not available."
             )
             return 0
 
@@ -2459,15 +2551,15 @@ class PSerial():
         Sets the serial port. 
         """
         if not val:
-            self.handle_log(logging.WARNING, "[SER]: No port given.")
+            self.handle_log(logging.WARNING, "[SER            ]: No port given.")
             return
 
         # Attempt to change the port
         if self.changeport(val, self.baud, self.eol, self.timeout, self.esp_reset):
             self._port = val 
-            self.handle_log(logging.DEBUG, f"[SER]: Port changed to: {val}.")
+            self.handle_log(logging.DEBUG, f"[SER            ]: Port changed to: {val}.")
         else:
-            self.handle_log(logging.ERROR, f"[SER]: Failed to open port {val}.")
+            self.handle_log(logging.ERROR, f"[SER            ]: Failed to open port {val}.")
 
     @property
     def baud(self) -> int:
@@ -2485,12 +2577,12 @@ class PSerial():
         if not val or val <= 0:
             self.handle_log(
                 logging.WARNING, 
-                f"[SER]: baudrate not changed to {val}."
+                f"[SER            ]: baudrate not changed to {val}."
             )
             return
 
         if not self._ser_open:
-            self.handle_log(logging.ERROR, "[SER]: failed to set baudrate, serial port not open!")
+            self.handle_log(logging.ERROR, "[SER            ]: failed to set baudrate, serial port not open!")
             return
 
         try:
@@ -2498,20 +2590,20 @@ class PSerial():
             self._baud = self.ser.baudrate  # Verify
 
             if self._baud == val:
-                self.handle_log(logging.DEBUG, f"[SER]: baudrate: {val}.")
+                self.handle_log(logging.DEBUG, f"[SER            ]: baudrate: {val}.")
                 # Clear buffers if baudrate update is successful
                 self.ser.reset_input_buffer()
                 self.ser.reset_output_buffer()
             else:
                 self.handle_log(
                     logging.ERROR, 
-                    f"[SER]: failed to set baudrate to {val}."
+                    f"[SER            ]: failed to set baudrate to {val}."
                 )
         
         except Exception as e:
             self.handle_log(
                 logging.ERROR, 
-                f"[SER]: Error setting baudrate - {e}"
+                f"[SER            ]: Error setting baudrate - {e}"
             )
 
     @property
@@ -2527,7 +2619,7 @@ class PSerial():
         Sets the end-of-line (EOL) termination sequence for serial communication. 
         """
         if not isinstance(val, (str, bytes, bytearray)):
-            self.handle_log(logging.WARNING, "[SER]: EOL not changed, must provide a string or bytes.")
+            self.handle_log(logging.WARNING, "[SER            ]: EOL not changed, must provide a string or bytes.")
             return
 
         self._eol = val.encode() if isinstance(val, str) else val
@@ -2535,7 +2627,7 @@ class PSerial():
 
         self.handle_log(
             logging.DEBUG, 
-            f"[SER]: EOL set to: {repr(val)}"
+            f"[SER            ]: EOL set to: {repr(val)}"
         )
 
     @property
@@ -2549,13 +2641,13 @@ class PSerial():
         Sets the ESP reset flag.
         """
         if not isinstance(val, bool): 
-            self.handle_log(logging.WARNING, "[SER]: ESP reset not changed, must be True or False.")
+            self.handle_log(logging.WARNING, "[SER            ]: ESP reset not changed, must be True or False.")
             return
 
         self._esp_reset = val
         self.handle_log(
             logging.DEBUG, 
-            f"[SER]: ESP reset set to: {val}"
+            f"[SER            ]: ESP reset set to: {val}"
         )
         
     @property

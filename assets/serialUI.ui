@@ -272,7 +272,7 @@
            </widget>
           </item>
           <item>
-           <widget class="QRadioButton" name="radioButton">
+           <widget class="QRadioButton" name="radioButton_SerialRecord">
             <property name="toolTip">
              <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Record incoming text to default text file.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
             </property>
