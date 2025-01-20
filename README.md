@@ -14,10 +14,10 @@ From an ESP32 we can retrieve about 400kBytes/s. For simple simulated data more 
 
 ## Installation Requirements
 *One liner Windows:* 
-    - `pip3 install pyqt5 pyqtgraph numpy pyserial markdown wmi`
+    - `pip3 install pyqt5 pyqtgraph numpy pyserial markdown wmi bleak qasync`
 
 *One liner Linux:* 
-    - `pip3 install pyqt5 pyqtgraph numpy pyserial markdown pyudev`
+    - `pip3 install pyqt5 pyqtgraph numpy pyserial markdown pyudev bleak qasync`
 
 - `pyqt5` or `pyqt6` user interface
 - `pyqtgraph` display
@@ -26,6 +26,7 @@ From an ESP32 we can retrieve about 400kBytes/s. For simple simulated data more 
 - `markdown` help file
 - `wmi` on Windows for USB device notifications
 - `pyudev` on Linux  for USB device notifications
+- `qasync` and `bleak` for bluetooth communication
 
 Installation of PyQt5/6 has its own dependencies. If it fails, read the suggested solution in the error messages.
 
