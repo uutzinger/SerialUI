@@ -35,6 +35,7 @@ The main programs are `SerialUI.py` and `BLESerialUI.py`. The use files in the `
 ## How to Use This Program
 - [Usage instructions](docs/Instructions.md).
 - [Supplemental instructions](docs/Supplementalinstructions.md).
+- [Helpful reading for QT and qtgraph](docs/Helpful_readings.md).
 
 ## Data Parsing
 - [Data Parsing](docs/Dataparsing.md)
