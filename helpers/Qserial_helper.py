@@ -495,41 +495,42 @@ class QSerialUI(QObject):
         """
         Handle special keys on lineEdit: UpArrow
         """
-        self.serialSendHistoryIndx += 1 # increment history pointer
-        # if pointer at end of buffer restart at -1
-        if self.serialSendHistoryIndx == len(self.serialSendHistory):
-            self.serialSendHistoryIndx = -1
-        # populate with previously sent command from history buffer
-        if self.serialSendHistoryIndx == -1:
-            # if index is -1, use empty string as previously sent command
+        if not self.serialSendHistory:  # Check if history is empty
             self.ui.lineEdit_SerialText.setText("")
-        else:
-            self.ui.lineEdit_SerialText.setText(
-                self.serialSendHistory[self.serialSendHistoryIndx]
-            )
+            self.ui.statusBar().showMessage("No commands in history.", 2000)
+            return
 
-        self.ui.statusBar().showMessage("Previously sent text retrieved.", 2000)
+        # Increment history pointer with circular wrapping
+        self.serialSendHistoryIndx = (self.serialSendHistoryIndx + 1) % (len(self.serialSendHistory) + 1) - 1
+
+        # Populate with previously sent command or clear
+        if self.serialSendHistoryIndx == -1:
+            self.ui.lineEdit_SerialText.setText("")
+            self.ui.statusBar().showMessage("Ready for new command.", 2000)
+        else:
+            self.ui.lineEdit_SerialText.setText(self.serialSendHistory[self.serialSendHistoryIndx])
+            self.ui.statusBar().showMessage("Command retrieved from history.", 2000)
 
     @pyqtSlot()
     def on_serialMonitorSendDownArrowPressed(self):
         """
         Handle special keys on lineEdit: DownArrow
         """
-        self.serialSendHistoryIndx -= 1 # decrement history pointer
-        # if pointer is at start of buffer, reset index to end of buffer
-        if self.serialSendHistoryIndx == -2:
-            self.serialSendHistoryIndx = len(self.serialSendHistory) - 1
-
-        # populate with previously sent command from history buffer
-        if self.serialSendHistoryIndx == -1:
-            # if index is -1, use empty string as previously sent command
+        if not self.serialSendHistory:  # Check if history is empty
             self.ui.lineEdit_SerialText.setText("")
-        else:
-            self.ui.lineEdit_SerialText.setText(
-                self.serialSendHistory[self.serialSendHistoryIndx]
-            )
+            self.ui.statusBar().showMessage("No commands in history.", 2000)
+            return
 
-        self.ui.statusBar().showMessage("Previously sent text retrieved.", 2000)
+        # Decrement history pointer with circular wrapping
+        self.serialSendHistoryIndx = (self.serialSendHistoryIndx - 1) % (len(self.serialSendHistory) + 1) - 1
+
+        # Populate with previously sent command or clear
+        if self.serialSendHistoryIndx == -1:
+            self.ui.lineEdit_SerialText.setText("")
+            self.ui.statusBar().showMessage("Ready for new command.", 2000)
+        else:
+            self.ui.lineEdit_SerialText.setText(self.serialSendHistory[self.serialSendHistoryIndx])
+            self.ui.statusBar().showMessage("Command retrieved from history.", 2000)
 
     @pyqtSlot()
     def on_pushButton_SerialClearOutput(self):

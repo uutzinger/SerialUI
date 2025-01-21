@@ -199,8 +199,9 @@ class mainWindow(QMainWindow):
         self.ui.pushButton_SerialOpenClose.clicked.connect( self.serialUI.on_pushButton_SerialOpenClose)    # Open/Close serial port
 
         # User hit up/down arrow in serial lineEdit
-        self.shortcutUpArrow   = QtWidgets.QShortcut(QtGui.QKeySequence.MoveToPreviousLine, self.ui.lineEdit_SerialText, self.serialUI.on_serialMonitorSendUpArrowPressed)
-        self.shortcutDownArrow = QtWidgets.QShortcut(QtGui.QKeySequence.MoveToNextLine,     self.ui.lineEdit_SerialText, self.serialUI.on_serialMonitorSendDownArrowPressed)
+        self.shortcutUpArrow   = QtWidgets.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Up),  self.ui.lineEdit_SerialText, self.serialUI.on_serialMonitorSendUpArrowPressed)
+        self.shortcutDownArrow = QtWidgets.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Down),self.ui.lineEdit_SerialText, self.serialUI.on_serialMonitorSendDownArrowPressed)
+
 
         # Radio buttons
         self.ui.radioButton_ResetESPonOpen.clicked.connect( self.serialUI.on_resetESPonOpen) # Reset ESP32 on open

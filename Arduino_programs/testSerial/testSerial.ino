@@ -38,21 +38,24 @@ int           scenario = 7; // Default scenario
                             // 7 Mono Sinewave, 8 Mono Sinewave Header, 
                             // 9 Mono Sawtooth, 10 64 Chars"
 
-unsigned long currentTime;
-unsigned long interval = 10000;             // Default interval at which to generate data
-int           samplerate =  1000;           //
-unsigned long lastMeasurementTime  = 0;     // Last time data was produced
-bool          paused = true;                // Flag to pause the data generation
-String        receivedCommand = "";
-char          data[1024];
-static float  loc = 0;
-
 // Configuration (adjustable frequencyuencies and amplitudes)
 float frequency   = 500.0;   // High frequency (Hz)
 float amplitude   = 1024;    // Amplitude for Channel 1
 int16_t signalTable[TABLESIZE];
 
+unsigned long currentTime;
+unsigned long interval = 10000;             // Default interval at which to generate data
+int           samplerate =  1000;           //
+bool          paused = true;                // Flag to pause the data generation
+String        receivedCommand = "";
+char          data[1024];
+static float  loc = 0;
+unsigned long lastMeasurementTime  = 0;     // Last time data was produced
+
+
 RingBuffer dataBuffer(BUFFERSIZE); // Create a ring buffer
+
+// =============================================================================================
 
 void setup()
 {
@@ -80,6 +83,8 @@ void setup()
 
   lastMeasurementTime = micros();
 }
+
+// =============================================================================================
 
 void loop()
 {
@@ -116,6 +121,8 @@ void loop()
   }
 }
 
+// =============================================================================================
+
 void handleSerialCommands()
 {
   String command = Serial.readStringUntil('\n');
@@ -149,7 +156,7 @@ void handleSerialCommands()
     }
     else
     {
-      Serial.println("Invalid interval value.");
+      Serial.println("Invalid samplerate value.");
     }
   }
   else if (command.startsWith("scenario"))
