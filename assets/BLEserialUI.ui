@@ -88,7 +88,7 @@
        <attribute name="title">
         <string>Monitor</string>
        </attribute>
-       <layout class="QVBoxLayout" name="verticalLayout_Monitor" stretch="0,1,0">
+       <layout class="QVBoxLayout" name="verticalLayout_Monitor" stretch="0,1,0,0">
         <item>
          <widget class="QSplitter" name="splitter_tabMonitor_send">
           <property name="orientation">
@@ -121,7 +121,7 @@
             </font>
            </property>
           </widget>
-          <widget class="QPushButton" name="pushButton_Send">
+          <widget class="QPushButton" name="pushButton_SendFile">
            <property name="sizePolicy">
             <sizepolicy hsizetype="Minimum" vsizetype="Fixed">
              <horstretch>0</horstretch>
@@ -171,7 +171,29 @@
          </widget>
         </item>
         <item>
-         <layout class="QHBoxLayout" name="horizontalLayout_bottom_Monitor" stretch="0,0,0,1">
+         <widget class="QPlainTextEdit" name="plainTextEdit_Log">
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="Expanding" vsizetype="Minimum">
+            <horstretch>1</horstretch>
+            <verstretch>0</verstretch>
+           </sizepolicy>
+          </property>
+          <property name="minimumSize">
+           <size>
+            <width>0</width>
+            <height>100</height>
+           </size>
+          </property>
+          <property name="maximumSize">
+           <size>
+            <width>16777215</width>
+            <height>100</height>
+           </size>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <layout class="QHBoxLayout" name="horizontalLayout_bottom_Monitor" stretch="0,0,0,0,1">
           <property name="spacing">
            <number>3</number>
           </property>
@@ -203,6 +225,9 @@
               <pointsize>9</pointsize>
              </font>
             </property>
+            <property name="toolTip">
+             <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Start or Stop displaying received text&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+            </property>
             <property name="text">
              <string>Start</string>
             </property>
@@ -233,6 +258,9 @@
               <pointsize>9</pointsize>
              </font>
             </property>
+            <property name="toolTip">
+             <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Clear the displayed text&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+            </property>
             <property name="text">
              <string>Clear</string>
             </property>
@@ -257,8 +285,21 @@
               <pointsize>9</pointsize>
              </font>
             </property>
+            <property name="toolTip">
+             <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Save the displayed text&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+            </property>
             <property name="text">
              <string>Save</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QRadioButton" name="radioButton_SerialRecord">
+            <property name="toolTip">
+             <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Record all received text into file&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+            </property>
+            <property name="text">
+             <string>Record</string>
             </property>
            </widget>
           </item>
@@ -326,6 +367,9 @@
                 <pointsize>9</pointsize>
                </font>
               </property>
+              <property name="toolTip">
+               <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Start displaying  data using the selected parsing method&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+              </property>
               <property name="text">
                <string>Start</string>
               </property>
@@ -349,6 +393,9 @@
                <font>
                 <pointsize>9</pointsize>
                </font>
+              </property>
+              <property name="toolTip">
+               <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Clear the displayed graph&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
               </property>
               <property name="text">
                <string>Clear</string>
@@ -374,8 +421,27 @@
                 <pointsize>9</pointsize>
                </font>
               </property>
+              <property name="toolTip">
+               <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Save the data from the display buffer&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+              </property>
               <property name="text">
                <string>Save</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="pushButton_ChartSaveFigure">
+              <property name="minimumSize">
+               <size>
+                <width>0</width>
+                <height>30</height>
+               </size>
+              </property>
+              <property name="toolTip">
+               <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Save the displayed graph as picture. For SVG save use right click on graph.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+              </property>
+              <property name="text">
+               <string>Save PNG</string>
               </property>
              </widget>
             </item>
@@ -433,6 +499,9 @@
                   <width>16777215</width>
                   <height>30</height>
                  </size>
+                </property>
+                <property name="toolTip">
+                 <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Selecte data parsing method&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
                 </property>
                 <item>
                  <property name="text">
@@ -512,6 +581,9 @@
                <height>30</height>
               </size>
              </property>
+             <property name="toolTip">
+              <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Set zoom level manually&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+             </property>
             </widget>
             <widget class="QWidget" name="layoutWidget">
              <property name="geometry">
@@ -555,6 +627,9 @@
                   <width>16777215</width>
                   <height>25</height>
                  </size>
+                </property>
+                <property name="toolTip">
+                 <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Zoom into data buffer. Vertical axis is autoscaled unless display iss stopped.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
                 </property>
                 <property name="orientation">
                  <enum>Qt::Horizontal</enum>
@@ -1634,7 +1709,7 @@
            <number>6</number>
           </property>
           <item row="0" column="0">
-           <widget class="QLabel" name="label_SerialPorts">
+           <widget class="QLabel" name="label_Devices">
             <property name="sizePolicy">
              <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
               <horstretch>0</horstretch>
@@ -1657,6 +1732,9 @@
              <font>
               <pointsize>9</pointsize>
              </font>
+            </property>
+            <property name="toolTip">
+             <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Select BLE Device&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
             </property>
             <property name="text">
              <string>Device</string>
@@ -1743,9 +1821,12 @@
               <pointsize>9</pointsize>
              </font>
             </property>
+            <property name="toolTip">
+             <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Select end of line character or none&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+            </property>
             <item>
              <property name="text">
-              <string>return newline (\r\n)</string>
+              <string>none</string>
              </property>
             </item>
             <item>
@@ -1760,12 +1841,17 @@
             </item>
             <item>
              <property name="text">
+              <string>return newline (\r\n)</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
               <string>newline return (\n\r)</string>
              </property>
             </item>
             <item>
              <property name="text">
-              <string>none</string>
+              <string>return newline (\r\n)</string>
              </property>
             </item>
            </widget>
@@ -1797,6 +1883,9 @@
             <pointsize>9</pointsize>
            </font>
           </property>
+          <property name="toolTip">
+           <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Scan for BLE devices&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+          </property>
           <property name="text">
            <string>Scan</string>
           </property>
@@ -1827,6 +1916,9 @@
             <pointsize>9</pointsize>
            </font>
           </property>
+          <property name="toolTip">
+           <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Connect to selected BLE device&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+          </property>
           <property name="text">
            <string>Connect</string>
           </property>
@@ -1839,6 +1931,9 @@
             <width>0</width>
             <height>30</height>
            </size>
+          </property>
+          <property name="toolTip">
+           <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Pair or remove BLE device from system&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
           </property>
           <property name="text">
            <string>Pair</string>
@@ -1853,6 +1948,9 @@
             <height>30</height>
            </size>
           </property>
+          <property name="toolTip">
+           <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Trust or untrust selected BLE device&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+          </property>
           <property name="text">
            <string>Trust</string>
           </property>
@@ -1866,6 +1964,9 @@
             <height>30</height>
            </size>
           </property>
+          <property name="toolTip">
+           <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Obtain system information ot BLE device status&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+          </property>
           <property name="text">
            <string>Status</string>
           </property>
@@ -1876,7 +1977,7 @@
       <widget class="QLineEdit" name="label_throughput">
        <property name="minimumSize">
         <size>
-         <width>200</width>
+         <width>225</width>
          <height>30</height>
         </size>
        </property>
@@ -1890,6 +1991,12 @@
         <font>
          <pointsize>9</pointsize>
         </font>
+       </property>
+       <property name="toolTip">
+        <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Receive and Transmit counter&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+       </property>
+       <property name="text">
+        <string>Throughput: 0 Bps</string>
        </property>
       </widget>
      </widget>

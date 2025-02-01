@@ -32,7 +32,7 @@
 #define FRAME_SIZE               128  // Max size in bytes to send at once.
 #define TABLESIZE                 64  // Number of samples in one full cycle for sine, sawtooth etc
 
-int           scenario = 7; // Default scenario 
+int           scenario = 6; // Default scenario 
                             // 1 Agriculture,   2 Satelite, 3 Environmental,
                             // 4  Medical,      5 Power,    6 Stereo Sinewave, 
                             // 7 Mono Sinewave, 8 Mono Sinewave Header, 
@@ -44,8 +44,8 @@ float amplitude   = 1024;    // Amplitude for Channel 1
 int16_t signalTable[TABLESIZE];
 
 unsigned long currentTime;
-unsigned long interval = 10000;             // Default interval at which to generate data
-int           samplerate =  1000;           //
+unsigned long interval = 10000;             // Default interval at which to generate data in micro seconds
+int           samplerate =  5000;           // Samples per second
 bool          paused = true;                // Flag to pause the data generation
 String        receivedCommand = "";
 char          data[1024];
@@ -206,6 +206,7 @@ void handleSerialCommands()
     Serial.println("   1 Agriculture, 2 Satelite, 3 Environmental, 4 Medical, 5 Power");
     Serial.println("   6 Stereo Sinewave, 7 Mono Sinewave, 8 Mono Sinewave Header, 9 Mono Sawtooth, 10 Squarewave");
     Serial.println("  11 64 Chars");
+
   }
 }
 
@@ -296,13 +297,19 @@ size_t generateDataStereo(int samplerate, unsigned long interval) {
     char* ptr = data;
     int samples = (samplerate * interval) / 1000000;
     float stepSize = (TABLESIZE * frequency) / float(samplerate);
+    int offset = int(stepSize * 2);
+    int idx;
+    int16_t value1;
+    int16_t value2;
 
     for (int i = 0; i < samples; i++) {
-        int idx = int(loc) % TABLESIZE;
-        int16_t value = signalTable[idx];
+        idx = int(loc) % TABLESIZE;
+        value1 = signalTable[idx];
+        idx = int(loc + offset) % TABLESIZE;
+        value2 = signalTable[idx];
 
         if (ptr >= data + sizeof(data) - 10) break; 
-        ptr += snprintf(ptr, data + sizeof(data) - ptr, "%d, %d\n", value, value);
+        ptr += snprintf(ptr, data + sizeof(data) - ptr, "%d, %d\n", value1, value2);
 
         loc += stepSize;
     }

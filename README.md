@@ -7,7 +7,7 @@
 
 From an ESP32 we can retrieve about 400kBytes/s. For simple simulated data more than 20k samples/second can be retrieved and plotted.
 
-**BLESerialUI** is equivalent to SerialUI but uses the Nordic Serial UART on a BLE connection (Experimental)
+**BLESerialUI** is equivalent to SerialUI but uses the Nordic Serial UART on a BLE connection (Experimental, Unfinished Code)
 
 <img src="docs/SerialMonitor.png" alt="Serial Monitor" width="600"/>
 <img src="docs/SerialPlotter.png" alt="Serial Plotter" width="600"/>
@@ -28,7 +28,14 @@ From an ESP32 we can retrieve about 400kBytes/s. For simple simulated data more 
 - `pyudev` on Linux  for USB device notifications
 - `qasync` and `bleak` for bluetooth communication
 
+In future version we will also need:
+ - `scipy` image decompression
+ - `numba` binary transmission parsing
+ - `cobs` serial data encoding (byte stuffing)
+ - `zlib` and `tamp` for compression 
+
 Installation of PyQt5/6 has its own dependencies. If it fails, read the suggested solution in the error messages.
+For example pyOpenGL might be required.
 
 The main programs are `SerialUI.py` and `BLESerialUI.py`. The use files in the `assets` and `helper` folders.
 

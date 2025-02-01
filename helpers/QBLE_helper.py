@@ -12,16 +12,16 @@
 # QBLESerial:   Functions running in separate thread, communication through signals and slots.
 ############################################################################################
 
-import sys
-import os
-import asyncio
-from qasync import QEventLoop, asyncSlot  # Library to integrate asyncio with Qt
-from bleak import BleakClient, BleakScanner, BleakError 
-from bleak.backends.characteristic import BleakGATTCharacteristic
+import re
+import time
+import logging
+import threading
 
-import time, logging
-from math import ceil
-from enum import Enum
+from pathlib import Path
+
+import asyncio
+from qasync import QEventLoop  # Library to integrate asyncio with Qt
+from bleak  import BleakClient, BleakScanner, BleakError 
 
 try: 
     from PyQt6.QtCore import (
@@ -29,7 +29,7 @@ try:
     )
     from PyQt6.QtCore import Qt, QObject, QThread, QTimer, pyqtSignal, pyqtSlot, QStandardPaths
     from PyQt6.QtGui import QTextCursor
-    from PyQt6.QtWidgets import QFileDialog
+    from PyQt6.QtWidgets import QFileDialog, QMessageBox
     hasQt6 = True
 except:
     from PyQt5.QtCore import (
@@ -37,13 +37,17 @@ except:
     )
     from PyQt5.QtCore import Qt, QObject, QThread, QTimer, pyqtSignal, pyqtSlot, QStandardPaths
     from PyQt5.QtGui import QTextCursor
-    from PyQt5.QtWidgets import QFileDialog
+    from PyQt5.QtWidgets import QFileDialog, QMessageBox
     hasQt6 = False
 
+# Custom Helpers
+from helpers.Codec_helper         import BinaryStreamProcessor
+from helpers.Qbluetoothctl_helper import BluetoothctlWrapper
 
 # Constants
 ########################################################################################
-MAX_TEXTBROWSER_LENGTH = 1024 * 1024 # display window character length is trimmed to this length
+DEBUGSERIAL            = False       # enable debug output
+MAX_TEXTBROWSER_LENGTH = 4096        # display window is trimmed to these number of lines
                                      # lesser value results in better performance
 MAX_LINE_LENGTH        = 1024        # number of characters after which an end of line characters is expected
 RECEIVER_FINISHCOUNT   = 10          # [times] If we encountered a timeout 10 times we slow down serial polling
@@ -53,572 +57,540 @@ NUM_LINES_COLLATE      = 10          # [lines] estimated number of lines to coll
 MAX_RECEIVER_INTERVAL  = 100         # [ms]
 MIN_RECEIVER_INTERVAL  = 5           # [ms]
 
+
 # UUIDs for the UART service and characteristics
 SERVICE_UUID           = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
 RX_CHARACTERISTIC_UUID = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
 TX_CHARACTERISTIC_UUID = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
-BLETIMEOUT             = 10  # Timeout for BLE operations
-BLEMTU                 = 185  # Maximum Transmission Unit for BLE
 
+#BLE Constants
+BLETIMEOUT             = 30  # Timeout for BLE operations
+BLEMTUMAX              = 517
+BLEMTUNORMAL           = 247
 
-############################################################################################
+# Medibrick
+TARGET_DEVICE_NAME     = "MediBrick_BLE"  # The name of the BLE device to search for
+BLEPIN                 = 123456           # Known pairing pin for Medibrick_BLE
+
+# Remove ANSI escape sequences
+ANSI_ESCAPE            = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+
+##########################################################################################################################################        
+##########################################################################################################################################        
+#
 # QBLESerial interaction with Graphical User Interface
+#
 # This section contains routines that can not be moved to a separate thread
 # because it interacts with the QT User Interface.
-# The BLE Serial UARTWorker is in a separate thread and receives data through signals from this class
+# The BLE Worker is in a separate thread and receives data through signals from this class
 #
-# Receiving from Serial UART port is bytes or a list of bytes
-# Sending to Serial UART port is bytes or list of bytes
+# Receiving from BLE device is bytes or a list of bytes
+# Sending to BLE device is bytes or list of bytes
 # We need to encode/decode received/sent text in QBLESerialUI
-############################################################################################
-
+#
+#    This is the Controller (Presenter)  of the Model - View - Controller (MVC) architecture.
+#
+##########################################################################################################################################        
+##########################################################################################################################################        
 
 class QBLESerialUI(QObject):
     """
-    BLE Serial UART Interface for QT
+    Object providing functionality between User Interface and BLE Serial Worker.
+    This interface must run in the main thread and interacts with user.
 
-    Signals (to be emitted by UI)
-        scanPortsRequest                 request that QSerial is scanning for ports
-        scanBaudRatesRequest             request that QSerial is scanning for baudrates
-        changePortRequest                request that QSerial is changing port
-        changeBaudRequest                request that QSerial is changing baud rate
-        changeLineTerminationRequest     request that QSerial line termination is changed
-        sendTextRequest                  request that provided text is transmitted over serial TX
-        sendLineRequest                  request that provided line of text is transmitted over serial TX
-        sendLinesRequest                 request that provided lines of text are transmitted over serial TX
-        setupReceiverRequest             request that QTimer for receiver and QTimer for throughput is created
-        startReceiverRequest             request that QTimer for receiver is started
-        stopReceiverRequest              request that QTimer for receiver is stopped
-        startThroughputRequest           request that QTimer for throughput is started
-        stopThroughputRequest            request that QTimer for throughput is stopped
-        serialStatusRequest              request that QSerial reports current port, baudrate, line termination, encoding, timeout
-        finishWorkerRequest              request that QSerial worker is finished
-        closePortRequest                 request that QSerial closes current port
+    Signals (to be emitted by UI abd picked up by BLE Worker)
+        scanDevicesRequest                  request that QBLESerial is scanning for devices
+        connectDeviceRequest                request that QBLESerial is connecting to device
+        disconnectDeviceRequest             request that QBLESerial is disconnecting from device
+        pairDeviceRequest                   request that QBLESerial is paring bluetooth device
+        removeDeviceRequest                 request that QBLESerial is removing bluetooth device
+        changeLineTerminationRequest        request that QBLESerial is using difference line termination
+        sendFileRequest                     request that file is sent over BLE
+        sendTextRequest                     request that provided text is transmitted over BLE
+        sendLineRequest                     request that provided line of text is transmitted over BLE
+        sendLinesRequest                    request that provided lines of text are transmitted over BLE
+        bleStatusRequest                    request that QBLESerial reports current status
+        setupTransceiverRequest             request that bluetoothctl interface and throughput timer is created
+        setupBLEWorkerRequest               request that asyncio event loop is created and bluetoothctrl wrapper is started
+        stopTransceiverRequest (not used)   request that bluetoothctl and throughput timer are stopped
+        finishWorkerRequest                 request that QBLESerial worker is finished
 
-    Slots (functions available to respond to external signals)
-        on_serialMonitorSend                 transmit text from UI to serial TX line
-        on_serialMonitorSendUpArrowPressed   recall previous line of text from serial TX line buffer
-        on_serialMonitorSendDownArrowPressed recall next line of text from serial TX line buffer
-        on_pushButton_SerialClearOutput      clear the text display window
-        on_pushButton_SerialStartStop        start/stop serial receiver and throughput timer
-        on_pushButton_SerialSave             save text from display window into text file
-        on_pushButton_SerialScan             update serial port list
-        on_pushButton_SerialOpenClose        open/close serial port
-        on_comboBoxDropDown_SerialPorts      user selected a new port on the drop down list
-        on_comboBoxDropDown_BaudRates        user selected a different baudrate on drop down list
-        on_comboBoxDropDown_LineTermination  user selected a different line termination from drop down menu
-        on_serialStatusReady(str, int, bytes, float) pickup QSerial status on port, baudrate, line termination, timeout
-        on_newPortListReady(list, list)      pickup new list of serial ports
-        on_newBaudListReady(tuple)           pickup new list of baudrates
-        on_SerialReceivedText(bytes)         pickup text from serial port
-        on_SerialReceivedLines(list)         pickup lines of text from serial port
-        on_throughputReceived(int, int)      pickup throughput data from QSerial
-        on_usb_event_detected(str)           pickup USB device insertion or removal
+    Slots (functions available to respond to external signals or events from buttons, input fields, etc.)
+        on_pushButton_SendFile              send file over BLE
+        on_pushButton_Clear                 clear the BLE text display window
+        on_pushButton_StartStop             start/stop BLE transceiver
+        on_pushButton_Save                  save text from display window into text file
+        on_pushButton_Scan                  update BLE device list
+        on_pushButton_Connect               open/close BLE device
+        on_pushButton_Pair                  pair or remove BLE device
+        on_pushButton_Trust                 trust or distrust BLE device
+        on_pushButton_Status                request BLE device status
+        on_comboBoxDropDown_BLEDevices      user selected a new BLE device from the drop down list
+        on_comboBoxDropDown_LineTermination user selected a different line termination from drop down menu
+        on_upArrowPressed                   recall previous line of text from BLE console line buffer
+        on_downArrowPressed                 recall next line of text from BLE console line buffer
+        on_carriageReturnPressed            transmit text from UI to BLE transceiver
+        on_statusReady                      pickup BLE device status
+        on_deviceListReady                  pickup new list of devices
+        on_receivedData                     pickup text from BLE transceiver
+        on_receivedLines                    pickup lines of text from BLE transceiver
+        on_throughputReady                  pickup throughput data from BLE transceiver
+        on_pairingSuccess                   pickup wether device pairing was successful
+        on_removalSuccess                   pickup wether device removal was successful
+        on_logSignal                        pickup log messages
     """
 
     # Signals
     ########################################################################################
 
-    scanPortsRequest             = pyqtSignal()                                            # port scan
-    scanBaudRatesRequest         = pyqtSignal()                                            # baudrates scan
-    changePortRequest            = pyqtSignal(str, int, bool)                              # port and baudrate to change with ESP reset
-    changeBaudRequest            = pyqtSignal(int)                                         # request serial baud rate to change
-    changeLineTerminationRequest = pyqtSignal(bytes)                                       # request line termination to change
-    sendTextRequest              = pyqtSignal(bytes)                                       # request to transmit text to TX
-    sendLineRequest              = pyqtSignal(bytes)                                       # request to transmit one line of text to TX
-    sendLinesRequest             = pyqtSignal(list)                                        # request to transmit lines of text to TX
-    startReceiverRequest         = pyqtSignal()                                            # start serial receiver, expecting text
-    stopReceiverRequest          = pyqtSignal()                                            # stop serial receiver
-    setupReceiverRequest         = pyqtSignal()                                            # start serial receiver, expecting text
-    startThroughputRequest       = pyqtSignal()                                            # start timer to report throughput
-    stopThroughputRequest        = pyqtSignal()                                            # stop timer to report throughput
-    resetESPonOpen               = pyqtSignal(bool)                                        # reset ESP32 on open    
-    serialStatusRequest          = pyqtSignal()                                            # request serial port and baudrate status
-    finishWorkerRequest          = pyqtSignal()                                            # request worker to finish
-    closePortRequest             = pyqtSignal()                                            # close the current serial Port
-    serialSendFileRequest        = pyqtSignal(str)                                         # request to open file and send over serial port
+    scanDevicesRequest           = pyqtSignal()                  # scan for BLE devices
+    connectDeviceRequest         = pyqtSignal(BLEDevice, int, bool)  # connect to BLE device, mac, timeout, 
+    disconnectDeviceRequest      = pyqtSignal()                  # disconnect from BLE device
+    pairDeviceRequest            = pyqtSignal(str,str)           # pair with BLE device mac and pin
+    removeDeviceRequest          = pyqtSignal(str)               # remove BLE device from systems paired list 
+    trustDeviceRequest           = pyqtSignal(str)               # trust a device
+    distrustDeviceRequest        = pyqtSignal(str)               # distrust a device
+    changeLineTerminationRequest = pyqtSignal(bytes)             # request line termination to change
+    sendTextRequest              = pyqtSignal(bytes)             # request to transmit text
+    sendLineRequest              = pyqtSignal(bytes)             # request to transmit one line of text to TX
+    sendLinesRequest             = pyqtSignal(list)              # request to transmit lines of text to TX
+    sendFileRequest              = pyqtSignal(str)               # request to open file and send with transceiver
+    bleStatusRequest             = pyqtSignal(str)               # request BLE device status
+    setupTransceiverRequest      = pyqtSignal()                  # start transceiver
+    setupBLEWorkerRequest        = pyqtSignal()                  # request that QBLESerial worker is setup
+    stopTransceiverRequest       = pyqtSignal()                  # stop transceiver (display of incoming text, connection remains)
+    finishWorkerRequest          = pyqtSignal()                  # request worker to finish
+    setupBLEWorkerFinished       = pyqtSignal()                  # QBLESerial worker setup is finished
+    setupTransceiverFinished     = pyqtSignal()                  # transceiver setup is finished
+    workerFinished               = pyqtSignal()                  # worker is finished
            
-    def __init__(self, parent=None, ui=None, worker=None):
+    def __init__(self, parent=None, ui=None, worker=None, logger=None):
+        """
+        Need to provide the user interface and worker
+        Start the timers for text display and log display trimming
+        """
 
         super(QBLESerialUI, self).__init__(parent)
 
         # state variables, populated by service routines
-        self.defaultBaudRate       = DEFAULT_BAUDRATE
-        self.BaudRates             = []                                                    # e.g. (1200, 2400, 9600, 115200)
-        self.serialPortNames       = []                                                    # human readable
-        self.serialPorts           = []                                                    # e.g. COM6
-        self.serialPort            = ""                                                    # e.g. COM6
-        self.serialBaudRate        = DEFAULT_BAUDRATE                                      # e.g. 115200
-        self.serialSendHistory     = []                                                    # previously sent text (e.g. commands)
-        self.serialSendHistoryIndx = -1                                                    # init history
-        self.lastNumReceived       = 0                                                     # init throughput            
-        self.lastNumSent           = 0                                                     # init throughput
-        self.rx                    = 0                                                     # init throughput
-        self.tx                    = 0                                                     # init throughput 
-        self.receiverIsRunning     = False                                                 # keep track of worker state
-        self.textLineTerminator    = b""                                                   # default line termination: none
-        self.encoding              = "utf-8"                                               # default encoding
-        self.serialTimeout         = 0                                                     # default timeout    
-        self.isScrolling           = False                                                 # keep track of text display scrolling
-        self.esp_reset             = False                                                 # reset ESP32 on open
+        self.device                = ""       # BLE device
+        self.device_info           = {}       # BLE device status
+        self.bleSendHistory        = []       # previously sent text (e.g. commands)
+        self.bleSendHistoryIndx    = -1       # init history
+        self.rx                    = 0        # init throughput
+        self.tx                    = 0        # init throughput 
+        self.textLineTerminator    = b""      # default line termination: none
+        self.encoding              = "utf-8"  # default encoding
+        self.isLogScrolling        = False    # keep track of log display scrolling
+        self.isTextScrolling       = False    # keep track of text display scrolling
+        self.device_backup         = ""       # keep track of previously connected device
+        self.transceiverIsRunning  = False    # BLE transceiver is not running
 
-        self.serialPort_backup     = ""
-        self.serialBaudRate_backup = DEFAULT_BAUDRATE
-        self.esp_reset_backup      = False
+        self.lastNumReceived       = 0
+        self.lastNumSent           = 0
+    
         self.awaitingReconnection  = False
+        self.record                = False                                                 # record serial data
+        self.recordingFileName     = ""
+        self.recordingFile         = None
 
-        self.logger = logging.getLogger("QSerUI_")
+        self.textBrowserLength     = MAX_TEXTBROWSER_LENGTH + 1
+
+        self.instance_name = self.objectName() if self.objectName() else self.__class__.__name__
+
+        if logger is None:
+            self.logger = logging.getLogger("QBLE_UI")
+        else:
+            self.logger = logger
 
         if ui is None:
-            self.logger.log(
-                logging.ERROR,
-                "[{}]: need to have access to User Interface".format(
-                    int(QThread.currentThreadId())
-                ),
-            )
-        self.ui = ui
+            self.handle_log(logging.ERROR, f"[{self.instance_name}] This applications needs to have access to User Interface")
+            raise ValueError("User Interface (ui) is required but was not provided.")
+        else:
+            self.ui = ui
 
         if worker is None:
-            self.logger.log(
-                logging.ERROR,
-                "[{}]: need to have access to serial worker signals".format(
-                    int(QThread.currentThreadId())
-                ),
-            )
-        self.serialWorker = worker
-
+            self.handle_log(logging.ERROR, f"[{self.instance_name}] This applications needs to have access to BLE Worker")
+            raise ValueError("BLE Worker (worker) is required but was not provided.")
+        else:
+            self.worker = worker
+        
         # Text display window on serial text display
-        self.textScrollbar = self.ui.plainTextEdit_SerialTextDisplay.verticalScrollBar()
-        self.ui.plainTextEdit_SerialTextDisplay.setVerticalScrollBarPolicy(
+        self.ui.plainTextEdit_Text.setReadOnly(True)   # Prevent user edits
+        self.ui.plainTextEdit_Text.setWordWrapMode(0)  # No wrapping for better performance
+
+        self.textScrollbar = self.ui.plainTextEdit_Text.verticalScrollBar()
+        self.ui.plainTextEdit_Text.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOn
         )
+        self.textScrollbar.setSingleStep(1)                          # Highest resolution
 
-        # Disable closing serial port button
-        self.ui.pushButton_SerialOpenClose.setText("Open")
-        self.ui.pushButton_SerialOpenClose.setEnabled(False)
-        # Disable start button in serial monitor and chart
-        self.ui.pushButton_ChartStartStop.setEnabled(True)
-        self.ui.pushButton_SerialStartStop.setEnabled(True)
-        self.ui.pushButton_IndicatorStartStop.setEnabled(True)
-        self.ui.lineEdit_SerialText.setEnabled(False)
-        self.ui.pushButton_SerialSend.setEnabled(False)
+        # Efficient text storage
+        self.lineBuffer_text = deque(maxlen=MAX_TEXTBROWSER_LENGTH)       # Circular buffer
 
-        # Limit the amount of text retained in the serial text display window
-        #   execute a text trim function every minute
+
+        # Log display window 
+        self.ui.plainTextEdit_Log.setReadOnly(True)   # Prevent user edits
+        self.ui.plainTextEdit_Log.setWordWrapMode(0)  # No wrapping for better performance
+
+        self.logScrollbar = self.ui.plainTextEdit_Log.verticalScrollBar()
+        self.ui.plainTextEdit_Log.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOn
+        )
+        self.logScrollbar.setSingleStep(1)                          # Highest resolution
+
+        # Efficient text storage
+        self.lineBuffer_log = deque(maxlen=MAX_TEXTBROWSER_LENGTH)       # Circular buffer
+
+
+        # Limit the amount of text retained in the  text display window
         self.textTrimTimer = QTimer(self)
-        self.textTrimTimer.timeout.connect(self.serialTextDisplay_trim)
+        self.textTrimTimer.timeout.connect(self.bleTextDisplay_trim)
         self.textTrimTimer.start(10000)  # Trigger every 10 seconds, this halts the display for a fraction of second, so dont do it often
 
-        # Cursor for text display window
-        self.textCursor = self.ui.plainTextEdit_SerialTextDisplay.textCursor()
-        if hasQt6:
-            self.textCursor.movePosition(QTextCursor.MoveOperation.End)
+        # Limit the amount of text retained in the log display window
+        #   execute a text trim function every minute
+        self.logTrimTimer = QTimer(self)
+        self.logTrimTimer.timeout.connect(self.bleLogDisplay_trim)
+        self.logTrimTimer.start(100000)  # Trigger every 10 seconds, this halts the display for a fraction of second, so dont do it often
+
+        self.handle_log(logging.INFO,"QSerialUI initialized.")
+
+    ########################################################################################
+    # Helper functions
+    ########################################################################################
+
+    def handle_log(self, level, message):
+        if level == logging.INFO:
+            self.logger.info(message)
+        elif level == logging.WARNING:
+            self.logger.warning(message)
+        elif level == logging.ERROR:
+            self.logger.error(message)
+        elif level == logging.DEBUG:
+            self.logger.debug(message)
+        elif level == logging.CRITICAL:
+            self.logger.critical(message)
         else:
-            self.textCursor.movePosition(QTextCursor.End)
-        self.ui.plainTextEdit_SerialTextDisplay.setTextCursor(self.textCursor)
-        self.ui.plainTextEdit_SerialTextDisplay.ensureCursorVisible()
-        self.logger.log(
-            logging.INFO, 
-            "[{}]: QSerialUI initialized.".format(int(QThread.currentThreadId()))
-        )
+            self.logger.log(level, message)
+        self.on_receivedLog(message, add_newline=True)
 
+    def _safe_decode(self, byte_data, encoding="utf-8"):
+        """
+        Safely decodes a byte array to a string, replacing invalid characters.
+        """
+        try:
+            return byte_data.decode(encoding)
+        except UnicodeDecodeError as e:
+            return byte_data.decode(encoding, errors="replace").replace("\ufffd", "¿")
+        except Exception as e:
+            return ""  # Return empty string if decoding completely fails
 
-    # Response Functions to Timer Signals
+    ########################################################################################
+    # Deal with Connections
     ########################################################################################
 
-    def on_usb_event_detected(self, message):
-        """
-        This responds to an USB device insertion on removal
-        """
-        port_scan = [ [p.device, p.description, p.hwid] for p in list_ports.comports() ]
-        ports = [sublist[0] for sublist in port_scan if sublist[1] != 'n/a']
-
-        if "USB device removed" in message:
-            # Check if the device is still there
-            if self.serialPort not in ports and self.serialPort != "":
-                # Device is no longer there, close the port
-                if self.serialPort != "":
-                    self.serialPort_backup     = self.serialPort
-                    self.serialBaudRate_backup = self.serialBaudRate
-                    self.esp_reset_backup      = self.esp_reset
-                    self.awaitingReconnection  = True
-                QTimer.singleShot(  0, lambda: self.stopThroughputRequest.emit()) # request to stop throughput
-                QTimer.singleShot( 50, lambda: self.closePortRequest.emit())      # request to close serial port
-                QTimer.singleShot(250, lambda: self.serialStatusRequest.emit())   # request to report serial port status
-                # shade sending text
-                self.ui.lineEdit_SerialText.setEnabled(False)
-                self.ui.pushButton_SerialSend.setEnabled(False)                
-                self.logger.log(
-                    logging.INFO, 
-                    "[{}]: requesting Closing serial port.".format(int(QThread.currentThreadId()))
-                )
-                self.ui.statusBar().showMessage('USB device removed, Serial Close requested.', 5000)            
+    def _safely_cleanconnect(signal, slot, previous_slot: None):
+        try:
+            if previous_slot is None:
+                signal.disconnect()
             else:
-                pass
+                signal.disconnect(previous_slot)
+        except TypeError:
+            pass
+        try:
+            signal.connect(slot)
+        except TypeError:
+            pass
 
-        elif "USB device added" in message:
-            if self.awaitingReconnection: 
-                if self.serialPort in ports:
-                    QTimer.singleShot(  0, lambda: self.changePortRequest.emit(self.serialPort_backup, self.serialBaudRate_backup, self.esp_reset_backup) ) # takes 11ms to open port
-                    QTimer.singleShot(150, lambda: self.scanBaudRatesRequest.emit())            # update baudrates
-                    QTimer.singleShot(200, lambda: self.serialStatusRequest.emit())             # request to report serial port status            
-                    QTimer.singleShot(250, lambda: self.startThroughputRequest.emit())          # request to start serial receiver
-                    self.awaitingReconnection = False
-                    self.logger.log(
-                        logging.INFO, 
-                        "[{}]: port {} reopened with baud {} eol {} timeout {} and esp_rest {}.".format(
-                            int(QThread.currentThreadId()), self.port_backup, self.baud_backup, repr(self.eol_backup), self.timeout_backup, self.esp_reset_backup
-                        )
-                    )
-                    self.ui.statusBar().showMessage('USB device added back, Serial Open requested.', 5000)            
-            else:
-                # We have new device insertion, connect to it
-                if self.serialPort == "":
-                    # Figure out if useable port
-                    if ports:
-                        new_ports = [port for port in ports if port not in self.serialPorts]
-                        if new_ports:
-                            new_port = new_ports[0]
-                            new_port_baudrate = self.serialBaudRate if self.serialBaudRate > 0 else DEFAULT_BAUDRATE
-                            new_port_esp_reset = self.esp_reset
-                            # Start the receiver
-                            QTimer.singleShot(  0, lambda: self.changePortRequest.emit(new_port, new_port_baudrate, new_port_esp_reset)) # takes 11ms to open
-                            QTimer.singleShot(100, lambda: self.scanPortsRequest.emit())                # request new port list
-                            QTimer.singleShot(150, lambda: self.scanBaudRatesRequest.emit())            # request new baud rate list
-                            QTimer.singleShot(200, lambda: self.serialStatusRequest.emit())             # request to report serial port status            
-                            QTimer.singleShot(250, lambda: self.startThroughputRequest.emit())          # request to start serial receiver
-                            # un-shade sending text
-                            self.ui.lineEdit_SerialText.setEnabled(True)
-                            self.ui.pushButton_SerialSend.setEnabled(True)                
-                            self.logger.log(
-                                logging.INFO, 
-                                "[{}]: requesting Opening Serial port {} with {} baud and ESP reset {}.".format(
-                                    int(QThread.currentThreadId()),new_port,new_port_baudrate, "on" if new_port_esp_reset else "off")
-                                )
-                            self.ui.statusBar().showMessage('Serial Open requested.', 2000)
+    def _safely_connect(signal, slot):
+        try:
+            signal.connect(slot)
+        except TypeError:
+            pass
 
-    # Response Functions to User Interface Signals
+    def _safely_disconnect(signal, slot):
+        try:
+            signal.disconnect(slot)
+        except TypeError:
+            pass
+
     ########################################################################################
+    # Slots
+    ########################################################################################
+
+    @pyqtSlot(int,str)
+    def on_logSignal(self, int, str):
+        """pickup log messages, not used as no conenction with separate thread"""
+        self.handle_log(int, str)
 
     @pyqtSlot()
-    def on_serialMonitorSend(self):
+    def on_carriageReturnPressed(self):
         """
         Transmitting text from UI to serial TX line
         """
-        text = self.ui.lineEdit_SerialText.text()                                # obtain text from send input window
-        self.serialSendHistory.append(text)                                      # keep history of previously sent commands
-        if self.receiverIsRunning == False:
-            self.serialWorker.linesReceived.connect(self.on_SerialReceivedLines) # connect text display to serial receiver signal
-            self.serialWorker.textReceived.connect(self.on_SerialReceivedText)   # connect text display to serial receiver signal            
-            QTimer.singleShot(0,  lambda: self.startReceiverRequest.emit())      # request to start receiver
-            QTimer.singleShot(50, lambda: self.startThroughputRequest.emit())    # request to start throughput            
-            self.ui.pushButton_SerialStartStop.setText("Stop")
-        text_bytearray = text.encode(self.encoding) + self.textLineTerminator    # add line termination
+        text = self.ui.lineEdit_Text.text()                                # obtain text from send input window
+        if not text:
+            self.ui.statusBar().showMessage("No text to send.", 2000)
+            return
+        
+        self.displayingRunning.emit(True)            
+        self.ui.pushButton_StartStop.setText("Stop")
+
+        self.bleSendHistory.append(text)                             # keep history of previously sent commands
+        self.bleSendHistoryIndx = len(self.bleSendHistory)           # reset history pointer
+        
+        try:
+            text_bytearray = text.encode(self.encoding) + self.textLineTerminator # add line termination
+        except UnicodeEncodeError:
+            text_bytearray = text.encode("utf-8", errors="replace") + self.textLineTerminator
+            self.handle_log(logging.WARNING, f"[{self.thread_id}]: Encoding error, using UTF-8 fallback.")
+        except Exception as e:
+            self.handle_log(logging.ERROR, f"[{self.thread_id}]: Encoding error: {e}")
+            return
+        
         self.sendTextRequest.emit(text_bytearray)                                # send text to serial TX line
-        self.ui.lineEdit_SerialText.clear()
+        self.ui.lineEdit_Text.clear()
         self.ui.statusBar().showMessage("Text sent.", 2000)
 
     @pyqtSlot()
-    def on_serialSendFile(self):
+    def on_upArrowPressed(self):
         """
-        Transmitting file to serial TX line
+        Handle special keys on lineEdit: UpArrow
         """
-        stdFileName = (
-            QStandardPaths.writableLocation(
-                QStandardPaths.StandardLocation.DocumentsLocation
-            )
-            + "/QSerial.txt"
+        if not self.bleSendHistory:  # Check if history is empty
+            self.ui.lineEdit_Text.setText("")
+            self.ui.statusBar().showMessage("No commands in history.", 2000)
+            return
+
+        if self.bleSendHistoryIndx > 0:
+            self.bleSendHistoryIndx -= 1
+        else:
+            self.bleSendHistoryIndx = 0  # Stop at oldest command
+
+        self.ui.lineEdit_Text.setText(self.bleSendHistory[self.bleSendHistoryIndx])
+        self.ui.statusBar().showMessage("Command retrieved from history.", 2000)
+        
+    @pyqtSlot()
+    def on_downArrowPressed(self):
+        """
+        Handle special keys on lineEdit: DownArrow
+        """
+        if not self.serialSendHistory:
+            self.ui.lineEdit_Text.setText("")
+            self.ui.statusBar().showMessage("No commands in history.", 2000)
+            return
+    
+        if self.serialSendHistoryIndx < len(self.serialSendHistory) - 1:
+            self.serialSendHistoryIndx += 1
+            self.ui.lineEdit_Text.setText(self.serialSendHistory[self.serialSendHistoryIndx])
+        else:
+            self.serialSendHistoryIndx = len(self.serialSendHistory)  # Move past last entry
+            self.ui.lineEdit_Text.clear()
+            self.ui.statusBar().showMessage("Ready for new command.", 2000)
+
+    @pyqtSlot()
+    def on_pushButton_SendFile(self):
+        """Request to send a file over BLE."""
+        stdFileName = ( QStandardPaths.writableLocation(
+            QStandardPaths.StandardLocation.DocumentsLocation) + "/upload.txt" 
         )
         fname, _ = QFileDialog.getOpenFileName(
             self.ui, "Open", stdFileName, "Text files (*.txt)"
         )
         if fname:
-            QTimer.singleShot( 0, lambda: self.startThroughputRequest.emit())
-            QTimer.singleShot(50, lambda: self.serialSendFileRequest.emit(fname))
-            
-        self.ui.statusBar().showMessage('Text file sent.', 2000)            
+            self.sendFileRequest.emit(fname)
+        self.handle_log(logging.INFO, 'Text file send request completed.')            
 
     @pyqtSlot()
-    def on_serialMonitorSendUpArrowPressed(self):
-        """
-        Handle special keys on lineEdit: UpArrow
-        """
-        self.serialSendHistoryIndx += 1 # increment history pointer
-        # if pointer at end of buffer restart at -1
-        if self.serialSendHistoryIndx == len(self.serialSendHistory):
-            self.serialSendHistoryIndx = -1
-        # populate with previously sent command from history buffer
-        if self.serialSendHistoryIndx == -1:
-            # if index is -1, use empty string as previously sent command
-            self.ui.lineEdit_SerialText.setText("")
-        else:
-            self.ui.lineEdit_SerialText.setText(
-                self.serialSendHistory[self.serialSendHistoryIndx]
-            )
-
-        self.ui.statusBar().showMessage("Previously sent text retrieved.", 2000)
-
-    @pyqtSlot()
-    def on_serialMonitorSendDownArrowPressed(self):
-        """
-        Handle special keys on lineEdit: DownArrow
-        """
-        self.serialSendHistoryIndx -= 1 # decrement history pointer
-        # if pointer is at start of buffer, reset index to end of buffer
-        if self.serialSendHistoryIndx == -2:
-            self.serialSendHistoryIndx = len(self.serialSendHistory) - 1
-
-        # populate with previously sent command from history buffer
-        if self.serialSendHistoryIndx == -1:
-            # if index is -1, use empty string as previously sent command
-            self.ui.lineEdit_SerialText.setText("")
-        else:
-            self.ui.lineEdit_SerialText.setText(
-                self.serialSendHistory[self.serialSendHistoryIndx]
-            )
-
-        self.ui.statusBar().showMessage("Previously sent text retrieved.", 2000)
-
-    @pyqtSlot()
-    def on_pushButton_SerialClearOutput(self):
+    def on_pushButton_Clear(self):
         """
         Clearing text display window
         """
-        self.ui.plainTextEdit_SerialTextDisplay.clear()
+        self.ui.plainTextEdit_Text.clear()
+        self.ui.plainTextEdit_Log.clear()
+        self.lineBuffer_text.clear()
+        self.lineBuffer_log.clear()
+        self.handle_log(logging.INFO, f"[{self.instance_name}] Text and Log display cleared.")
         self.ui.statusBar().showMessage("Text Display Cleared.", 2000)
 
     @pyqtSlot()
-    def on_pushButton_SerialStartStop(self):
+    def on_pushButton_StartStop(self):
         """
-        Start serial receiver
+        Start BLE receiver
+        This does not start or stop Transceiver, it just connects, disconnects signals
         """
-        if self.ui.pushButton_SerialStartStop.text() == "Start":
+
+        if self.ui.pushButton_StartStop.text() == "Start":
             # Start text display
-            self.ui.pushButton_SerialStartStop.setText("Stop")
-            self.serialWorker.linesReceived.connect(self.on_SerialReceivedLines) # connect text display to serial receiver signal
-            self.serialWorker.textReceived.connect(self.on_SerialReceivedText)   # connect text display to serial receiver signal
-            QTimer.singleShot( 0,lambda: self.startReceiverRequest.emit())
-            QTimer.singleShot(50,lambda: self.startThroughputRequest.emit())
+            self.ui.pushButton_StartStop.setText("Stop")
+            self.displayingRunning.emit(True)
+
             self.logger.log(
                 logging.DEBUG,
-                "[{}]: text display is on.".format(int(QThread.currentThreadId())),
+                f"[{self.thread_id}]: turning text display on."
             )
-            self.ui.statusBar().showMessage("Text Display Started.", 2000)
+            self.ui.statusBar().showMessage("Text Display Starting", 2000)
+
         else:
-            # End text display
-            self.ui.pushButton_SerialStartStop.setText("Start")
-            self.serialWorker.linesReceived.disconnect(self.on_SerialReceivedLines) # connect text display to serial receiver signal
-            self.serialWorker.textReceived.disconnect(self.on_SerialReceivedText)   # connect text display to serial receiver signal
+            # STOP text display
+            self.ui.pushButton_StartStop.setText("Start")
+            self.displayingRunning.emit(False)
+            
             self.logger.log(
                 logging.DEBUG, 
-                "[{}]: text display is off.".format(int(QThread.currentThreadId()))
+                f"[{self.thread_id}]: turning text display off."
             )
-            self.ui.statusBar().showMessage('Text Display Stopped.', 2000)            
+            self.ui.statusBar().showMessage('Text Display Stopping.', 2000)            
 
     @pyqtSlot()
-    def on_pushButton_SerialSave(self):
+    def on_pushButton_Save(self):
         """
         Saving text from display window into text file
         """
         stdFileName = (
             QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation)
-            + "/QSerial.txt"
+            + "/QBLE.txt"
         )
+
         fname, _ = QFileDialog.getSaveFileName(
             self.ui, "Save as", stdFileName, "Text files (*.txt)"
         )
 
         if fname:
-            # check if fname is valid, user can select cancel
+            if not fname.endswith(".txt"):
+                fname += ".txt"
+
             with open(fname, "w") as f:
-                f.write(self.ui.plainTextEdit_SerialTextDisplay.toPlainText())
+                f.write(self.ui.plainTextEdit_Text.toPlainText())
 
-        self.ui.statusBar().showMessage("Serial Monitor text saved.", 2000)
-
-    @pyqtSlot()
-    def on_pushButton_SerialScan(self):
-        """
-        Updating serial port list
-
-        Sends signal to serial worker to scan for ports
-        Serial worker will create newPortList signal when completed which
-        is handled by the function on_newPortList below
-        """
-        self.scanPortsRequest.emit()
-        self.logger.log(
-            logging.DEBUG, 
-            "[{}]: scanning for serial ports.".format(int(QThread.currentThreadId()))
-        )
-        self.ui.statusBar().showMessage('Serial Port Scan requested.', 2000)            
+        self.handle_log(logging.INFO,"Text saved.")
 
     @pyqtSlot()
-    def on_resetESPonOpen(self):
-        self.esp_reset = self.ui.radioButton_ResetESPonOpen.isChecked()
+    def on_pushButton_Scan(self):
+        """
+        Update BLE device list
+        """
+        self.scanDevicesRequest.emit()
+        self.ui.pushButton_Scan.setEnabled(False)
+        self.ui.pushButton_Connect.setEnabled(False)
+        self.handle_log(logging.INFO, f"[{self.instance_name}] BLE device list update requested.")
 
     @pyqtSlot()
-    def on_pushButton_SerialOpenClose(self):
-        if self.ui.pushButton_SerialOpenClose.text() == "Close":
-            # Close the serial port
-            #   stop the receiver
-            QTimer.singleShot(  0, lambda: self.stopThroughputRequest.emit()) # request to stop throughput
-            QTimer.singleShot( 50, lambda: self.closePortRequest.emit())      # request to close serial port
-            QTimer.singleShot(250, lambda: self.serialStatusRequest.emit())   # request to report serial port status
-            #   shade sending text
-            self.ui.lineEdit_SerialText.setEnabled(False)
-            self.ui.pushButton_SerialSend.setEnabled(False)
-            self.logger.log(
-                logging.INFO, 
-                "[{}]: requesting Closing serial port.".format(int(QThread.currentThreadId()))
-            )
-            self.ui.statusBar().showMessage("Serial Close requested.", 2000)
-        else:
-            # Open the serial port
-            index = self.ui.comboBoxDropDown_SerialPorts.currentIndex()
-            try:
-                port = self.serialPorts[index]                                              # we have valid port
-            except Exception as e:
-                self.logger.log(
-                    logging.INFO, 
-                    "[{}]: serial port not valid. Error {}".format(
-                        int(QThread.currentThreadId()), str(e)
-                    )
-                )
-                self.ui.statusBar().showMessage('Can not open serial port.', 2000)
-            else:
-                # Start the receiver
-                QTimer.singleShot(  0, lambda: self.changePortRequest.emit(port, self.serialBaudRate, self.esp_reset)) # takes 11ms to open
-                QTimer.singleShot(150, lambda: self.scanBaudRatesRequest.emit())   #
-                QTimer.singleShot(200, lambda: self.serialStatusRequest.emit())    # request to report serial port status            
-                QTimer.singleShot(250, lambda: self.startThroughputRequest.emit()) # request to start serial receiver
-                #   un-shade sending text
-                self.ui.lineEdit_SerialText.setEnabled(True)
-                self.ui.pushButton_SerialSend.setEnabled(True)                
-                self.logger.log(
-                    logging.INFO, 
-                    "[{}]: requesting opening serial port {} with {} baud.".format(
-                        int(QThread.currentThreadId()),port,self.serialBaudRate
-                    )
-                )
-                self.ui.statusBar().showMessage('Serial Open requested.', 2000)
+    def on_pushButton_Connect(self):
+        """
+        Handle connect/disconnect requests.
+        """
+        if self.ui.pushButton_Connect.text() == "Connect":
 
-        # clear USB unplug reconnection flag
-        self.awaitingReconnection = False
+            if self.device:
+                self.connectDeviceRequest.emit(self.device, 10, False)
+                self.handle_log(logging.INFO, f"[{self.instance_name}] Attempting to connect to device.")
+            else:
+                self.handle_log(logging.WARNING, f"[{self.instance_name}] No device selected for connection.")
+
+        elif self.ui.pushButton_Connect.text() == "Disconnect":
+
+            if self.device:
+                self.disconnectDeviceRequest.emit()
+                self.handle_log(logging.INFO, f"[{self.instance_name}] Attempting to disconnect from device.")
+            else:
+                self.handle_log(logging.WARNING, f"[{self.instance_name}] No device selected for disconnection.")
+
+        else:
+            self.handle_log(logging.ERROR, f"[{self.instance_name}] User interface Connect button is labeled incorrectly.")
 
     @pyqtSlot()
-    def on_comboBoxDropDown_SerialPorts(self):
-        """
-        User selected a new port on the drop down list
-        """
-        lenSerialPorts = len(self.serialPorts)
-        portIndex = self.ui.comboBoxDropDown_SerialPorts.currentIndex()
-
-        if lenSerialPorts > 0:  # only continue if we have recognized serial ports
-            if (portIndex > -1) and (portIndex < lenSerialPorts):
-                port = self.serialPorts[portIndex]  # we have valid port
+    def on_pushButton_Pair(self):
+        """Trigger pairing with a device when the pair button is clicked."""
+        
+        if self.ui.pushButton_Pair.text() == "Pair":
+        
+            if self.device is not None:
+                self.pairDeviceRequest.emit(self.device.address, self.BLEPIN)
+                self.handle_log(logging.INFO, f"[{self.instance_name}] Paired with {self.TARGET_DEVICE_NAME}")
+                self.ui.pushButton_Pair.setText("Remove")
+                self._safely_disconnect(self.ui.pushButton_Pair.clicked, self.worker.on_pairDeviceRequest)
+                self._safely_connect(self.ui.pushButton_Pair.clicked, self.worker.on_removeDeviceRequest)
             else:
-                port = None
-        else:
-            port = None
+                self.handle_log(logging.WARNING, f"[{self.instance_name}] No device set to pair")
 
-        # Enable open/close port
-        if port is not None:
-            self.ui.pushButton_SerialOpenClose.setEnabled(True)
-        else:
-            self.ui.pushButton_SerialOpenClose.setEnabled(False)
+        elif self.ui.pushButton_Pair.text() == "Remove":
 
-        # Change the port if a port is open, otherwise we need to click on open button
-        if self.serialPort != "":
-            # A port is in use and we selected 
-            if port is None:
-                # "None" was selected so close the port
-                QTimer.singleShot(  0, lambda: self.stopThroughputRequest.emit())   # request to stop throughput
-                QTimer.singleShot( 50, lambda: self.closePortRequest.emit())        # request to close port
-                QTimer.singleShot(250, lambda: self.serialStatusRequest.emit())     # request to report serial port status
-                return                                                              # do not continue
-
+            if self.device is not None:
+                self.removeDeviceRequest.emit(self.device.address)
+                self.handle_log(logging.INFO, f"[{self.instance_name}] {self.TARGET_DEVICE_NAME} removed")
+                self.ui.pushButton_Pair.setText("Pair")
+                self._safely_disconnect(self.ui.pushButton_Pair.clicked, self.worker.on_removeDeviceRequest)
+                self._safely_connect(self.ui.pushButton_Pair.clicked, self.worker.on_pairDeviceRequest)
             else:
-                # We have valid new port
-                
-                # Make sure we have valid baud rate to open the new port
-                lenBaudRates   = len(self.BaudRates)
-
-                if lenBaudRates > 0:  # if we have recognized serial baud rates
-                    baudIndex = self.ui.comboBoxDropDown_BaudRates.currentIndex()
-                    if baudIndex < lenBaudRates:  # last entry is -1
-                        baudrate = self.BaudRates[baudIndex]
-                    else:
-                        baudrate = self.defaultBaudRate  # use default baud rate
-                else:
-                    baudrate = self.defaultBaudRate # use default baud rate, user can change later
-
-            # change port if port or baudrate changed
-            if port != self.serialPort:
-                esp_reset = self.ui.radioButton_ResetESPonOpen.isChecked()
-                QTimer.singleShot(   0, lambda: self.changePortRequest.emit(port, baudrate, esp_reset ))  # takes 11ms to open
-                QTimer.singleShot( 200, lambda: self.scanBaudRatesRequest.emit())  # request to scan serial baud rates
-                QTimer.singleShot( 250, lambda: self.serialStatusRequest.emit())   # request to report serial port status
-                self.logger.log(
-                    logging.INFO,
-                    "[{}]: port {} baud {}".format(
-                        int(QThread.currentThreadId()), port, baudrate
-                    ),
-                )
-            else:
-                # port already open
-                self.logger.log(
-                    logging.INFO,
-                    "[{}]: keeping current port {} baud {}".format(
-                        int(QThread.currentThreadId()), port, baudrate
-                    ),
-                )
+                self.handle_log(logging.WARNING, f"[{self.instance_name}] No device set to pair")
 
         else:
-            # No port is open, do not change anything
-            pass
-
-        self.ui.statusBar().showMessage("Serial port change requested.", 2000)
+            self.handle_log(logging.ERROR, f"[{self.instance_name}] User interface Pair button is labeled incorrectly.")
 
     @pyqtSlot()
-    def on_comboBoxDropDown_BaudRates(self):
-        """
-        User selected a different baudrate on drop down list
-        """
-        if self.serialPort != "":
-            lenBaudRates = len(self.BaudRates)
-            if lenBaudRates > 0:  # if we have recognized serial baud rates
-                index = self.ui.comboBoxDropDown_BaudRates.currentIndex()
-                if index < lenBaudRates:  # last entry is -1
-                    baudrate = self.BaudRates[index]
-                else:
-                    baudrate = self.defaultBaudRate  # use default baud rate
-                if (
-                    baudrate != self.serialBaudRate
-                ):  # change baudrate if different from current
-                    QTimer.singleShot(  0, lambda: self.changeBaudRequest.emit(baudrate))
-                    QTimer.singleShot(200, lambda: self.serialStatusRequest.emit())             # request to report serial port status
-                    self.logger.log(
-                        logging.INFO,
-                        "[{}]: baudrate {}".format(
-                            int(QThread.currentThreadId()), baudrate
-                        ),
-                    )
-                else:
-                    self.logger.log(
-                        logging.INFO,
-                        "[{}]: baudrate remains the same".format(
-                            int(QThread.currentThreadId())
-                        ),
-                    )
+    def on_pushButton_Trust(self):
+        """Trigger trusting with a device when the trust button is clicked."""
+        
+        if self.ui.pushButton_Trust.text() == "Trust":
+        
+            if self.device is not None:
+                self.trustDeviceRequest.emit(self.device.address)
+                self.handle_log(logging.INFO, f"[{self.instance_name}] Trusted {self.TARGET_DEVICE_NAME}")
+                self.ui.pushButton_Trust.setText("Distrust")
+                self._safely_disconnect(self.ui.pushButton_Trust.clicked, self.worker.on_trustDeviceRequest)
+                self._safely_connect(self.ui.pushButton_Trust.clicked, self.worker.on_distrustDeviceRequest)
             else:
-                self.logger.log(
-                    logging.ERROR,
-                    "[{}]: no baudrates available".format(int(QThread.currentThreadId())),
-                )
+                self.handle_log(logging.WARNING, f"[{self.instance_name}] No device set to trust")
 
-            self.ui.statusBar().showMessage('Baudrate change requested.', 2000)
+        elif self.ui.pushButton_Trust.text() == "Distrust":
+
+            if self.device is not None:
+                self.distrustDeviceRequest.emit(self.device.address)
+                self.handle_log(logging.INFO, f"[{self.instance_name}] {self.TARGET_DEVICE_NAME} distrusted")
+                self.ui.pushButton_Trust.setText("Trust")    
+                self._safely_disconnect(self.ui.pushButton_Trust.clicked, self.worker.on_distrustDeviceRequest)
+                self._safely_connect(self.ui.pushButton_Trust.clicked, self.worker.on_trustDeviceRequest)
+            else:
+                self.handle_log(logging.WARNING, f"[{self.instance_name}] No device set to trust")
+
         else:
-            # do not change anything as we first need to open a port
-            pass
+            self.handle_log(logging.ERROR, f"[{self.instance_name}] User interface Trust button is labeled incorrectly.")
+
+    @pyqtSlot()
+    def on_pushButton_Status(self):
+        if self.device is not None:
+            self.bleStatusRequest.emit(self.device.address)
+
+    @pyqtSlot()
+    def on_comboBoxDropDown_BLEDevices(self): 
+        "user selected a different BLE device from the drop down list"
+
+        # disconnect current device
+        self.disconnectDeviceRequest.emit()
+
+        # prepare UI for new selection
+        index=self.ui.comboBoxDropDown_Device.currentIndex()
+        if index >= 0:
+            self.device = self.ui.comboBoxDropDown_Device.itemData(index) # BLE device from BLEAK scanner
+            self.handle_log(logging.INFO, f"[{self.instance_name}] Selected device: {self.device.name}, Address: {self.device.address}")
+            self.ui.pushButton_Connect.setEnabled(True) # will want to connect
+            if self.hasBluetoothctl: self.ui.pushButton_Pair.setEnabled(True) # uses bluetoothctl
+            if self.hasBluetoothctl: self.ui.pushButton_Trust.setEnabled(True) # uses bluetoothctl
+            if self.hasBluetoothctl: self.ui.pushButton_Status.setEnabled(True) # uses bluetoothctl
+            self.ui.pushButton_SendFile.setEnabled(False) # its not yet connected
+            self.ui.pushButton_Pair.setText("Pair")
+            self.ui.pushButton_Connect.setText("Connect")
+            self.ui.pushButton_Trust.setText("Trust")
+        else:
+            self.handle_log(logging.WARNING, f"[{self.instance_name}] No devices found")
+            self.ui.pushButton_Connect.setEnabled(False)
+            if self.hasBluetoothctl: self.ui.pushButton_Pair.setEnabled(False)
+            if self.hasBluetoothctl: self.ui.pushButton_Trust.setEnabled(False)
+            if self.hasBluetoothctl: self.ui.pushButton_Status.setEnabled(False)
+            self.ui.pushButton_SendFile.setEnabled(False)
+            self.ui.pushButton_Scan.setEnabled(True)
 
     @pyqtSlot()
     def on_comboBoxDropDown_LineTermination(self):
@@ -632,626 +604,701 @@ class QBLESerialUI(QObject):
         elif _tmp == "none":                    self.textLineTerminator = b""
         else:                                   self.textLineTerminator = b"\r\n"
 
-        # ask line termination to be changed if port is open
-        if self.serialPort != "":
-            QTimer.singleShot( 0, lambda: self.changeLineTerminationRequest.emit(self.textLineTerminator))
-            QTimer.singleShot(50, lambda: self.serialStatusRequest.emit()) # request to report serial port status
+        # ask line termination to be changed
+        self.changeLineTerminationRequest.emit(self.textLineTerminator)        
+        self.handle_log(logging.INFO, f"[{self.instance_name}] line termination {repr(self.textLineTerminator)}")
 
-        self.logger.log(
-            logging.INFO,
-            "[{}]: line termination {}".format(
-                int(QThread.currentThreadId()), repr(self.textLineTerminator)
-            ),
-        )
-        self.ui.statusBar().showMessage("Line Termination updated", 2000)
-
-    # Response to Serial Signals
-    ########################################################################################
-
-    @pyqtSlot(str, int, bytes, float)
-    def on_serialStatusReady(self, port: str, baud: int, eol: bytes, timeout: float):
+    @pyqtSlot()
+    def on_comboBoxDropDown_DataSeparator(self):
         """
-        Serial status report available
+        User selected a different data separator from drop down menu
         """
-        self.serialPort = port
+        _idx = self.ui.comboBoxDropDown_DataSeparator.currentIndex()
+        if   _idx == 0: self.dataSeparator = 0
+        elif _idx == 1: self.dataSeparator = 1
+        elif _idx == 2: self.dataSeparator = 2
+        elif _idx == 3: self.dataSeparator = 3
+        else:           self.dataSeparator = 0
 
-        if self.serialPort == "":
-            self.ui.pushButton_SerialOpenClose.setText("Open")
+        self.handle_log(logging.INFO, f"[{self.instance_name}] data separator {repr(self.dataSeparator)}")
 
-        else: 
-            # update only if we have valid port
-            self.textLineTerminator = eol
-            self.serialTimeout = timeout
-            if baud > 0:
-                self.serialBaudRate  = baud
-                self.defaultBaudRate = baud
+    @pyqtSlot(dict)
+    def on_statusReady(self, status):
+        """
+        pickup BLE device status
+        
+        the status is:
+        device_info = {
+            "mac":       None,
+            "name":      None,
+            "paired":    None,
+            "trusted":   None,
+            "connected": None,
+            "rssi":      None
+        }
+        """
+        self.device_info = status
+
+        if (self.device_info["mac"] is not None) and (self.device_info["mac"] != ""): 
+            if self.device_info["paired"]:
+                self.ui.pushButton_Pair.setEnabled(True)
+                self.ui.pushButton_Pair.setText("Remove")
             else:
-                self.serialBaudRate = self.defaultBaudRate
+                self.ui.pushButton_Pair.setEnabled(True)
+                self.ui.pushButton_Pair.setText("Pair")
 
-            self.ui.pushButton_SerialOpenClose.setText("Close")
-
-            # adjust the combobox current item to match the current port
-            try:
-                index = self.ui.comboBoxDropDown_SerialPorts.findText(
-                    self.serialPort
-                )  # find current port in serial port list
-                self.ui.comboBoxDropDown_SerialPorts.blockSignals(True)
-                self.ui.comboBoxDropDown_SerialPorts.setCurrentIndex(index)  # update serial port combobox
-                self.ui.comboBoxDropDown_SerialPorts.blockSignals(False)
-                self.logger.log(
-                    logging.DEBUG,
-                    '[{}]: selected port "{}".'.format(
-                        int(QThread.currentThreadId()), self.serialPort
-                    ),
-                )
-            except Exception as e:
-                self.logger.log(
-                    logging.ERROR,
-                    "[{}]: port not available. Error {}.".format(
-                        int(QThread.currentThreadId()), str(e)
-                    )
-                )
-            # adjust the combobox current item to match the current baudrate
-            try:
-                index = self.ui.comboBoxDropDown_BaudRates.findText(str(self.serialBaudRate))
-                if index > -1:
-                    self.ui.comboBoxDropDown_BaudRates.blockSignals(True)
-                    self.ui.comboBoxDropDown_BaudRates.setCurrentIndex(index)  #  baud combobox
-                    self.logger.log(
-                        logging.DEBUG,
-                        "[{}]: selected baudrate {}.".format(
-                            int(QThread.currentThreadId()), self.serialBaudRate
-                        ),
-                    )
-                else:
-                    self.logger.log(
-                        logging.DEBUG,
-                        "[{}]: baudrate {} not found.".format(
-                            int(QThread.currentThreadId()), self.serialBaudRate
-                        ),
-                    )            
-            except Exception as e:
-                self.logger.log(
-                    logging.ERROR,
-                    "[{}]: could not select baudrate. Error {}".format(
-                        int(QThread.currentThreadId()), str(e)),
-                )
-            finally:
-                self.ui.comboBoxDropDown_BaudRates.blockSignals(False)
-
-
-            # adjust the combobox current item to match the current line termination
-            if   eol == b"\n":   _tmp = "newline (\\n)"
-            elif eol == b"\r":   _tmp = "return (\\r)"
-            elif eol == b"\n\r": _tmp = "newline return (\\n\\r)"
-            elif eol == b"\r\n": _tmp = "return newline (\\r\\n)"
-            elif eol == b"":     _tmp = "none"
-            else:               
-                _tmp = "return newline (\\r\\n)"
-                self.logger.log(
-                    logging.WARNING,
-                    "[{}]: unknown line termination {}.".format(
-                        int(QThread.currentThreadId()), eol
-                    ),
-                )
-                self.logger.log(
-                    logging.WARNING,
-                    "[{}]: set line termination to {}.".format(
-                        int(QThread.currentThreadId()), _tmp
-                    ),
-                )
-
-            try:
-                index = self.ui.comboBoxDropDown_LineTermination.findText(_tmp)
-                if index > -1:  # Check if the text was found
-                    self.ui.comboBoxDropDown_LineTermination.blockSignals(True)
-                    self.ui.comboBoxDropDown_LineTermination.setCurrentIndex(index)
-                    self.logger.log(
-                        logging.DEBUG,
-                        "[{}]: selected line termination {}.".format(
-                            int(QThread.currentThreadId()), _tmp
-                        ),
-                    )
-                else:  # Handle case when the text is not found
-                    self.logger.log(
-                        logging.DEBUG,
-                        "[{}]: line termination {} not found.".format(
-                            int(QThread.currentThreadId()), _tmp
-                        ),
-                    )
-            except Exception as e:  # Catch specific exceptions if possible
-                self.logger.log(
-                    logging.ERROR,
-                    "[{}]: line termination not available. Error: {}".format(
-                        int(QThread.currentThreadId()), str(e)
-                    ),
-                )
-            finally:
-                self.ui.comboBoxDropDown_LineTermination.blockSignals(False)
-
-            self.logger.log(
-                logging.DEBUG,
-                "[{}]: receiver is {}.".format(
-                    int(QThread.currentThreadId()),
-                    "running" if self.receiverIsRunning else "not running",
-                ),
-            )
-
-        # handle timeout and encoding
-        #  not implemented as currently not selectable in the UI
-        #  encoding is fixed to utf-8
-        #  timeout can be computed from baud rate and longest expected line of text
-        #  however it is set to zero resulting in non blocking reads and writes
-
-        self.ui.statusBar().showMessage("Serial status updated", 2000)
-
-    @pyqtSlot(list, list)
-    def on_newPortListReady(self, ports: list, portNames: list):
-        """
-        New serial port list available
-        """
-        self.logger.log(
-            logging.DEBUG,
-            "[{}]: port list received.".format(int(QThread.currentThreadId())),
-        )
-        self.serialPorts = ports
-        self.serialPortNames = portNames
-        lenPortNames = len(self.serialPortNames)
-        self.ui.comboBoxDropDown_SerialPorts.blockSignals(True) # block the box from emitting changed index signal when items are added
-        # populate new items
-        self.ui.comboBoxDropDown_SerialPorts.clear()
-        self.ui.comboBoxDropDown_SerialPorts.addItems(self.serialPorts + ["None"])
-        index = self.ui.comboBoxDropDown_SerialPorts.findText(self.serialPort)
-        if index > -1: # if we found previously selected item
-            self.ui.comboBoxDropDown_SerialPorts.setCurrentIndex(index)
-        else:  # if we did not find previous item, set box to last item (None)
-            self.ui.comboBoxDropDown_SerialPorts.setCurrentIndex(lenPortNames)
-            QTimer.singleShot(  0, lambda: self.stopThroughputRequest.emit())          # request to stop throughput
-            QTimer.singleShot( 50, lambda: self.closePortRequest.emit())               # request to close serial port
-            QTimer.singleShot(250, lambda: self.serialStatusRequest.emit())            # request to report serial port status
-        # enable signals again
-        self.ui.comboBoxDropDown_SerialPorts.blockSignals(False)
-        self.ui.statusBar().showMessage("Port list updated", 2000)
-
-    @pyqtSlot(tuple)
-    def on_newBaudListReady(self, baudrates):
-        """
-        New baud rate list available
-        For logic and sequence of commands refer to newPortList
-        """
-        self.logger.log(
-            logging.DEBUG,
-            "[{}]: baud list received.".format(int(QThread.currentThreadId())),
-        )
-        self.BaudRates = list(baudrates)
-        lenBaudRates = len(self.BaudRates)
-        self.ui.comboBoxDropDown_BaudRates.blockSignals(True)
-        self.ui.comboBoxDropDown_BaudRates.clear()
-        self.ui.comboBoxDropDown_BaudRates.addItems(
-            [str(x) for x in self.BaudRates]
-        )
-        index = self.ui.comboBoxDropDown_BaudRates.findText(str(self.serialBaudRate))
-        if index > -1:
-            self.ui.comboBoxDropDown_BaudRates.setCurrentIndex(index)
-        else:
-            self.ui.comboBoxDropDown_BaudRates.setCurrentIndex(lenBaudRates)
-        self.ui.comboBoxDropDown_BaudRates.blockSignals(False)
-        self.ui.statusBar().showMessage("Baudrates updated", 2000)
-
-    @pyqtSlot(bytes)
-    def on_SerialReceivedText(self, byte_array: bytes):
-        """
-        Received text () on serial port
-        Display it in the text display window
-        """
-        self.logger.log(
-            logging.DEBUG, 
-            "[{}]: text received.".format(int(QThread.currentThreadId()))
-        )
-        try:
-            text = byte_array.decode(self.encoding)
-            if DEBUGSERIAL:
-                self.logger.log(
-                    logging.DEBUG,
-                    "[{}]: {}".format(int(QThread.currentThreadId()), text),
-                )
-            # Move cursor to the end of the document and insert text, if scrollbar is at the end, make sure text display scrolls up
-            if self.textScrollbar.value() >= self.textScrollbar.maximum() - 20:
-                self.isScrolling = True
+            if self.device_info["trusted"]:
+                self.ui.pushButton_Trust.setEnabled(True)
+                self.ui.pushButton_Trust.setText("Distrust")
             else:
-                self.isScrolling = False
-            if hasQt6:
-                self.textCursor.movePosition(QTextCursor.MoveOperation.End)
-            else:
-                self.textCursor.movePosition(QTextCursor.End)
-            self.textCursor.insertText(text + "\n")
-            if self.isScrolling:
-                self.ui.plainTextEdit_SerialTextDisplay.ensureCursorVisible()
-        except Exception as e:
-            self.logger.log(
-                logging.ERROR,
-                "[{}]: could not decode text in {}. Error {}".format(
-                    int(QThread.currentThreadId()), repr(byte_array), str(e)
-                ),
-            )
+                self.ui.pushButton_Trust.setEnabled(True)
+                self.ui.pushButton_Trust.setText("Trust")
+
+        self.handle_log(logging.INFO, f"[{self.instance_name}] Device status: {status}")
 
     @pyqtSlot(list)
-    def on_SerialReceivedLines(self, lines: list):
+    def on_deviceListReady(self, devices:list):
+        """pickup new list of devices"""
+        self.ui.pushButton_Scan.setEnabled(True) # re-enable device scan, was turned of during scanning
+
+        # save current selected device 
+        currentIndex   = self.ui.comboBoxDropDown_Device.currentIndex()
+        selectedDevice = self.ui.comboBoxDropDown_Device.itemData(currentIndex)
+
+        self.ui.comboBoxDropDown_Device.blockSignals(True)
+        self.ui.comboBoxDropDown_Device.clear()
+        for device in devices:
+            self.ui.comboBoxDropDown_Device.addItem(f"{device.name} ({device.address})", device)
+        
+        # search for previous device and select it
+        if selectedDevice is not None:
+            for index in range(self.ui.comboBoxDropDown_Device.count()):
+                if self.ui.comboBoxDropDown_Device.itemData(index) == selectedDevice:
+                    self.ui.comboBoxDropDown_Device.setCurrentIndex(index)
+                    break
+
+        self.ui.comboBoxDropDown_Device.blockSignals(False)
+        if len(devices) > 0:
+            self.ui.pushButton_Connect.setEnabled(True)
+        self.handle_log(logging.INFO, f"[{self.instance_name}] Device list updated.")   
+
+
+    @pyqtSlot(bytes)
+    def on_receivedData(self, byte_array: bytes):
         """
-        Received lines of text on serial port
-        Display the lines in the text display window
+        Receives a raw byte array from the serial port, decodes it, stores it in a line-based buffer,
+        and updates the text display efficiently.
         """
-        self.logger.log(
-            logging.DEBUG,
-            "[{}]: text lines received.".format(int(QThread.currentThreadId())),
-        )
-        # decode each line to string and join them with newline
-        decoded_lines = []
-        for line in lines:
+        self.handle_log(logging.DEBUG, f"[{self.thread_id}]: text received.")
+
+        # 1. Decode byte array
+        text = self._safe_decode(byte_array, self.encoding)
+        
+        if DEBUGSERIAL:
+            self.handle_log(logging.DEBUG, f"[{self.thread_id}]: {text}")
+
+        # 2. Record text to a file if recording is enabled
+        if self.record:
             try:
-                decoded_line = line.decode(self.encoding)
-            except:
-                decoded_line = line.decode(self.encoding, errors="replace").replace(
-                    "\ufffd", "¿"
-                )  # replace unknown characters with ¿
-            decoded_lines.append(decoded_line)
-        text = "\n".join(decoded_lines)
-        # insert text at end of the document
-        if self.textScrollbar.value() >= self.textScrollbar.maximum() - 20:
-            self.isScrolling = True
-        else:
-            self.isScrolling = False
-        if hasQt6:
-            self.textCursor.movePosition(QTextCursor.MoveOperation.End)
-        else:
-            self.textCursor.movePosition(QTextCursor.End)
-        self.textCursor.insertText(text + "\n")
-        if self.isScrolling:
-            self.ui.plainTextEdit_SerialTextDisplay.ensureCursorVisible()
+                self.recordingFile.write(byte_array)
+            except Exception as e:
+                self.logger.log(logging.ERROR, f"[{self.thread_id}]: Could not write to file {self.recordingFileName}. Error: {e}")
+                self.record = False
+                self.ui.radioButton_SerialRecord.setChecked(self.record)
 
-    @pyqtSlot(bool)
-    def on_serialWorkerStateChanged(self, running: bool):
-        """
-        Serial worker was started or stopped
-        """
-        self.logger.log(
-            logging.INFO,
-            "[{}]: serial worker is {}.".format(
-                int(QThread.currentThreadId()), "on" if running else "off"
-            ),
-        )
-        self.receiverIsRunning = running
-        if running:
-            self.ui.statusBar().showMessage("Serial Worker started", 2000)
-        else:
-            self.ui.statusBar().showMessage("Serial Worker stopped", 2000)
+        # 3. Append new text to the display and buffer
+        if text:
+            scrollbar = self.textScrollbar
+            at_bottom = scrollbar.value() >= scrollbar.maximum() - 20
 
-    def on_throughputReceived(self, numReceived, numSent):
+            # Append text to display
+            self.ui.plainTextEdit_Text.appendPlainText(text)
+
+            # 4. Store lines in the `deque`
+            new_lines = text.split("\n")
+            self.lineBuffer_text.extend(new_lines)  # Automatically trims excess lines
+
+            # 5. Maintain scroll position if at the bottom
+            if at_bottom:
+                scrollbar = self.textScrollbar
+                scrollbar.setValue(scrollbar.maximum())
+
+        # results.append({
+        #     "datatype": data_type,
+        #     "name": self.name.get(data_type, f"Unknown_{data_type}"),
+        #     "data": numbers,
+        #     "timestamp": time.time(),  # Add a timestamp
+        # })
+        #
+        # numbers can be list of floats for ArduinoTextStreamProcessor
+        # numbers can be byte, int8, unit8, int16, uint16, int32, uint32, float, double, list of strings, numpy arrays, for BinaryStreamProcessor
+
+        # for result in results:
+        #     data_type = result.get("datatype", "Unknown")
+        #     name      = result.get("name", "Unknown Name")
+        #     data      = result.get("data", "No Data")
+        #     timestamp = result.get("timestamp", "No Timestamp")
+
+        #     self.handle_log(
+        #         logging.DEBUG,
+        #         f"Result Processed - Type: {data_type}, Name: {name}, "
+        #         f"Data: {data}, "
+        #         f"Timestamp: {timestamp}"
+        #     )
+
+    @pyqtSlot()
+    def on_SerialRecord(self):
+        self.record = self.ui.radioButton_SerialRecord.isChecked()
+        if self.record:
+    
+            if self.recordingFileName == "":
+                stdFileName = (
+                    QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation)
+                    + "/Qble.txt"
+                ) 
+            else:
+                stdFileName = self.recordingFileName
+    
+            self.recordingFileName, _ = QFileDialog.getOpenFileName(
+                self.ui, "Open", stdFileName, "Text files (*.txt)"
+            )
+
+            if not self.recordingFileName:
+                self.record = False
+                self.ui.radioButton_SerialRecord.setChecked(self.record)
+            else:
+                file_path = Path(self.recordingFileName)
+
+                if file_path.exists():  # Check if file already exists
+                    msg_box = QMessageBox()
+                    msg_box.setIcon(QMessageBox.Warning)
+                    msg_box.setWindowTitle("File Exists")
+                    msg_box.setText(f"The file '{file_path.name}' already exists. What would you like to do?")
+                    msg_box.addButton("Overwrite", QMessageBox.YesRole)
+                    msg_box.addButton("Append", QMessageBox.NoRole)
+
+                    choice = msg_box.exec_()
+
+                    if choice == 0:  # Overwrite
+                        mode = "wb"
+                    elif choice == 1:  # Append
+                        mode = "ab"
+                    else: 
+                        self.logger.log(logging.INFO, f"[{self.thread_id}]: Overwrite choice aborted.")  
+                        self.record = False
+                        self.ui.radioButton_SerialRecord.setChecked(self.record)
+                        return
+                else:
+                    mode = "wb"  # Default to write mode if file doesn't exist
+
+                try:
+                    self.recordingFile = open(file_path, mode)
+                    self.logger.log(logging.INFO, f"[{self.thread_id}]: Recording to file {file_path.name} in mode {mode}.")
+                except Exception as e:
+                    self.logger.log(logging.ERROR, f"[{self.thread_id}]: Could not open file {file_path.name} in mode {mode}.")
+                    self.record = False
+                    self.ui.radioButton_SerialRecord.setChecked(self.record)
+        else:
+            if self.recordingFile:
+                try:
+                    self.recordingFile.close()
+                    self.logger.log(logging.INFO, f"[{self.thread_id}]: Recording to file {self.recordingFile.name} stopped.")
+                except Exception as e:
+                    self.logger.log(logging.ERROR, f"[{self.thread_id}]: Could not close file {self.recordingFile.name}.")
+                self.recordingFile = None
+
+    @pyqtSlot(list)
+    def on_receivedLines(self, lines: list):
         """
-        Report throughput
+        Receives lines of text from the serial port, stores them in a circular buffer,
+        and updates the text display efficiently.
         """
+        self.logger.log(logging.DEBUG, f"[{self.thread_id}]: text lines received.")
+
+        # 1. Record lines to file if recording is enabled
+        if self.record:
+            try:
+                self.recordingFile.writelines(lines)
+            except Exception as e:
+                self.logger.log(logging.ERROR, f"[{self.thread_id}]: Could not write to file {self.recordingFileName}. Error: {e}")
+                self.record = False
+                self.ui.radioButton_SerialRecord.setChecked(self.record)
+
+        # 2. Decode all lines efficiently
+        decoded_lines = [self._safe_decode(line, self.encoding) for line in lines]
+
+        if DEBUGSERIAL:
+            for decoded_line in decoded_lines:
+                self.logger.log(logging.DEBUG, f"[{self.thread_id}]: {decoded_line}")
+
+        # 3. Append to `deque` (automatically trims when max length is exceeded)
+        self.lineBuffer_text.extend(decoded_lines)
+
+        # 4. Append text to display
+        if decoded_lines:
+            text = "\n".join(decoded_lines)
+
+            # Check if user has scrolled to the bottom
+            scrollbar = self.textScrollbar
+            at_bottom = scrollbar.value() >= scrollbar.maximum() - 20
+
+            self.ui.plainTextEdit_Text.appendPlainText(text)
+
+            # If the user was at the bottom, keep scrolling
+            if at_bottom:
+                scrollbar = self.textScrollbar
+                scrollbar.setValue(scrollbar.maximum())
+
+    @pyqtSlot(float,float)
+    def on_throughputReady(self, numReceived:int, numSent:int):
+        """pickup throughput data from BLE transceiver"""
+
         rx = numReceived - self.lastNumReceived
         tx = numSent - self.lastNumSent
-        if rx < 0: rx = self.rx # self.lastNumReceived is not cleared when we clear the serial buffer, take care of it here
-        if tx < 0: tx = self.tx
-        # poor man's low pass
-        self.rx = 0.5 * self.rx + 0.5 * rx
-        self.tx = 0.5 * self.tx + 0.5 * tx
-        self.ui.throughput.setText(
-            "{:<5.1f} {:<5.1f} kB/s".format(self.rx / 1000, self.tx / 1000)
+        if rx >=0: self.rx = rx
+        if tx >=0: self.tx = tx
+        # # poor man's low pass
+        # self.rx = 0.5 * self.rx + 0.5 * rx
+        # self.tx = 0.5 * self.tx + 0.5 * tx
+        self.ui.label_throughput.setText(
+            "RX:{:<5.1f} TX:{:<5.1f} kB/s".format(self.rx / 1024, self.tx / 1024)
         )
         self.lastNumReceived = numReceived
-        self.lastNumSent = numSent
+        self.lastNumSent     = numSent
 
-    def serialTextDisplay_trim(self):
+    @pyqtSlot(bool)
+    def on_connectingSuccess(self, success):
+        """pickup wether device connection was successful"""
+        self.device_info["connected"] = success
+
+        if success:
+            self.ui.pushButton_SendFile.setEnabled(True)
+            self.ui.pushButton_Connect.setEnabled(True)
+            self.ui.pushButton_Connect.setText("Disconnect")
+            
+        else:
+            self.ui.pushButton_SendFile.setEnabled(False)
+            self.ui.pushButton_Connect.setEnabled(True)
+            self.ui.pushButton_Connect.setText("Connect")
+
+        self.handle_log(logging.INFO, f"[{self.instance_name}] Device {self.device.name} connection: {'successful' if success else 'failed'}")
+
+
+    @pyqtSlot()
+    def on_disconnectingSuccess(self, success):
+        """pickup wether device disconnection was successful"""
+        self.device_info["connected"] = not(success)
+
+        if success: # disconnecting
+            self.ui.pushButton_SendFile.setEnabled(False)
+            self.ui.pushButton_Connect.setEnabled(True)
+            self.ui.pushButton_Connect.setText("Connect")
+        else: # disconnecting failed
+            self.ui.pushButton_Connect.setEnabled(True)
+            self.ui.pushButton_Connect.setText("Disconnect")
+
+        self.handle_log(logging.INFO, f"[{self.instance_name}] Device {self.device.name} disconnection: {'successful' if success else 'failed'}")
+
+    @pyqtSlot(bool)
+    def on_pairingSuccess(self, success):
+        """pickup wether device pairing was successful"""
+        self.device_info["paired"] = success
+        if success:
+            self.ui.pushButton_Pair.setEnabled(True)
+            self.ui.pushButton_Pair.setText("Remove")
+        else:
+            self.ui.pushButton_Pair.setEnabled(True)
+            self.ui.pushButton_Pair.setText("Pair")
+
+        self.handle_log(logging.INFO, f"[{self.instance_name}] Device {self.device.name} pairing: {'successful' if success else 'failed'}")
+
+    @pyqtSlot(bool)
+    def on_removalSuccess(self, success):
+        """pickup wether device removal was successful"""
+        self.device_info["paired"] = not(success)
+
+        if success: # removing
+            self.ui.pushButton_Pair.setEnabled(True)
+            self.ui.pushButton_Pair.setText("Pair")
+        else: # removing failed
+            self.ui.pushButton_Pair.setEnabled(True)
+            self.ui.pushButton_Pair.setText("Remove")
+
+        self.handle_log(logging.INFO, f"[{self.instance_name}] Device {self.device.name} removal: {'successful' if success else 'failed'}")
+
+    @pyqtSlot(bool)
+    def on_trustSuccess(self, success):
+        """pickup wether device pairing was successful"""
+        self.device_info["trusted"] = success
+        if success:
+            self.ui.pushButton_Trust.setEnabled(True)
+            self.ui.pushButton_Trust.setText("Distrust")
+        else:
+            self.ui.pushButton_Trust.setEnabled(True)
+            self.ui.pushButton_Trust.setText("Trust")
+
+        self.handle_log(logging.INFO, f"[{self.instance_name}] Device {self.device.name} trusting: {'successful' if success else 'failed'}")
+
+    @pyqtSlot(bool)
+    def on_distrustSuccess(self, success):
+        """pickup wether device removal was successful"""
+        self.device_info["trusted"] = not(success)
+
+        if success: # removing
+            self.ui.pushButton_Trust.setEnabled(True)
+            self.ui.pushButton_Trust.setText("Trust")
+        else: # removing failed
+            self.ui.pushButton_Trust.setEnabled(True)
+            self.ui.pushButton_Trust.setText("Distrust")
+
+        self.handle_log(logging.INFO, f"[{self.instance_name}] Device {self.device.name} distrusting: {'successful' if success else 'failed'}")
+
+
+    @pyqtSlot()
+    def bleTextDisplay_trim(self):
         """
         Reduce the amount of text kept in the text display window
         Attempt to keep the scrollbar location
         """
-        # Where is the scrollbar?
-        scrollbarMax = self.textScrollbar.maximum()
-        if scrollbarMax != 0:
-            proportion = self.textScrollbar.value() / scrollbarMax
-        else:
-            proportion = 1.0
-        # How much do we need to trim?
-        current_text = self.ui.plainTextEdit_SerialTextDisplay.toPlainText()
-        len_current_text = len(current_text)
-        numCharstoTrim = len_current_text - MAX_TEXTBROWSER_LENGTH
-        if numCharstoTrim > 0:
-            # Select the text to remove
-            self.textCursor.setPosition(0)
-            if hasQt6:
-                self.textCursor.movePosition(
-                    QTextCursor.MoveOperation.Right, 
-                    QTextCursor.MoveMode.KeepAnchor, 
-                    numCharstoTrim
-                )
-            else:
-                self.textCursor.movePosition(
-                    QTextCursor.Right, 
-                    QTextCursor.KeepAnchor, 
-                    numCharstoTrim
-            )
-            # Remove the selected text
-            self.textCursor.removeSelectedText()
 
-        if numCharstoTrim > 0:
-            # Select the text to remove
-            self.textCursor.setPosition(0)
-            if hasQt6:
-                self.textCursor.movePosition(
-                    QTextCursor.MoveOperation.Right,
-                    QTextCursor.MoveMode.KeepAnchor,
-                    numCharstoTrim,
-                )
+        tic = time.perf_counter()
+
+        # 0 Do we need to trim?
+        textDisplayLineCount = self.ui.plainTextEdit_Text.document().blockCount() # 70 micros
+ 
+        if textDisplayLineCount > self.textBrowserLength:
+
+            old_textDisplayLineCount = textDisplayLineCount
+            scrollbar = self.textScrollbar  # Avoid redundant calls
+
+            #  1 Where is the current scrollbar? (scrollbar value is pixel based)
+            old_scrollbarMax = scrollbar.maximum()
+            old_scrollbarValue = scrollbar.value()
+
+            old_proportion = (old_scrollbarValue / old_scrollbarMax) if old_scrollbarMax > 0 else 1.0            
+            old_linePosition = round(old_proportion * old_textDisplayLineCount)
+
+            # 2 Replace text with the line buffer
+            # lines_inTextBuffer  = len(self.lineBuffer_text)
+            text = "\n".join(self.lineBuffer_text)
+            self.ui.plainTextEdit_Text.setPlainText(text)
+            new_textDisplayLineCount = self.ui.plainTextEdit_Text.document().blockCount()
+            # new_textDisplayLineCount = lines_inTextBuffer + 1
+
+            # 3 Update the scrollbar position
+            new_scrollbarMax = self.textScrollbar.maximum()            
+            if new_textDisplayLineCount > 0:
+                new_linePosition = max(0, (old_linePosition - (old_textDisplayLineCount - new_textDisplayLineCount)))
+                new_proportion = new_linePosition / new_textDisplayLineCount
+                new_scrollbarValue = round(new_proportion * new_scrollbarMax)
             else:
-                self.textCursor.movePosition(
-                    QTextCursor.Right,
-                    QTextCursor.KeepAnchor,
-                    numCharstoTrim,
-                )
-            # Remove the selected text
-            self.textCursor.removeSelectedText()
-            if hasQt6:
-                self.textCursor.movePosition(QTextCursor.MoveOperation.End)
+                new_scrollbarValue = 0
+
+            # 4 Ensure that text is scrolling when we set cursor towards the end
+
+            if new_scrollbarValue >= new_scrollbarMax - 20:
+                self.textScrollbar.setValue(new_scrollbarMax)  # Scroll to the bottom
             else:
-                self.textCursor.movePosition(QTextCursor.End)
-            # update scrollbar position
-            new_max = self.textScrollbar.maximum()
-            new_value = round(proportion * new_max)
-            self.textScrollbar.setValue(new_value)
-            # ensure that text is scrolling when we set cursor towards the end
-            if new_value >= new_max - 20:
-                self.ui.plainTextEdit_SerialTextDisplay.ensureCursorVisible()
+                self.textScrollbar.setValue(new_scrollbarValue)
+
+            toc = time.perf_counter()
+            self.handle_log(
+                logging.INFO,
+                f"[{self.thread_id}]: trimmed text display in {(toc-tic)*1000:.2f} ms."
+            )
+
         self.ui.statusBar().showMessage('Trimmed Text Display Window', 2000)
 
-############################################################################################
-#
-# Serial Port Monitoring
-# 
-#############################################################################################
 
-class USBMonitorWorker(QObject):
-    usb_event_detected = pyqtSignal(str)  # Signal to communicate with the main thread
-    finished           = pyqtSignal() 
+    @pyqtSlot()
+    def bleLogDisplay_trim(self):
+        """
+        Reduce the amount of text kept in the log display window
+        Attempt to keep the scrollbar location
+        """
 
-    def __init__(self):
-        super().__init__()
-        self.running = True
+        tic = time.perf_counter()
 
-    def run(self):
-        os_type = platform.system()
-        if os_type == "Linux" or os_type == "Darwin":
-            self.monitor_usb_linux()
-        elif os_type == "Windows":
-            self.monitor_usb_windows()
-        else:
-            raise NotImplementedError(f"Unsupported operating system: {os_type}")
+        # 0 Do we need to trim?
+        logDisplayLineCount = self.ui.plainTextEdit_Log.document().blockCount() # 70 micros
+ 
+        if logDisplayLineCount > self.textBrowserLength:
 
-    def monitor_usb_linux(self):
-        import pyudev
-        context = pyudev.Context()
-        monitor = pyudev.Monitor.from_netlink(context)
-        monitor.filter_by(subsystem='tty')
+            old_logDisplayLineCount = logDisplayLineCount
+            scrollbar = self.logScrollbar  # Avoid redundant calls
 
-        while self.running:
-            device = monitor.poll()
-            if device:
-                action = device.action
-                device_node = device.device_node
-                if action == 'add':
-                    self.usb_event_detected.emit(f"USB device added: {device_node}")
-                elif action == 'remove':
-                    self.usb_event_detected.emit(f"USB device removed: {device_node}")
-        
-        self.finished.emit()
+            #  1 Where is the current scrollbar? (scrollbar value is pixel based)
+            old_scrollbarMax = scrollbar.maximum()
+            old_scrollbarValue = scrollbar.value()
 
+            old_proportion = (old_scrollbarValue / old_scrollbarMax) if old_scrollbarMax > 0 else 1.0            
+            old_linePosition = round(old_proportion * old_logDisplayLineCount)
 
-    def monitor_usb_windows(self):
-        import wmi
-        c = wmi.WMI()
-        creation_watcher = c.Win32_PnPEntity.watch_for(notification_type="Creation", delay_secs=1)
-        removal_watcher  = c.Win32_PnPEntity.watch_for(notification_type="Deletion", delay_secs=1)
-        
-        while self.running:
+            # 2 Replace text with the line buffer
+            text = "\n".join(self.lineBuffer_log)
+            self.ui.plainTextEdit_Log.setPlainText(text)
+            new_logDisplayLineCount = self.ui.plainTextEdit_Log.document().blockCount()
+
+            # 3 Update the scrollbar position
+            new_scrollbarMax = self.textScrollbar.maximum()            
+            if new_logDisplayLineCount > 0:
+                new_linePosition = max(0, (old_linePosition - (old_logDisplayLineCount - new_textDisplayLineCount)))
+                new_proportion = new_linePosition / new_logDisplayLineCount
+                new_scrollbarValue = round(new_proportion * new_scrollbarMax)
+            else:
+                new_scrollbarValue = 0
+
+            # 4 Ensure that text is scrolling when we set cursor towards the end
+            if new_scrollbarValue >= new_scrollbarMax - 20:
+                self.logScrollbar.setValue(new_scrollbarMax)  # Scroll to the bottom
+            else:
+                self.logScrollbar.setValue(new_scrollbarValue)
+
+            toc = time.perf_counter()
+            self.handle_log(
+                logging.INFO,
+                f"[{self.thread_id}]: trimmed log display in {(toc-tic)*1000:.2f} ms."
+            )
+
+        self.ui.statusBar().showMessage('Trimmed Log Display Window', 2000)
+
+    def cleanup(self):
+        """
+        Perform cleanup tasks for QBLESerialUI, such as stopping timers, disconnecting signals,
+        and ensuring proper worker shutdown.
+        """
+        self.logger.info("Performing QBLESerialUI cleanup...")
+
+        if hasattr(self.recordingFile, "close"):
             try:
-                event = creation_watcher(timeout_ms=500)  # Wait for an event for 500ms
-                if event:
-                    if 'USB' in event.Description or 'COM' in event.Name:
-                        self.usb_event_detected.emit(f"USB device added: {event.Description} ({event.Name})")
-                removal_event = removal_watcher(timeout_ms=500)
-                if removal_event:
-                    if 'USB' in removal_event.Description or 'COM' in removal_event.Name:
-                        self.usb_event_detected.emit(f"USB device removed: {removal_event.Description} ({removal_event.Name})")
-            except wmi.x_wmi_timed_out:
-                continue  # No event within timeout, continue waiting
-            except Exception as e:
-                self.usb_event_detected.emit(f"Error: {e}")
+                self.recordingFile.close()
+            except:
+                self.handle_log(
+                    logging.ERROR, 
+                    f"[{self.thread_id}]: Could not close file {self.recordingFileName}."
+                )
 
-        self.finished.emit()
+        # Stop timers
+        if self.textTrimTimer.isActive():
+            self.textTrimTimer.stop()
+        if self.logTrimTimer.isActive():
+            self.logTrimTimer.stop()
 
-    def stop(self):
-        self.running = False
+        self.textTrimTimer.timeout.disconnect()
+        self.logTrimTimer.timeout.disconnect()
+
+        self.handle_log(
+            logging.INFO, 
+            f"[{self.thread_id}]: cleaned up."
+        )
 
 
-############################################################################################
-# Q BLE Serial UART
-# ==================
-# separate thread handling BLE serial UART input and output
+##########################################################################################################################################        
+##########################################################################################################################################        
+#
+# Q BLE Serial
+#
+# separate thread handling BLE serial input and output
 # these routines have no access to the user interface,
 # communication occurs through signals
 #
-# for ble serial write we send bytes
-# for ble serial read we receive bytes
+# for BLE device write we send bytes
+# for BLE device read we receive bytes
 # conversion from text to bytes occurs in QBLESerialUI
-############################################################################################
+#
+#    This is the Model of the Model - View - Controller (MVC) architecture.
+#
+##########################################################################################################################################        
+##########################################################################################################################################        
 
-
-class QBLESerialWorker(QObject):
+class QBLESerial(QObject):
     """
-    BLE Serial UART Interface for QT
+    BLE Serial Worker for QT
 
     Worker Signals
-
+        receivedData(bytes)                    received text through BLE
+        receivedLines(list)                    received multiple lines from BLE
+        deviceListReady(list)                  completed a device scan
+        throughputReady(float, float)          throughput data is available (RX, TX)
+        statusReady(dict)                      report BLE status
+        pairingSuccess(bool)                   was pairing successful
+        removalSuccess(bool)                   was removal successful
+        logSignal(int, str)                    log message available
+        finished                               worker finished
+    
     Worker Slots
+        on_scanDevicesRequest()                request scanning for devices
+        on_connectDeviceRequest(LEDevice,int,bool)) request connecting to device (device must be selected first)
+        on_disconnectDeviceRequest()           request disconnecting from device
+        on_pairDeviceRequest(str, str)         request pairing with bluetooth device mac and pin
+        on_removeDeviceRequest(str)            request removing paired bluetooth device
+        on_trustDeviceRequest(str)             request trusting a device
+        on_distrustDeviceRequest(str)          request distrust a device
+        on_sendTextRequest(bytes)              request sending raw bytes over BLE
+        on_sendLineRequest(bytes)              request sending a line of text (with EOL) over BLE
+        on_sendLinesRequest(list of bytes)     request sending multiple lines of text over BLE
+        on_sendFileRequest(str)                request sending a file over BLE
+        on_setupTransceiverRequest()           setup bluetoothctl and QTimer for throughput
+        on_setupBLEWorkerRequest()             setup Worker asyncio loop and bluetoothctl
+        on_stopTransceiverRequest()            stop bluetoothctl and QTimer
+        on_changeLineTerminationRequest(bytes) change line termination sequence
+        on_bleStatusRequest(str)               request BLE status of a device by MAC
+        on_finishWorkerRequest()               finish the worker
 
+    Additional helper method:
+        on_selectDeviceRequest(str)            select a device from scanned devices by MAC
     """
 
     # Signals
     ########################################################################################
-    textReceived             = pyqtSignal(bytes)                                           # text received on serial port
-    linesReceived            = pyqtSignal(list)                                            # lines of text received on serial port
-    newPortListReady         = pyqtSignal(list, list)                                      # updated list of serial ports is available
-    serialStatusReady        = pyqtSignal(str, int, bytes, float)                          # serial status is available
-    throughputReady          = pyqtSignal(int,int)                                         # number of characters received/sent on serial port
-    serialWorkerStateChanged = pyqtSignal(bool)                                            # worker started or stopped
-    finished                 = pyqtSignal() 
-    
-    device_found_signal      = pyqtSignal(str)
-    connected_signal         = pyqtSignal()
-    disconnected_signal      = pyqtSignal()
 
+    receivedData             = pyqtSignal(bytes)         # text received 
+    receivedLines            = pyqtSignal(list)          # lines of text received
+    deviceListReady          = pyqtSignal(list)          # updated list of BLE devices  
+    throughputReady          = pyqtSignal(float, float)  # RX, TX bytes per second
+    statusReady              = pyqtSignal(dict)          # BLE device status dictionary
+    connectingSuccess        = pyqtSignal(bool)          # Connecting result
+    disconnectingSuccess     = pyqtSignal(bool)          # Disconnecting result
+    pairingSuccess           = pyqtSignal(bool)          # Pairing result
+    removalSuccess           = pyqtSignal(bool)          # Removal result
+    trustSuccess             = pyqtSignal(bool)          # Trusting result
+    distrustSuccess          = pyqtSignal(bool)          # Distrusting result
+    logSignal                = pyqtSignal(int, str)      # Logging
+    setupBLEWorkerFinished   = pyqtSignal()              # Setup worker completed
+    setupTransceiverFinished = pyqtSignal()              # Transceiver setup completed
+    finished                 = pyqtSignal()              # Worker finished
+                                    # request to open file and send over serial port
+           
     def __init__(self, parent=None):
 
-        super(QBLESerialWroker, self).__init__(parent)
+        super(QBLESerialUI, self).__init__(parent)
 
-        self.logger = logging.getLogger("QBLESerial")
+        self.thread_id = int(QThread.currentThreadId()) if QThread.currentThreadId() else "N/A"
+
+        # state variables, populated by service routines
+        self.device_backup     = None
+        self.awaitingReconnection  = False
 
         self.device = None
         self.client = None
+        self.bluetoothctlWrapper = None
+        self.eol = None
+        self.partial_line = b""
+        self.rx                    = 0                                                     # init throughput
+        self.tx                    = 0                                                     # init throughput 
 
-        self.serialPorts     = [sublist[0] for sublist in self.PSer.ports]                  # COM3 ...
-        self.serialPortNames = [sublist[1] for sublist in self.PSer.ports]                  # USB ... (COM3)
-        self.serialPortHWID  = [sublist[2] for sublist in self.PSer.ports]                  # USB VID:PID=1A86:7523 LOCATION=3-2
-        self.serialBaudRates = self.PSer.baudrates                                          # will be empty
-        
-        self.textLineTerminator = b"\r\n" # default line termination
+        self.PIN = "0000"  # Placeholder PIN if required by pairing
+        self.reconnect = False
 
-        # Adjust response time
-        # Fastest serial baud rate is 5,000,000 bits per second
-        # Regular serial baud rate is   115,200 bits per second OR 5000000
-        # Slow serial baud rate is        9,600 bits per second
-        # Transmitting one byte with 8N1 (8 data bits, no stop bit, one stop bit) might take up to 10 bits
-        # Transmitting two int16 like "-8192, -8191\r\n" takes 14 bytes (3 times more than the actual numbers)
-        # This would result in receiving 1k lines/second with 115200 and 40k lines/second with 5,000,000
-        # These numbers are now updated with a function based on baud rate, see further below
-        self.receiverInterval        = MIN_RECEIVER_INTERVAL  # in milliseconds
-        self.receiverIntervalStandby = 10 * MIN_RECEIVER_INTERVAL  # in milliseconds
-        self.serialReadTimeOut       = 0  # in seconds
-        self.serialReceiverCountDown = 0  # initialize
+        self.NSUdevices = []
+        self.device_info = {
+            "mac":       None,
+            "name":      None,
+            "paired":    None,
+            "trusted":   None,
+            "connected": None,
+            "rssi":      None
+        }
 
-        self.logger.log(
-            logging.INFO,
-            "[{}]: QSerial initialized.".format(int(QThread.currentThreadId())),
-        )
+        # might be obsolete
+        self.isScrolling           = False    # keep track of text display scrolling
 
+        self.asyncEventLoop = None
+        self.asyncEventLoopThread = None
+
+        self.instance_name = self.objectName() if self.objectName() else self.__class__.__name__
+
+        self.logger = logging.getLogger("QSerUI_")
+
+    ########################################################################################
+    # Utility Functions
+    ########################################################################################
+
+    def wait_for_signal(self, signal) -> float:
+        """Utility to wait until a signal is emitted."""
+        tic = time.perf_counter()
+        loop = QEventLoop()
+        signal.connect(loop.quit)
+        loop.exec()
+        return time.perf_counter() - tic
+
+    def handle_log(self, level:int, message:str):
+        """Emit the log signal with a level and message."""
+        self.logSignal.emit(level, message)
+
+    def run_asyncEventLoop(self):
+        """Start the asyncio event loop."""
+        self.asyncEventLoop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.asyncEventLoop)
+        try:
+            self.asyncEventLoop.run_forever()
+        except asyncio.CancelledError:
+            self.handle_log(logging.INFO, f"[{self.instance_name}] Could not start Asyncio event loop.")
+        finally:
+            self.asyncEventLoop.close()
+
+    def stop_asyncEventLoop(self):
+        """Stop the asyncio event loop and its thread."""
+        if self.asyncEventLoop and self.asyncEventLoop.is_running():
+            self.asyncEventLoop.call_soon_threadsafe(self.asyncEventLoop.stop)
+        if self.asyncEventLoopThread is not None:
+            self.asyncEventLoopThread.join(timeout=2.0)
+            self.asyncEventLoopThread = None
+
+        self.handle_log(logging.INFO, f"[{self.instance_name}] Asyncio event loop and thread stopped.")            
+
+    def schedule_async(self, coro):
+        """Post a coroutine to the asyncio event loop."""
+        if hasattr(self, "asyncEventLoop"):
+            if self.asyncEventLoop is not None:
+                if self.asyncEventLoop.is_running():
+                    future = asyncio.run_coroutine_threadsafe(coro, self.asyncEventLoop)
+                    return future
+                else:
+                    self.handle_log(logging.ERROR, "Asyncio event loop not running; cannot schedule async task.")
+            else:
+                self.handle_log(logging.ERROR, "Asyncio event loop is None; cannot schedule async task.")
+        else:
+            self.handle_log(logging.ERROR, "Asyncio event loop not available; cannot schedule async task.")
+
+    ########################################################################################
     # Slots
     ########################################################################################
 
-    @pyqtSlot()
-    def onScanforDevices(self):
-        """Scan for BLE devices."""
-        async def _scan():
-            devices = await BleakScanner.discover()
 
-            self._devices = [
-                [d.name, d.address, d.riss]
-                for d in self.devices
-            ]
-            return len(self._devices)
+    # Setting up Worker in separate thread
+    ########################################################################################
+
+    @pyqtSlot()
+    def on_setupBLEWorkerRequest(self):
+
+        # Start the asyncio event loop for this worker
+        # Need to use threading, cannot use QThread
+        self.asyncEventLoopThread = threading.Thread(target=self.run_asyncEventLoop, daemon=True)
+        self.asyncEventLoopThread.start()
+        self.handle_log(logging.INFO, f"[{self.instance_name}] Asyncio event loop and thread started.")
+
+        self.setupBLEWorkerFinished.emit()
+
+    # Throughput
+    # ----------
+    @pyqtSlot()
+    def on_setupTransceiverRequest(self):
+        """
+        Setup Timers and Program Wrapper
+        """
         
-        self.run_async(_scan)
+        self.thread_id = int(QThread.currentThreadId()) if QThread.currentThreadId() else "N/A"
 
+        # Throughput tracking
 
-
-        self.logger.log(
-            logging.INFO,
-            "[{}]: port(s) {} available.".format(
-                int(QThread.currentThreadId()), self.serialPortNames
-            ),
-        )
-        self.newPortListReady.emit(self.serialPorts, self.serialPortNames)
-
-
-    @pyqtSlot()
-
-    def on_setupReceiverRequest(self):
-        """
-        Set up a QTimer for reading data from serial input line at predefined interval.
-        This does not start the timer.
-        We can not create the timer in the init function because when we move QSerial
-         to a new thread and the timer would not move with it.
-
-        Set up QTimer for throughput measurements
-        """
-
-        # if DEBUGPY_ENABLED: debugpy.debug_this_thread() # this should enable debugging of all methods QSerial methods
-
-        # setup the receiver timer
-        self.serialReceiverState = SerialReceiverState.stopped  # initialize state machine
-        self.receiverTimer = QTimer()
-        self.receiverTimer.timeout.connect(self.updateReceiver)
-        self.logger.log(
-            logging.INFO,
-            "[{}]: setup receiver timer.".format(int(QThread.currentThreadId())),
-        )
-
-        # setup the throughput measurement timer
-        self.throughputTimer = QTimer()
+        self.throughputTimer = QTimer(self)
         self.throughputTimer.setInterval(1000)
         self.throughputTimer.timeout.connect(self.on_throughputTimer)
-        self.logger.log(
-            logging.INFO,
-            "[{}]: setup throughput timer.".format(
-                int(QThread.currentThreadId())
-            ),
-        )
 
-    @pyqtSlot()
-    def on_throughputTimer(self):
-        """
-        Report throughput
-        """
-        if self.PSer.connected:
-            self.throughputReady.emit(
-                self.PSer.totalCharsReceived, self.PSer.totalCharsSent
-            )
-        else:
-            self.throughputReady.emit(0, 0)
+        self.setupTransceiverFinished.emit()
+        self.handle_log(logging.INFO, f"[{self.instance_name}] Throughput timer is set up.")
 
-    @pyqtSlot()
-    def on_startReceiverRequest(self):
-        """
-        Start QTimer for reading data from serial input line (RX)
-        Response will need to be analyzed in the main task.
-        """
-        # clear serial buffers
-        self.PSer.clear()
-        # start the receiver timer
-        self.receiverTimer.setInterval(self.receiverInterval)
-        self.receiverTimer.start()
-        self.serialReceiverState = SerialReceiverState.awaitingData
-        self.serialWorkerStateChanged.emit(True)  # serial worker is running
-        self.logger.log(
-            logging.INFO,
-            "[{}]: started receiver.".format(int(QThread.currentThreadId())),
-        )
-
-    @pyqtSlot()
-    def on_stopReceiverRequest(self):
-        """
-        Stop the receiver timer
-        """
-        self.receiverTimer.stop()
-        self.serialReceiverState = SerialReceiverState.stopped
-        self.serialWorkerStateChanged.emit(False)  # serial worker not running
-        self.logger.log(
-            logging.INFO,
-            "[{}]: stopped receiver.".format(
-                int(QThread.currentThreadId())
-            ),
-        )
 
     @pyqtSlot()
     def on_startThroughputRequest(self):
@@ -1259,12 +1306,11 @@ class QBLESerialWorker(QObject):
         Stop QTimer for reading through put from PSer)
         """
         self.throughputTimer.start()
-        self.logger.log(
+        self.handle_log(
             logging.INFO,
-            "[{}]: started throughput timer.".format(
-                int(QThread.currentThreadId())
-            ),
+            f"[{self.thread_id}]: started throughput timer."
         )
+
 
     @pyqtSlot()
     def on_stopThroughputRequest(self):
@@ -1272,1205 +1318,635 @@ class QBLESerialWorker(QObject):
         Stop QTimer for reading throughput from PSer)
         """
         self.throughputTimer.stop()
-        self.logger.log(
+        self.handle_log(
             logging.INFO,
-            "[{}]: stopped throughput timer.".format(
-                int(QThread.currentThreadId())
-            ),
+            f"[{self.thread_id}]: stopped throughput timer."
         )
 
     @pyqtSlot()
-    def updateReceiver(self):
+    def on_throughputTimer(self):
         """
-        Reading lines of text from serial RX
+        Report throughput.
         """
-        if self.serialReceiverState != SerialReceiverState.stopped:
-            start_time = time.perf_counter()
-            if self.PSer.connected:
+        self.throughputReady.emit(self.bytes_received, self.bytes_sent)
+    
+    @pyqtSlot()
+    def on_stopTransceiverRequest(self):
+        """Stop bluetoothctl and QTimer."""
 
-                # Check if end-of-line handling is needed
-                if self.PSer.eol:  # non empty byte array
-                    # reading lines
-                    # -------------
-                    try:
-                        lines = self.PSer.readlines()  # Read lines until buffer is empty
-                    except:
-                        lines = []
-
-                    end_time = time.perf_counter()
-
-                    if lines:
-                        self.logger.log(
-                            logging.DEBUG,
-                            "[{}]: {} lines {:.3f} ms per line.".format(
-                                int(QThread.currentThreadId()),
-                                len(lines),
-                                1000 * (end_time - start_time) / len(lines),
-                            ),
-                        )
-                        if DEBUGSERIAL:
-                            self.logger.log(
-                                logging.DEBUG,
-                                "\n"
-                                + "\n".join(
-                                    line.decode(errors="replace").replace("\ufffd", "¿")
-                                    for line in lines
-                                ),
-                            )
-
-                        if self.serialReceiverState == SerialReceiverState.awaitingData:
-                            self.receiverTimer.setInterval(self.receiverInterval)
-                            self.serialReceiverState = SerialReceiverState.receivingData
-                            self.logger.log(
-                                logging.INFO,
-                                "[{}]: receiving started, set faster update rate.".format(
-                                    int(QThread.currentThreadId())
-                                ),
-                            )
-
-                        self.serialReceiverCountDown = 0
-                        self.linesReceived.emit(lines)
-
-                    else:
-                        if self.serialReceiverState == SerialReceiverState.receivingData:
-                            self.serialReceiverCountDown += 1
-                            if self.serialReceiverCountDown >= RECEIVER_FINISHCOUNT:
-                                self.serialReceiverState = SerialReceiverState.awaitingData
-                                self.receiverTimer.setInterval(self.receiverIntervalStandby)
-                                self.serialReceiverCountDown = 0
-                                self.logger.log(
-                                    logging.INFO,
-                                    "[{}]: receiving finished, set slower update rate.".format(
-                                        int(QThread.currentThreadId())
-                                    ),
-                                )
-
-                else:
-                    # reading raw bytes
-                    # -----------------
-                    byte_array = self.PSer.read()
-                    end_time = time.perf_counter()
-                    if byte_array:
-                        duration = 1000 * (end_time - start_time) / len(byte_array)
-                    else:
-                        duration = 0
-                    self.logger.log(
-                        logging.DEBUG,
-                        "[{}]: {} bytes {:.3f} ms per line.".format(
-                            int(QThread.currentThreadId()), len(byte_array), duration
-                        ),
-                    )
-
-                    self.textReceived.emit(byte_array)
-
-        else:
-            self.logger.log(
-                logging.ERROR,
-                "[{}]: receiver is stopped or port is not open.".format(
-                    int(QThread.currentThreadId())
-                ),
-            )
+        if hasattr(self, 'throughputTimer'):
+            self.throughputTimer.stop()
+            self.handle_log(logging.INFO, f"[{self.instance_name}] Throughput timer stopped.")
 
     @pyqtSlot()
-    def on_stopWorkerRequest(self):
-        """
-        Worker received request to stop
-        We want to stop QTimer and close serial port and then let subscribers know that serial worker is no longer available
-        """
-        self.throughputTimer.stop()
-        self.receiverTimer.stop()
-        self.serialWorkerStateChanged.emit(False)  # serial worker is not running
-        self.PSer.close()
-        self.logger.log(
-            logging.INFO,
-            "[{}]: stopped timer, closed port.".format(int(QThread.currentThreadId())),
-        )
+    def on_finishWorkerRequest(self):
+        """Handle Cleanup of the worker."""
+        self.on_stopTransceiverRequest()
+
+        # Disconnect BLE client if connected
+        if self.client and self.client.is_connected:
+            try:
+                asyncio.run(self.client.disconnect())
+                self.handle_log(logging.INFO, f"[{self.instance_name}] Disconnected BLE client.")
+            except Exception as e:
+                self.handle_log(logging.ERROR, f"[{self.instance_name}] Error disconnecting BLE client: {e}")
+            finally:
+                self.client = None
+
+        # Reset worker state
+        self.device = None
+        self.bytes_received = 0
+        self.bytes_sent = 0
+        self.partial_line = b""
+
+        # Stop the asyncio event loop
+        self.stop_asyncEventLoop()
+
+        self.handle_log(logging.INFO, f"[{self.instance_name}] BLE Serial Worker cleanup completed.")
+
+        # Emit finished signal
         self.finished.emit()
 
-    @pyqtSlot(bytes)
-    def on_sendTextRequest(self, byte_array: bytes):
-        """
-        Request to transmit text to serial TX line
-        """
-        if self.PSer.connected:
-            l = self.PSer.write(byte_array)
-            l_ba = len(byte_array)
-            if DEBUGSERIAL:
-                self.logger.log(
-                    logging.DEBUG,
-                    '[{}]: transmitted "{}" [{} of {}].'.format(
-                        int(QThread.currentThreadId()),
-                        byte_array.decode("utf-8"),
-                        l,
-                        l_ba,
-                    ),
-                )
-            else:
-                self.logger.log(
-                    logging.DEBUG,
-                    "[{}]: transmitted {} of {} bytes.".format(
-                        int(QThread.currentThreadId()), l, l_ba
-                    ),
-                )
-        else:
-            self.logger.log(
-                logging.ERROR,
-                "[{}]: Tx, port not opened.".format(int(QThread.currentThreadId())),
-            )
+    # Response Functions to User Interface Signals: Settings
+    ########################################################################################
 
-    @pyqtSlot(bytes)
-    def on_sendLineRequest(self, byte_array: bytes):
-        """
-        Request to transmit a line of text to serial TX line
-        Terminate the text with eol characters.
-        """
-        if self.PSer.connected:
-            l = self.PSer.writeline(byte_array)
-            l_ba = len(byte_array)
-            if DEBUGSERIAL:
-                self.logger.log(
-                    logging.DEBUG,
-                    '[{}]: transmitted "{}" [{} of {}].'.format(
-                        int(QThread.currentThreadId()),
-                        byte_array.decode("utf-8"),
-                        l,
-                        l_ba,
-                    ),
-                )
-            else:
-                self.logger.log(
-                    logging.DEBUG,
-                    "[{}]: Transmitted {} of {} bytes.".format(
-                        int(QThread.currentThreadId()), l, l_ba
-                    ),
-                )
-        else:
-            self.logger.log(
-                logging.ERROR,
-                "[{}]: Tx, port not opened.".format(int(QThread.currentThreadId())),
-            )
-
-    @pyqtSlot(list)
-    def on_sendLinesRequest(self, lines: list):
-        """
-        Request to transmit multiple lines of text to serial TX line
-        """
-        if self.PSer.connected:
-            l = self.PSer.writelines(lines)
-            self.logger.log(
-                logging.DEBUG,
-                "[{}]: transmitted {} bytes.".format(int(QThread.currentThreadId()), l),
-            )
-        else:
-            self.logger.log(
-                logging.ERROR,
-                "[{}]: Tx, port not opened.".format(int(QThread.currentThreadId())),
-            )
-
-    @pyqtSlot(str)
-    def on_sendFileRequest(self, fname: str):
-        """
-        Request to transmit file to serial TX line
-        """
-        # if DEBUGPY_ENABLED: debugpy.debug_this_thread()
-
-        if self.PSer.connected:
-            if fname:
-                with open(fname, "rb") as f:  # open file in binary read mode
-                    try:
-                        file_content = f.read()
-                        l = self.PSer.write(file_content)
-                        self.logger.log(
-                            logging.DEBUG,
-                            '[{}]: transmitted "{}" [{}].'.format(
-                                int(QThread.currentThreadId()), fname, l
-                            ),
-                        )
-                    except:
-                        self.logger.log(
-                            logging.ERROR,
-                            '[{}]: error transmitting "{}".'.format(
-                                int(QThread.currentThreadId()), fname
-                            ),
-                        )
-            else:
-                self.logger.log(
-                    logging.WARNING,
-                    "[{}]: no file name provided.".format(
-                        int(QThread.currentThreadId())
-                    ),
-                )
-        else:
-            self.logger.log(
-                logging.ERROR,
-                "[{}]: Tx, port not opened.".format(int(QThread.currentThreadId())),
-            )
-
-    @pyqtSlot(str, int)
-    def on_changePortRequest(self, port: str, baud: int, esp_reset: bool):
-        """
-        Request to change port received
-        """
-        if port != "":
-            self.PSer.close()
-            serialReadTimeOut, receiverInterval, receiverIntervalStandby = (
-                compute_timeouts(baud)
-            )
-            if self.PSer.open(
-                port = port,
-                baud = baud,
-                eol = self.textLineTerminator,
-                timeout = serialReadTimeOut,
-                esp_reset = esp_reset,
-            ):
-                self.serialReadTimeOut = serialReadTimeOut
-                self.receiverInterval = receiverInterval
-                self.receiverIntervalStandby = receiverIntervalStandby
-                self.receiverTimer.setInterval(self.receiverInterval)
-                self.logger.log(
-                    logging.INFO,
-                    "[{}]: port {} opened with baud {} eol {} and timeout {}.".format(
-                        int(QThread.currentThreadId()),
-                        port,
-                        baud,
-                        repr(self.textLineTerminator),
-                        self.PSer.timeout,
-                    ),
-                )
-            else:
-                self.logger.log(
-                    logging.ERROR,
-                    "[{}]: failed to open port {}.".format(
-                        int(QThread.currentThreadId()), port
-                    ),
-                )
-        else:
-            self.logger.log(
-                logging.ERROR,
-                "[{}]: port not provided.".format(int(QThread.currentThreadId())),
-            )
-
-    @pyqtSlot()
-    def on_closePortRequest(self):
-        """
-        Request to close port received
-        """
-        self.PSer.close()
-
-    @pyqtSlot(int)
-    def on_changeBaudRateRequest(self, baud: int):
-        """
-        New baudrate received
-        """
-        if (baud is None) or (baud <= 0):
-            self.logger.log(
-                logging.WARNING,
-                "[{}]: range error, baudrate not changed to {},".format(
-                    int(QThread.currentThreadId()), baud
-                ),
-            )
-        else:
-            serialReadTimeOut, receiverInterval, receiverIntervalStandby = (
-                compute_timeouts(baud)
-            )
-            if self.PSer.connected:
-                if (
-                    self.serialBaudRates.index(baud) >= 0
-                ):  # check if baud rate is available by searching for its index in the baud rate list
-                    self.PSer.changeport(
-                        self.PSer.port,
-                        baud,
-                        eol=self.textLineTerminator,
-                        timeout=serialReadTimeOut,
-                    )
-                    if (
-                        self.PSer.baud == baud
-                    ):  # check if new value matches desired value
-                        self.serialReadTimeOut = serialReadTimeOut
-                        # self.serialBaudRate = baud  # update local variable
-                        self.receiverInterval = receiverInterval
-                        self.receiverIntervalStandby = receiverIntervalStandby
-                        self.receiverTimer.setInterval(self.receiverInterval)
-                    else:
-                        # self.serialBaudRate = self.PSer.baud
-                        self.logger.log(
-                            logging.ERROR,
-                            "[{}]: failed to set baudrate to {}.".format(
-                                int(QThread.currentThreadId()), baud
-                            ),
-                        )
-                else:
-                    self.logger.log(
-                        logging.ERROR,
-                        "[{}]: baudrate {} not available.".format(
-                            int(QThread.currentThreadId()), baud
-                        ),
-                    )
-                    # self.serialBaudRate = self.defaultBaudRate
-            else:
-                self.logger.log(
-                    logging.ERROR,
-                    "[{}]: failed to set baudrate, serial port not open!".format(
-                        int(QThread.currentThreadId())
-                    ),
-                )
+    # Misc
+    # ----
 
     @pyqtSlot(bytes)
     def on_changeLineTerminationRequest(self, lineTermination: bytes):
         """
-        New LineTermination received
+        Set the new line termination sequence.
         """
         if lineTermination is None:
-            self.logger.log(
-                logging.WARNING,
-                "[{}]: line termination not changed, line termination string not provided.".format(
-                    int(QThread.currentThreadId())
-                ),
-            )
-            return
+            self.handle_log(logging.WARNING, f"[{self.instance_name}] Line termination not changed, no line termination string provided.")
         else:
-            self.PSer.eol = lineTermination
-            self.textLineTerminator = lineTermination
-            self.logger.log(
-                logging.INFO,
-                "[{}]: changed line termination to {}.".format(
-                    int(QThread.currentThreadId()), repr(self.textLineTerminator)
-                ),
-            )
+            self.eol = lineTermination
+            self.handle_log(logging.INFO, f"[{self.instance_name}] Changed line termination to {repr(self.eol)}.")
+
+    # BLE Device Status
+    # -----------------
+
+    @pyqtSlot(str)
+    def on_bleStatusRequest(self, mac: str):
+        """Request device status by MAC."""
+
+        if self.bluetoothctlWrapper is None:
+            # Initialize BluetoothctlWrapper (assumes BluetoothctlWrapper is defined elsewhere)
+            self.bluetoothctlWrapper = BluetoothctlWrapper("bluetoothctl")
+            self.bluetoothctlWrapper.log_signal.connect(self.handle_log)
+            self.bluetoothctlWrapper.start()
+            time_elapsed = self.wait_for_signal(self.bluetoothctlWrapper.startup_completed_signal) * 1000
+            self.handle_log(logging.INFO, f"[{self.instance_name}] bluetoothctl wrapper started in {time_elapsed:.2f} ms.")
+
+        if self.bluetoothctlWrapper:
+            self.bluetoothctlWrapper.get_device_info(mac=mac, timeout=2000)
+            self.bluetoothctlWrapper.device_info_ready_signal.connect(self._on_device_info_ready)
+            self.bluetoothctlWrapper.device_info_failed_signal.connect(self._on_device_info_failed)
+            self.handle_log(logging.INFO, f"[{self.instance_name}] Bluetoothctl wrapper status requested.")
+        else:
+            self.handle_log(logging.ERROR, f"[{self.instance_name}] Bluetoothctl wrapper not available for status request.")
+
+    @pyqtSlot(dict)
+    def _on_device_info_ready(self, info: dict):
+        self.handle_log(logging.INFO, f"[{self.instance_name}] Device info retrieved: {info}")
+        self.device_info.update(info)
+        self.statusReady.emit(self.device_info)
+        # Disconnect signals
+        self.bluetoothctlWrapper.device_info_ready_signal.disconnect(self._on_device_info_ready)
+        self.bluetoothctlWrapper.device_info_failed_signal.disconnect(self._on_device_info_failed)
+
+        # Cleanup bluetoothctl
+        if self.bluetoothctlWrapper:
+            self.bluetoothctlWrapper.stop()
+            self.bluetoothctlWrapper = None
+            self.handle_log(logging.INFO, f"[{self.instance_name}] Bluetoothctl stopped.")
+
+    @pyqtSlot(str)
+    def _on_device_info_failed(self, mac: str):
+        self.handle_log(logging.ERROR, f"[{self.instance_name}] Failed to retrieve device info for MAC: {mac}")
+        self.bluetoothctlWrapper.device_info_ready_signal.disconnect(self._on_device_info_ready)
+        self.bluetoothctlWrapper.device_info_failed_signal.disconnect(self._on_device_info_failed)
+
+        # Cleanup bluetoothctl
+        if self.bluetoothctlWrapper:
+            self.bluetoothctlWrapper.stop()
+            self.bluetoothctlWrapper = None
+            self.handle_log(logging.INFO, f"[{self.instance_name}] Bluetoothctl stopped.")
+
+    # BLE Device Scan
+    # ---------------
 
     @pyqtSlot()
-    def on_scanPortsRequest(self):
-        """ 
-        Request to scan for serial ports received 
-        """            
-        if self.PSer.scanports() > 0 :
-            self.serialPorts     = [sublist[0] for sublist in self.PSer.ports if sublist[1] != 'n/a']
-            self.serialPortNames = [sublist[1] for sublist in self.PSer.ports if sublist[1] != 'n/a']
-            self.serialPortHWID  = [sublist[2] for sublist in self.PSer.ports if sublist[1] != 'n/a']
-        else :
-            self.serialPorts = []
-            self.serialPortNames = []
-        self.logger.log(
-            logging.INFO,
-            "[{}]: port(s) {} available.".format(
-                int(QThread.currentThreadId()), self.serialPortNames
-            ),
-        )
-        self.newPortListReady.emit(self.serialPorts, self.serialPortNames)
+    def on_scanDevicesRequest(self):
+        self.schedule_async(self._scanDevicesRequest())
 
-    @pyqtSlot()
-    def on_scanBaudRatesRequest(self):
-        """
-        Request to report serial baud rates received
-        """
-        if self.PSer.connected:
-            self.serialBaudRates = self.PSer.baudrates
-        else:
-            self.serialBaudRates = ()
-        if len(self.serialBaudRates) > 0:
-            self.logger.log(
-                logging.INFO,
-                "[{}]: baudrate(s) {} available.".format(
-                    int(QThread.currentThreadId()), self.serialBaudRates
-                ),
-            )
-        else:
-            self.logger.log(
-                logging.WARNING,
-                "[{}]: no baudrates available, port is closed.".format(
-                    int(QThread.currentThreadId())
-                ),
-            )
-        self.newBaudListReady.emit(self.serialBaudRates)
-
-    @pyqtSlot()
-    def on_serialStatusRequest(self):
-        """
-        Request to report of serial status received
-        """
-        self.logger.log(
-            logging.INFO,
-            "[{}]: provided serial status".format(int(QThread.currentThreadId())),
-        )
-        if self.PSer.connected:
-            self.serialStatusReady.emit(
-                self.PSer.port, self.PSer.baud, self.PSer.eol, self.PSer.timeout
-            )
-        else:
-            self.serialStatusReady.emit(
-                "", self.PSer.baud, self.PSer.eol, self.PSer.timeout
-            )
-
-
-def compute_timeouts(baud: int, chars_per_line: int = 50):
-    # Set timeout to the amount of time it takes to receive the shortest expected line of text
-    # integer '123/n/r' 5 bytes, which is at least 45 serial bits
-    # serialReadTimeOut = 40 / baud [s] is very small and we should just set it to zero (non blocking)
-    serialReadTimeOut = 0  # make it non blocking
-
-    # Set the QTimer interval so that each call we get a couple of lines
-    # lets assume we receive 5 integers in one line each with a length, this is approx 50 bytes,
-    # lets use 10 serial bits per byte
-    # lets request NUM_LINES_COLLATE lines per call
-    receiverInterval = ceil(
-        NUM_LINES_COLLATE * chars_per_line * 10 / baud * 1000
-    )  # in milliseconds
-    receiverIntervalStandby = 10 * receiverInterval  # make standby 10 times slower
-
-    # check serial should occur no more than 200 times per second no less than 10 times per second
-    if receiverInterval < MIN_RECEIVER_INTERVAL:        receiverInterval = MIN_RECEIVER_INTERVAL
-    if receiverIntervalStandby < MIN_RECEIVER_INTERVAL: receiverIntervalStandby = MIN_RECEIVER_INTERVAL
-    if receiverInterval > MAX_RECEIVER_INTERVAL:        receiverInterval = MAX_RECEIVER_INTERVAL
-    if receiverIntervalStandby > MAX_RECEIVER_INTERVAL: receiverIntervalStandby = MAX_RECEIVER_INTERVAL
-
-    return serialReadTimeOut, receiverInterval, receiverIntervalStandby
-
-
-################################################################################
-# BLE Serial UART Low Level
-################################################################################
-import bleak
-import struct
-
-class BLESerial():
-    """
-    BLE UART Serial Wrapper.
-
-    read and returns bytes or list of bytes
-    write bytes or list of bytes
-    """
-
-    def __init__(self):
-
-        self.logger             = logging.getLogger("BLESerial")
-        self.device             = None
-        self.cleint             = None
-        self._port              = ""
-        self._baud              = -1
-        self._eol               = b""
-        self._timeout           = -1
-        self._ser_open          = False
-        self._esp_reset         = False
-        self.totalCharsReceived = 0
-        self.totalCharsSent     = 0
-        self.partialLine        = b""
-        self.havePartialLine    = False
-        self.reset_delay        = 0.05 # for ESP reset
-
-        # check for serial ports
-        _ = self.scanports()
-
-    def scanports(self) -> int:
-        """
-        scans for all available ports
-        """
-        self._ports = [
-            [p.device, p.description, p.hwid]
-            for p in list_ports.comports()
-        ]
-        return len(self._ports)
-
-    def open(self, port: str, baud: int, eol: bytes, timeout: float, esp_reset: bool) -> bool:
-        """ 
-        open specified port 
-        """
+    async def _scanDevicesRequest(self):
+        """Scan for BLE devices offering the Nordic UART Service."""
         try:
-            self.ser = sp(
-                port = port,                    # the serial device
-                baudrate = baud,                # often 115200 but Teensy sends/receives as fast as possible
-                bytesize = EIGHTBITS,           # most common option
-                parity = PARITY_NONE,           # most common option
-                stopbits = STOPBITS_ONE,        # most common option
-                timeout = timeout,              # wait until requested characters are received on read request or timeout occurs
-                write_timeout = timeout,        # wait until requested characters are sent
-                inter_byte_timeout = None,      # disable inter character timeout
-                rtscts = False,                 # do not use 'request to send' and 'clear to send' handshaking
-                dsrdtr = False,                 # dont want 'data set ready' signaling
-                exclusive = None,               # use operating systems default sharing of serial port
-                xonxoff = False                 # dont have 'xon/xoff' hand shaking in serial data stream
-                )
-        except SerialException as e:
-            # Handle error during setup or opening
-            self.logger.log(
-                logging.ERROR, 
-                "[SER {}]: Exception {}, Failed to set {} with baud {} timeout {}.".format(
-                    int(QThread.currentThreadId()),e,port,baud,timeout)
-            )
-            self._ser_open = False
-            self.ser = None
-            self._port = ""
-            return False
+            self.handle_log(logging.INFO, f"[{self.instance_name}] Scanning for BLE devices.")
+            devices = await BleakScanner.discover(timeout=5, return_adv=True)
         except Exception as e:
-            self.logger.log(logging.ERROR, 
-                "[SER {}]: other Exception {}.".format(
-                    int(QThread.currentThreadId()),e)
-            )
-            self._ser_open = False
-            self.ser = None
-            self._port=""
-            return False
-        else:
-            self.logger.log(logging.INFO, 
-                "[SER {}]: {} opened with baud {} timeout {}.".format(
-                    int(QThread.currentThreadId()),port,baud,timeout
-                )
-            )
+            self.handle_log(logging.ERROR, f"[{self.instance_name}] Error scanning for devices: {e}")
+            return
+        
+        if not devices:
+            self.handle_log(logging.INFO, f"[{self.instance_name}] No devices found.")
+        
+        self.NSUdevices = []
+        for device, adv in devices.values():
+            for service_uuid in adv.service_uuids:
+                if service_uuid.lower() == self.SERVICE_UUID.lower():
+                    self.NSUdevices.append(device)
+        
+        if not self.NSUdevices:
+            self.handle_log(logging.INFO, f"[{self.instance_name}] Scan complete. No matching devices found.")
+        else:        
+            self.handle_log(logging.INFO, f"[{self.instance_name}] Scan complete. Select a device from the dropdown.")
+        self.deviceListReady.emit(self.NSUdevices)
 
-            # ESP reset
-            if esp_reset:
-                try:
-                    self.espHardReset()
-                except Exception as e:
-                    self.logger.log(
-                        logging.ERROR, 
-                        "[SER {}]: {} exception {} during espHardRest.".format(
-                            int(QThread.currentThreadId()),port,e)
-                    )
+    # BLE Device Connect
+    # ------------------
+
+    @pyqtSlot(str)
+    def on_selectDeviceRequest(self, mac: str):
+        """Select a device from the scanned devices by MAC."""
+        for dev in self.NSUdevices:
+            if dev.address == mac:
+                self.device = dev
+                self.handle_log(logging.INFO, f"[{self.instance_name}] Device selected: {dev.name} ({dev.address})")
+                return
+        self.handle_log(logging.WARNING, f"[{self.instance_name}] No device found with MAC {mac}")
+
+    @pyqtSlot(BLEDevice, int, bool)
+    def on_connectDeviceRequest(self, device: BLEDevice, timeout: int, reconnect: bool):
+        self.schedule_async(self._connectDeviceRequest(device=device, timeout=timeout, reconnect=reconnect))
+
+    async def _connectDeviceRequest(self, device: BLEDevice, timeout: int, reconnect: bool):
+        """
+        Slot to handle the connection request to a BLE device.
+
+        Parameters:
+            device (BLEDevice): The device to connect to.
+            timeout (int): Connection timeout in seconds.
+        """
+        self.device = device
+        self.timeout = timeout
+        self.reconnect = reconnect
+
+        self.handle_log(logging.INFO, f"[{self.instance_name}] Connecting to device: {device.name} ({device.address})")
+
+        if self.device is not None:
+            self.client = BleakClient(
+                self.device, 
+                disconnected_callback=self._on_DeviceDisconnected, 
+                timeout=self.timeout
+            )
+            try:
+                await self.client.connect(timeout=timeout)
+                self.handle_log(logging.INFO, f"[{self.instance_name}] Connected to {self.device.name}")
+
+                # Initialize the device
+                await self.client.start_notify(self.TX_CHARACTERISTIC_UUID, self.handle_rx)
+                # Prepare acquiring MTU if using BlueZ backend
+                if self.client._backend.__class__.__name__ == "BleakClientBlueZDBus":
+                    await self.client._backend._acquire_mtu()
+                # Obtain MTU size
+                self.mtu = self.client.mtu_size
+                if self.mtu > 3 and self.mtu <= self.BLEMTUMAX:
+                    self.BLEpayloadSize = self.mtu - 3  # Subtract ATT header size
                 else:
-                    self.logger.log(
-                        logging.INFO, 
-                        "[SER {}]: {} espHardRest.".format(
-                            int(QThread.currentThreadId()),port)
-                    )
+                    self.BLEpayloadSize =  self.BLEMTUNORMAL - 3                
+                self.connectingSuccess.emit(True) 
+            except BleakError as e:
+                if "not found" in str(e).lower():
+                    self.handle_log(logging.ERROR, f"[{self.instance_name}] Connection error: {e}")
+                    self.handle_log(logging.ERROR, f"[{self.instance_name}]Device is likely not paired. Please pair the device first.")
+                else:
+                    self.handle_log(logging.ERROR, f"[{self.instance_name}] Connection error: {e}")
+                self.connectingSuccess.emit(False) 
+            except Exception as e:
+                self.handle_log(logging.ERROR, f"[{self.instance_name}] Unexpected error: {e}")
+                self.connectingSuccess.emit(False) 
+        else:
+            self.handle_log(logging.WARNING, f"[{self.instance_name}] No device selected. Please select a device from the scan results.")
 
-            self._ser_open = True
-            self._baud = baud
-            self._port = port
-            self._timeout = timeout
-            self._eol = eol
-            self._leneol = len(eol)
-            self._esp_reset = esp_reset
-            # clear buffers
-            try:
-                self.ser.reset_input_buffer()
-            except:
-                self.logger.log(logging.ERROR, 
-                    "[SER {}]: failed to clear input buffer.".format(
-                        int(QThread.currentThreadId())
-                    )
-                )
-            try:
-                self.ser.reset_output_buffer()
-            except:
-                self.logger.log(logging.ERROR, 
-                    "[SER {}]: failed to clear output buffer.".format(
-                        int(QThread.currentThreadId())
-                    )
-                )
-            self.totalCharsReceived = 0
-            self.totalCharsSent = 0
-            self.partialLine = b""
-            self.havePartialLine = False
-            return True
 
-    def close(self):
+    async def _on_DeviceDisconnected(self, client):
         """
-        closes serial port
+        Callback when the BLE device is unexpectedly disconnected.
+        Starts a background task to handle reconnection.
         """
+        self.handle_log(logging.WARNING, f"[{self.instance_name}] Device disconnected: {self.device.name} ({self.device.address})")
 
-        if (self.ser is not None) and self._ser_open:
-            # close the port
-            try:
-                # clear buffers
-                self.ser.reset_input_buffer()
-            except:
-                self.logger.log(
-                    logging.ERROR,
-                    "[SER {}]: failed to clear input buffer.".format(
-                        int(QThread.currentThreadId())
-                    ),
-                )
-            try:
-                # clear buffers
-                self.ser.reset_output_buffer()
-            except:
-                self.logger.log(
-                    logging.ERROR,
-                    "[SER {}]: failed to clear output buffer.".format(
-                        int(QThread.currentThreadId())
-                    ),
-                )
-            try:
-                # close the port
-                self.ser.close()
-            except:
-                self.logger.log(
-                    logging.ERROR,
-                    "[SER {}]: failed to complete closure.".format(
-                        int(QThread.currentThreadId())
-                    ),
-                )
-            self._port = ""
-        self.logger.log(
-            logging.INFO, "[SER {}]: closed.".format(
-                int(QThread.currentThreadId())
-            ),
-        )
-        self._ser_open = False
+        if not self.reconnect:  # Check if reconnection is allowed
+            self.handle_log(logging.INFO, f"[{self.instance_name}] Reconnection disabled. No attempt will be made.")
+            self.client = None
+        else:
+            # Start the reconnection in a background task
+            self.schedule_async(self._handle_reconnection())
 
-    def changeport(self, port: str, baud: int, eol: bytes, timeout: float, esp_reset: bool):
+    async def _handle_reconnection(self):
         """
-        switch to different port
+        Handles reconnection attempts in a non-blocking manner.
         """
-        self.close()
-        self.open(
-            port = port, 
-            baud = baud, 
-            eol = eol, 
-            timeout = timeout, 
-            eps_reset = esp_reset
-        )  # opening the port also clears its buffers
-        self.logger.log(
-            logging.INFO,
-            "[SER {}]: changed port to {} with baud {} and eol {}".format(
-                int(QThread.currentThreadId()), port, baud, repr(eol)
-            ),
-        )
+        retry_attempts = 0
+        max_retries = 5
+        backoff = 1  # Initial backoff in seconds
 
-    def read(self) -> bytes:
+        while retry_attempts < max_retries and self.reconnect and not self.client.is_connected:
+            try:
+                self.handle_log(logging.INFO, f"[{self.instance_name}] Reconnection attempt {retry_attempts + 1} to {self.device.name}...")
+                await self.client.connect(timeout=10)
+                self.handle_log(logging.INFO, f"[{self.instance_name}] Reconnected to {self.device.name} ({self.device.address})")
+
+                # Reinitialize the device (if necessary)
+                await self.client.start_notify(self.TX_CHARACTERISTIC_UUID, self.handle_rx)
+
+                retry_attempts = 0  # Reset retry attempts on success
+                return  # Exit the loop on successful reconnection
+            except Exception as e:
+                retry_attempts += 1
+                self.handle_log(logging.WARNING, f"[{self.instance_name}] Reconnection attempt {retry_attempts} failed: {e}")
+                await asyncio.sleep(backoff)
+                backoff *= 2  # Exponential backoff
+
+        # Exit conditions
+        if retry_attempts >= max_retries:
+            self.handle_log(logging.ERROR, f"[{self.instance_name}] Failed to reconnect to {self.device.name} after {max_retries} attempts.")
+        elif not self.reconnect:
+            self.handle_log(logging.INFO, f"[{self.instance_name}] Reconnection attempts stopped by the user.")
+        elif self.client.is_connected:
+            self.handle_log(logging.INFO, f"[{self.instance_name}] Already connected to {self.device.name}. Exiting reconnection loop.")
+
+    # BLE Device Disconnect
+    # ---------------------
+
+    @pyqtSlot()
+    def on_disconnectDeviceRequest(self):
+        self.schedule_async(self._disconnectDeviceRequest())
+
+    async def _disconnectDeviceRequest(self):
         """
-        reads all bytes from the serial buffer
+        Handles disconnection requests from the user.
+        Ensures clean disconnection and updates the application state.
         """
-        startTime = time.perf_counter()
-        if self._ser_open:
-            bytes_to_read = self.ser.in_waiting
-            if bytes_to_read:
-                byte_array = self.ser.read(bytes_to_read)
-                self.totalCharsReceived += bytes_to_read
-                endTime = time.perf_counter()
-                self.logger.log(
-                    logging.DEBUG,
-                    "[SER {}]: read {} bytes in {} ms.".format(
-                        int(QThread.currentThreadId()),
-                        bytes_to_read,
-                        1000 * (endTime - startTime),
-                    ),
-                )
-                return byte_array
+        self.reconnect = False  # Stop reconnection attempts
+
+        if not self.client or not self.client.is_connected:
+            self.handle_log(logging.WARNING, f"[{self.instance_name}] No active connection to disconnect.")
+            self.disconnectingSuccess.emit(False)
+            return
+
+        if getattr(self, "disconnecting", False):
+            self.handle_log(logging.WARNING, f"[{self.instance_name}] Disconnection already in progress.")
+            return
+
+        self.disconnecting = True  # Set disconnection flag
+        try:
+            await self.client.disconnect()
+            self.handle_log(logging.INFO, f"[{self.instance_name}] Disconnected from device: {self.device.name} ({self.device.address})")
+            # Reset client 
+            self.client = None
+            self.device = None
+            # Emit success signal
+            self.disconnectingSuccess.emit(True)
+        except Exception as e:
+            self.handle_log(logging.ERROR, f"[{self.instance_name}] Error during disconnection: {e}")
+            self.disconnectingSuccess.emit(False)
+        finally:
+            self.disconnecting = False  # Reset disconnection flag
+
+    # BLE Device Pair
+    # ---------------
+
+    @pyqtSlot(str,str)
+    def on_pairDeviceRequest(self, mac: str, pin: str):
+        """Pair with the currently selected device."""
+
+        if self.bluetoothctlWrapper is None:
+            # Initialize BluetoothctlWrapper (assumes BluetoothctlWrapper is defined elsewhere)
+            self.bluetoothctlWrapper = BluetoothctlWrapper("bluetoothctl")
+            self.bluetoothctlWrapper.log_signal.connect(self.handle_log)
+            self.bluetoothctlWrapper.start()
+            time_elapsed = self.wait_for_signal(self.bluetoothctlWrapper.startup_completed_signal) * 1000
+            self.handle_log(logging.INFO, f"[{self.instance_name}] bluetoothctl wrapper started in {time_elapsed:.2f} ms.")
+
+        if mac is not None and self.bluetoothctlWrapper:
+            self.bluetoothctlWrapper.device_pair_succeeded_signal.connect(self._on_pairing_successful)
+            self.bluetoothctlWrapper.device_pair_failed_signal.connect(self._on_pairing_failed)
+            self.bluetoothctlWrapper.pair(mac=mac, pin=pin, timeout=5000, scantime=1000)
+        else:
+            self.handle_log(logging.ERROR, f"[{self.instance_name}] No device selected or BluetoothctlWrapper not available.")
+
+    def _on_pairing_successful(self, mac: str):
+        self.pairingSuccess.emit(True)
+        try:
+            self.bluetoothctlWrapper.device_pair_succeeded_signal.disconnect(self._on_pairing_successful)
+            self.bluetoothctlWrapper.device_pair_failed_signal.disconnect(self._on_pairing_failed)
+        except:
+            pass
+        self.handle_log(logging.INFO, f"[{self.instance_name}] Paired with {self.device.name if self.device else mac}")
+
+        # Cleanup bluetoothctl
+        if self.bluetoothctlWrapper:
+            self.bluetoothctlWrapper.stop()
+            self.bluetoothctlWrapper = None
+            self.handle_log(logging.INFO, f"[{self.instance_name}] Bluetoothctl stopped.")
+
+    def _on_pairing_failed(self, mac: str):
+        self.pairingSuccess.emit(False)
+        try:
+            self.bluetoothctlWrapper.device_pair_succeeded_signal.disconnect(self._on_pairing_successful)
+            self.bluetoothctlWrapper.device_pair_failed_signal.disconnect(self._on_pairing_failed)
+        except:
+            pass
+        self.handle_log(logging.ERROR, f"[{self.instance_name}] Pairing with {self.device.name if self.device else mac} unsuccessful")
+
+        # Cleanup bluetoothctl
+        if self.bluetoothctlWrapper:
+            self.bluetoothctlWrapper.stop()
+            self.bluetoothctlWrapper = None
+            self.handle_log(logging.INFO, f"[{self.instance_name}] Bluetoothctl stopped.")
+
+    # BLE Device Remove
+    # -----------------
+
+    @pyqtSlot(str)
+    def on_removeDeviceRequest(self, mac: str):
+        """Remove the currently selected device from known devices."""
+
+        if self.bluetoothctlWrapper is None:
+            # Initialize BluetoothctlWrapper (assumes BluetoothctlWrapper is defined elsewhere)
+            self.bluetoothctlWrapper = BluetoothctlWrapper("bluetoothctl")
+            self.bluetoothctlWrapper.log_signal.connect(self.handle_log)
+            self.bluetoothctlWrapper.start()
+            time_elapsed = self.wait_for_signal(self.bluetoothctlWrapper.startup_completed_signal) * 1000
+            self.handle_log(logging.INFO, f"[{self.instance_name}] bluetoothctl wrapper started in {time_elapsed:.2f} ms.")
+
+        if mac is not None:
+            if self.device:
+                # disconnect from device before we remove it from the system
+                if mac == self.device.address:
+                    self.on_disconnectDeviceRequest()
+            # remove device from the system
+            if self.bluetoothctlWrapper:
+                self.bluetoothctlWrapper.device_remove_succeeded_signal.connect(self._on_removing_successful)
+                self.bluetoothctlWrapper.device_remove_failed_signal.connect(self._on_removing_failed)
+                self.bluetoothctlWrapper.remove(mac=mac, timeout=5000)
+                self.handle_log(logging.WARNING, f"[{self.instance_name}] BluetoothctlWrapper initiated device {mac} removal.")
             else:
-                endTime = time.perf_counter()
-                self.logger.log(
-                    logging.DEBUG, 
-                    "[SER {}]: end of read, buffer empty. tic toc {}.".format(
-                        int(QThread.currentThreadId()), endTime-startTime))
-                return b""
+                self.handle_log(logging.WARNING, f"[{self.instance_name}] BluetoothctlWrapper not available.")
         else:
-            self.logger.log(
-                logging.ERROR,
-                "[SER {}]: serial port not available.".format(
-                    int(QThread.currentThreadId())
-                ),
-            )
-            return b""
+            self.handle_log(logging.WARNING, f"[{self.instance_name}] No device selected or BluetoothctlWrapper not available.")
 
-    def readline(self) -> bytes:
-        """
-        reads one line of text
-        deals with partial lines when line termination is not found in buffer
-        """
-        startTime = time.perf_counter()
-        if self._ser_open:
-            _line = self.ser.read_until(self._eol)  # _line includes the delimiter
-            self.totalCharsReceived += len(_line)
-            if _line:
-                # received text
-                if _line.endswith(self._eol):
-                    # have complete line
-                    if self.havePartialLine:
-                        # merge previous partial line with current line
-                        line = self.partialLine + _line[: -self._leneol]
-                        self.havePartialLine = False
-                        self.partialLine = b""
-                    else:
-                        line = _line[: -self._leneol]
-                else:
-                    # have partial line
-                    self.partialLine = _line  # save partial line
-                    self.havePartialLine = True
-                    line = b""
-            endTime = time.perf_counter()
-            self.logger.log(
-                logging.DEBUG,
-                "[SER {}]: read line in {} ms.".format(
-                    int(QThread.currentThreadId()), 1000 * (endTime - startTime)
-                ),
-            )
-            return line.rstrip(self._eol)
+    def _on_removing_successful(self, mac: str):
+        self.removalSuccess.emit(True)
+        try:
+            self.bluetoothctlWrapper.device_remove_succeeded_signal.disconnect(self._on_removing_successful)
+            self.bluetoothctlWrapper.device_remove_failed_signal.disconnect(self._on_removing_failed)
+        except:
+            pass
+        self.handle_log(logging.INFO, f"[{self.instance_name}] Device {self.device.name if self.device else mac} removed")
+        self.device = None
+
+        # Cleanup bluetoothctl
+        if self.bluetoothctlWrapper:
+            self.bluetoothctlWrapper.stop()
+            self.bluetoothctlWrapper = None
+            self.handle_log(logging.INFO, f"[{self.instance_name}] Bluetoothctl stopped.")
+
+    def _on_removing_failed(self, mac: str):
+        self.removalSuccess.emit(False)
+        try:
+            self.bluetoothctlWrapper.device_remove_succeeded_signal.disconnect(self._on_removing_successful)
+            self.bluetoothctlWrapper.device_remove_failed_signal.disconnect(self._on_removing_failed)
+        except:
+            pass
+        self.handle_log(logging.ERROR, f"[{self.instance_name}] Device {self.device.name if self.device else mac} removal unsuccessful")
+
+        # Cleanup bluetoothctl
+        if self.bluetoothctlWrapper:
+            self.bluetoothctlWrapper.stop()
+            self.bluetoothctlWrapper = None
+            self.handle_log(logging.INFO, f"[{self.instance_name}] Bluetoothctl stopped.")
+
+    # BLE Trust Device
+    # ----------------
+
+    @pyqtSlot(str)
+    def on_trustDeviceRequest(self, mac: str):
+        """Trust the currently selected device."""
+        if self.bluetoothctlWrapper is None:
+            # Initialize BluetoothctlWrapper (assumes BluetoothctlWrapper is defined elsewhere)
+            self.bluetoothctlWrapper = BluetoothctlWrapper("bluetoothctl")
+            self.bluetoothctlWrapper.log_signal.connect(self.handle_log)
+            self.bluetoothctlWrapper.start()
+            time_elapsed = self.wait_for_signal(self.bluetoothctlWrapper.startup_completed_signal) * 1000
+            self.handle_log(logging.INFO, f"[{self.instance_name}] bluetoothctl wrapper started in {time_elapsed:.2f} ms.")
+
+        if mac is not None and self.bluetoothctlWrapper:
+            self.bluetoothctlWrapper.device_trust_succeeded_signal.connect(self._on_trust_successful)
+            self.bluetoothctlWrapper.device_trust_failed_signal.connect(self._on_trust_failed)
+            self.bluetoothctlWrapper.trust(mac=mac, timeout=2000)
         else:
-            self.logger.log(
-                logging.ERROR,
-                "[SER {}]: serial port not available.".format(
-                    int(QThread.currentThreadId())
-                ),
-            )
-            return b""
+            self.handle_log(logging.ERROR, f"[{self.instance_name}] No device selected or BluetoothctlWrapper not available.")
 
-    def readlines(self) -> list:
-        """
-        Reads the serial buffer and converts it into lines of text.
+    def _on_trust_successful(self, mac: str):
+        self.trustSuccess.emit(True)
+        try:
+            self.bluetoothctlWrapper.device_trust_succeeded_signal.disconnect(self._on_trust_successful)
+            self.bluetoothctlWrapper.device_trust_failed_signal.disconnect(self._on_trust_failed)
+        except:
+            pass
+        self.handle_log(logging.INFO, f"[{self.instance_name}] Trusted {self.device.name if self.device else mac}")
 
-        1. Read all bytes from the serial buffer.
-        2. Find the rightmost position of the line termination characters.
-        3. If line termination is found:
-          3.1 Split the byte array into lines.
-          3.2 Merge any existing partial line with the first line.
-          3.3 Handle partial delimiters by splitting the merged line.
-          3.4 Store any remainder as the new partial line.
-        4. If no line termination is found, add the byte array to the partial line array.
-        """
+        # Cleanup bluetoothctl
+        if self.bluetoothctlWrapper:
+            self.bluetoothctlWrapper.stop()
+            self.bluetoothctlWrapper = None
+            self.handle_log(logging.INFO, f"[{self.instance_name}] Bluetoothctl stopped.")
 
-        lines = []
-        startTime = time.perf_counter()
+    def _on_trust_failed(self, mac: str):
+        self.trustSuccess.emit(False)
+        try:
+            self.bluetoothctlWrapper.device_trust_succeeded_signal.disconnect(self._on_trust_successful)
+            self.bluetoothctlWrapper.device_trust_failed_signal.disconnect(self._on_trust_failed)
+        except:
+            pass
+        self.handle_log(logging.ERROR, f"[{self.instance_name}] Pairing with {self.device.name if self.device else mac} unsuccessful")
 
-        if self._ser_open:
-            try:
-                bytes_to_read = self.ser.in_waiting
-                if bytes_to_read > 0:
-                    byte_array = self.ser.read(bytes_to_read)
-                    self.totalCharsReceived += bytes_to_read
-                else:
-                    return []  # Return empty list if buffer is empty
+        # Cleanup bluetoothctl
+        if self.bluetoothctlWrapper:
+            self.bluetoothctlWrapper.stop()
+            self.bluetoothctlWrapper = None
+            self.handle_log(logging.INFO, f"[{self.instance_name}] Bluetoothctl stopped.")
 
-                idx = byte_array.rfind(self._eol)
-                if idx == -1:
-                    # No delimiter found, add to partial line
-                    self.partialLine += byte_array
-                    self.havePartialLine = True
-                else:
-                    # Delimiter found, split byte array into lines
-                    lines = byte_array.split(self._eol)
+    # BLE Distrust Device
+    # -------------------
 
-                    if self.havePartialLine:
-                        # Merge previous partial line with the first line
-                        merged_line = self.partialLine + lines[0]
-                        lines = merged_line.split(self._eol) + lines[1:]
-                        self.havePartialLine = False
-                        self.partialLine = b""
-
-                    # Check for remaining bytes after the last delimiter
-                    e = idx + self._leneol
-                    if e < len(byte_array):
-                        # Remainder exists, set as new partial line
-                        self.partialLine = byte_array[e:]
-                        self.havePartialLine = True
-                        lines = lines[:-1]  # Remove the partial line from the list
-
-                    # Remove empty lines at the start or end
-                    if lines:
-                        if lines[-1] == b"":   lines = lines[:-1]
-                        if lines[0]  == b"":   lines = lines[1:]
-
-                endTime = time.perf_counter()
-                self.logger.log(
-                    logging.DEBUG,
-                    "[SER {}]: read {} bytes in {} ms.".format(
-                        int(QThread.currentThreadId()),
-                        bytes_to_read,
-                        1000 * (endTime - startTime),
-                    ),
-                )
-
-                return lines
-            except:
-                self.logger.log(
-                    logging.DEBUG, 
-                    "[SER {}]: could not read from port.".format(
-                        int(QThread.currentThreadId())
-                    )
-                )
-                return []
-        else:
-            self.logger.log(
-                logging.ERROR,
-                "[SER {}]: serial port not available.".format(
-                    int(QThread.currentThreadId())
-                ),
-            )
-            return []
-
-    def write(self, byte_array: bytes) -> int:
-        """ 
-        sends an array of bytes over the serial port
-        """
-        if self._ser_open:
-            try:
-                l = self.ser.write(byte_array)
-                self.totalCharsSent += l
-                if DEBUGSERIAL:
-                    l_ba = len(byte_array)
-                    decimal_values = " ".join(str(byte) for byte in byte_array)
-                    self.logger.log(
-                        logging.DEBUG,
-                        "[SER write {}]: wrote {} of {} bytes. {}".format(
-                            int(QThread.currentThreadId()), l, l_ba, decimal_values
-                        ),
-                    )
-                return l
-            except:
-                self.logger.log(
-                    logging.ERROR,
-                    "[SER write {}]: failed to write with timeout {}.".format(
-                        int(QThread.currentThreadId()), self.timeout
-                    ),
-                )
-                return l
-        else:
-            self.logger.log(
-                logging.ERROR,
-                "[SER write {}]: serial Port not available.".format(
-                    int(QThread.currentThreadId())
-                ),
-            )
-            return 0
-
-    def writeline(self, byte_array: bytes) -> int:
-        """ 
-        sends an array of bytes and adds eol 
-        """
-        if self._ser_open:
-            try:
-                l = self.ser.write(byte_array + self._eol)
-                self.totalCharsSent += l
-                if DEBUGSERIAL:
-                    l_ba = len(byte_array)
-                    l_eol = len(self._eol)
-                    decimal_values = " ".join(str(byte) for byte in byte_array)
-                    self.logger.log(
-                        logging.DEBUG,
-                        "[SER writeline {}]: wrote {} of {}+{} bytes. {}".format(
-                            int(QThread.currentThreadId()),
-                            l,
-                            l_ba,
-                            l_eol,
-                            decimal_values,
-                        ),
-                    )
-                return l
-            except:
-                self.logger.log(
-                    logging.ERROR,
-                    "[SER writeline {}]: failed to write with timeout {}.".format(
-                        int(QThread.currentThreadId()), self.timeout
-                    ),
-                )
-                return l
-        else:
-            self.logger.log(
-                logging.ERROR,
-                "[SER writeline {}]: serial port not available.".format(
-                    int(QThread.currentThreadId())
-                ),
-            )
-            return 0
-
-    def writelines(self, lines: list) -> int:
-        """ 
-        sends several lines of text and appends eol to each line
-        """
-        byte_array = self._eol.join(line for line in lines)
-        if self._ser_open:
-            try:
-                l = self.ser.write(byte_array)
-                self.totalCharsSent += l
-                if DEBUGSERIAL:
-                    self.logger.log(
-                        logging.DEBUG,
-                        "[SER {}]: wrote {} chars.".format(
-                            int(QThread.currentThreadId()), l
-                        ),
-                    )
-                return l
-            except:
-                self.logger.log(
-                    logging.ERROR,
-                    "[SER {}]: failed to write with timeout {}.".format(
-                        int(QThread.currentThreadId()), self.timeout
-                    ),
-                )
-                return l
-        else:
-            self.logger.log(
-                logging.ERROR,
-                "[SER {}]: serial port not available.".format(
-                    int(QThread.currentThreadId())
-                ),
-            )
-            return 0
-
-    def avail(self) -> int:
-        """ 
-        is there data in the serial receiving buffer? 
-        """
-        if self._ser_open:
-            return self.ser.in_waiting
-        else:
-            return -1
-
-    def clear(self):
-        """
-        clear serial buffers
-        we want to clear not flush
-        """
-        if self._ser_open:
-            self.ser.reset_input_buffer()
-            self.ser.reset_output_buffer()
-            self.totalCharsReceived = 0
-            self.totalCharsSent = 0
+    @pyqtSlot(str)
+    def on_distrustDeviceRequest(self, mac: str):
+        """Remove the currently selected device from known devices."""
+        if self.bluetoothctlWrapper is None:
+            # Initialize BluetoothctlWrapper (assumes BluetoothctlWrapper is defined elsewhere)
+            self.bluetoothctlWrapper = BluetoothctlWrapper("bluetoothctl")
+            self.bluetoothctlWrapper.log_signal.connect(self.handle_log)
+            self.bluetoothctlWrapper.start()
+            time_elapsed = self.wait_for_signal(self.bluetoothctlWrapper.startup_completed_signal) * 1000
+            self.handle_log(logging.INFO, f"[{self.instance_name}] bluetoothctl wrapper started in {time_elapsed:.2f} ms.")
             
-
-    def _setDTR(self, state):
-        """ 
-        template for setting DTR 
-        """
-        self.ser.setDTR(state)
-
-    def _setRTS(self, state):
-        """
-        template for setting RTS
-        """
-        self.ser.setRTS(state)
-        # Work-around for adapters on Windows using the usbser.sys driver:
-        # generate a dummy change to DTR so that the set-control-line-state
-        # request is sent with the updated RTS state and the same DTR state
-        self.ser.setDTR(self.ser.dtr)
-
-    def _setDTRandRTS(self, dtr=False, rts=False):
-        """
-        template for setting DTR and RTS on UNIX
-        """
-        status = struct.unpack(
-            "I", fcntl.ioctl(self.ser.fileno(), TIOCMGET, struct.pack("I", 0))
-        )[0]
-        if dtr:
-            status |=  TIOCM_DTR
+        if mac is not None:
+            if self.bluetoothctlWrapper:
+                self.bluetoothctlWrapper.device_distrust_succeeded_signal.connect(self._on_distrust_successful)
+                self.bluetoothctlWrapper.device_distrust_failed_signal.connect(self._on_distrust_failed)
+                self.bluetoothctlWrapper.distrust(mac=mac, timeout=2000)
+                self.handle_log(logging.WARNING, f"[{self.instance_name}] BluetoothctlWrapper initiated device {mac} distrust.")
+            else:
+                self.handle_log(logging.WARNING, f"[{self.instance_name}] BluetoothctlWrapper not available.")
         else:
-            status &= ~TIOCM_DTR
-        if rts:
-            status |=  TIOCM_RTS
-        else:
-            status &= ~TIOCM_RTS
-        fcntl.ioctl(self.ser.fileno(), TIOCMSET, struct.pack("I", status))
+            self.handle_log(logging.WARNING, f"[{self.instance_name}] No device selected or BluetoothctlWrapper not available.")
 
-        # Sparkfun ESP32 Thing Plus Schematic Notes:
-        #
-        # - If DTR is LOW, toggling RTS from HIGH to LOW resets to run mode
-        # - If RTS is HIGH, toggling DTR from LOW to HIGH resets to boot loader
-        #
-        # DTR and RTS are active low signals
-        # DTR is connected to GPIO_0
-        # RTS is connected to EN
-        # GPIO0, when low during reset enters firmware upload mode
-        # EN / CHIP_PU, when high normal operation, when driven low and released high resets the chip 
+    def _on_distrust_successful(self, mac: str):
+        self.distrustSuccess.emit(True)
+        try:
+            self.bluetoothctlWrapper.device_distrust_succeeded_signal.disconnect(self._on_distrust_successful)
+            self.bluetoothctlWrapper.device_distrust_failed_signal.disconnect(self._on_distrust_failed)
+        except:
+            pass
+        self.handle_log(logging.INFO, f"[{self.instance_name}] Device {self.device.name if self.device else mac} distrusted")
 
-    def espClassicReset_Bootloader(self):
-        """
-        Reset sequence for classic resetting the ESP chip.
-        """
-        self._setDTR(False)  # IO=HIGH
-        self._setRTS(True)   # EN=LOW, chip in reset
-        time.sleep(0.1)
-        self._setDTR(True)   # IO=LOW
-        self._setRTS(False)  # EN=HIGH, chip out of reset
-        time.sleep(self.reset_delay)
-        self._setDTR(False)  # IO=HIGH, done
+        # Cleanup bluetoothctl
+        if self.bluetoothctlWrapper:
+            self.bluetoothctlWrapper.stop()
+            self.bluetoothctlWrapper = None
+            self.handle_log(logging.INFO, f"[{self.instance_name}] Bluetoothctl stopped.")
 
-    def espUnixReset_Bootloader(self):
-        """
-        UNIX-only reset sequence setting DTR and RTS lines at the same time.
-        """
-        self._setDTRandRTS(False, False)
-        self._setDTRandRTS(True,  True)
-        self._setDTRandRTS(False, True)  # IO0=HIGH & EN=LOW, chip in reset
-        time.sleep(0.1)
-        self._setDTRandRTS(True,  False) # IO0=LOW & EN=HIGH, chip out of reset
-        time.sleep(self.reset_delay)
-        self._setDTRandRTS(False, False) # IO0=HIGH, done
-        self._setDTR(False)  # Needed in some environments to ensure IO0=HIGH
+    def _on_distrust_failed(self, mac: str):
+        self.distrustSuccess.emit(False)
+        try:
+            self.bluetoothctlWrapper.device_distrust_succeeded_signal.disconnect(self._on_distrust_successful)
+            self.bluetoothctlWrapper.device_distrust_failed_signal.disconnect(self._on_distrust_failed)
+        except:
+            pass
+        self.handle_log(logging.ERROR, f"[{self.instance_name}] Device {self.device.name if self.device else mac} distrusted unsuccessful")
 
-    def espHardReset(self):
-        """
-        Reset sequence for hard resetting the chip.
-        Can be used to reset out of the bootloader or to restart a running app.
-        If DTR is LOW, toggeling RTS from HIGH to LOW resets to run mode
-        """
-        self._setDTR(False)  # IO0=HIGH
-        self._setRTS(False)  # EN->HIGH
-        time.sleep(0.2)
-        self._setRTS(True)  # EN->LOW
-        # Give the chip some time to come out of reset,
-        # to be able to handle further DTR/RTS transitions
-        time.sleep(0.2)
-        self._setRTS(False)
-        time.sleep(0.2)
+        # Cleanup bluetoothctl
+        if self.bluetoothctlWrapper:
+            self.bluetoothctlWrapper.stop()
+            self.bluetoothctlWrapper = None
+            self.handle_log(logging.INFO, f"[{self.instance_name}] Bluetoothctl stopped.")
 
-
-    # Setting and reading internal variables
+    # Response Functions for Sending & Receiving (Transceiver)
     ########################################################################################
 
-    @property
-    def ports(self):
-        """ returns list of ports """
-        return self._ports
+    # Send Text
+    # ---------
 
-    @property
-    def baudrates(self):
-        """ returns list of baudrates """
-        if self._ser_open:
-            if max(self.ser.BAUDRATES) <= 115200:
-                # add higher baudrates to the list
-                return self.ser.BAUDRATES + (
-                    230400,
-                    250000,
-                    460800,
-                    500000,
-                    921600,
-                    1000000,
-                    2000000,
-                )
-            return self.ser.BAUDRATES
+    @pyqtSlot(bytes)
+    def on_sendTextRequest(self, text: bytes):
+        self.schedule_async(self._sendTextRequest(text=text))
+
+    async def _sendTextRequest(self, text: bytes):
+        """Send provided text over BLE."""
+        if text and self.client and self.client.is_connected:
+            for i in range(0, len(text), self.BLEpayloadSize):
+                chunk = text[i:i+self.BLEpayloadSize]
+                await self.client.write_gatt_char(self.RX_CHARACTERISTIC_UUID, chunk, response=False)
+                self.bytes_sent += len(chunk)
+            self.handle_log(logging.INFO, f"[{self.instance_name}] Sent: {text}")
         else:
-            return ()
+            self.handle_log(logging.ERROR, f"[{self.instance_name}] Not connected or no data to send.")
 
-    @property
-    def connected(self):
-        """ return true if connected """
-        return self._ser_open
+    # Send Line/s
+    # -----------
+    @pyqtSlot(bytes)
+    def on_sendLineRequest(self, line: bytes):
+        self.schedule_async( self._sendLineRequest(line))
 
-    @property
-    def port(self):
-        """ returns current port """
-        if self._ser_open:
-            return self._port
+    async def _sendLineRequest(self, line: bytes):
+        """Send a single line of text (with EOL) over BLE."""
+        if self.eol:
+            await self._sendTextRequest(line + self.eol)
         else:
-            return ""
+            await self._sendTextRequest(line)
 
-    @port.setter
-    def port(self, val):
-        """ sets serial port """
-        if (val is None) or (val == ""):
-            self.logger.log(
-                logging.WARNING,
-                "[SER {}]: No port given {}.".format(
-                    int(QThread.currentThreadId()), val
-                ),
-            )
-            return
-        else:
-            # change the port, clears the buffers
-            if self.changeport(self, val, self.baud, self.eol, self.timeout, self.esp_reset):
-                self.logger.log(
-                    logging.DEBUG,
-                    "[SER {}]: port:{}.".format(int(QThread.currentThreadId()), val),
-                )
-                self._port = val
+    @pyqtSlot(list)
+    def on_sendLinesRequest(self, lines: list):
+        self.schedule_async(self._sendLinesRequest(lines))
+
+    async def on_sendLinesRequest(self, lines: list):
+        """Send multiple lines of text over BLE."""
+        for line in lines:
+            await self._sendLineRequest(line)
+
+    # Send File
+    # ---------
+    @pyqtSlot(str)
+    def on_sendFileRequest(self, fname: str):
+        self.schedule_async(self._sendFileRequest(fname))
+
+    async def _sendFileRequest(self, fname: str):
+        """Transmit a file to the BLE device."""
+        if self.client and self.client.is_connected:
+            if fname:
+                try:
+                    with open(fname, "rb") as f:
+                        data = f.read()
+                        if not data:
+                            self.handle_log(logging.WARNING, f'File "{fname}" is empty.')
+                            return
+                        file_size = len(data)
+                        self.handle_log(logging.INFO, f'Starting transmission of "{fname}" ({file_size} bytes).')
+
+                        for i in range(0, len(data), self.BLEpayloadSize):
+                            chunk = data[i:i+self.BLEpayloadSize]
+                            try:
+                                await self.client.write_gatt_char(
+                                    self.RX_CHARACTERISTIC_UUID, 
+                                    chunk, 
+                                    response=False
+                                )
+                                self.bytes_sent += len(chunk)
+                            except Exception as e:
+                                self.handle_log(logging.ERROR, f'Error transmitting chunk at offset {i}: {e}.')
+                                break
+
+                        self.handle_log(logging.INFO, f'Finished transmission of "{fname}".')
+
+                except FileNotFoundError:
+                    self.handle_log(logging.ERROR, f'File "{fname}" not found.')
+                except Exception as e:
+                    self.handle_log(logging.ERROR, f'Unexpected error transmitting "{fname}": {e}')
             else:
-                self.logger.log(
-                    logging.ERROR,
-                    "[SER {}]: failed to open port {}.".format(
-                        int(QThread.currentThreadId()), val
-                    ),
-                )
-
-    @property
-    def baud(self):
-        """ returns current serial baudrate """
-        if self._ser_open:
-            return self._baud
+                self.handle_log(logging.WARNING, f"[{self.instance_name}] No file name provided.")
         else:
-            return -1
+            self.handle_log(logging.ERROR, f"[{self.instance_name}] BLE client not available or not connected.")
 
-    @baud.setter
-    def baud(self, val):
-        """ sets serial baud rate """
-        if (val is None) or (val <= 0):
-            self.logger.log(
-                logging.WARNING,
-                "[SER {}]: baudrate not changed to {}.".format(
-                    int(QThread.currentThreadId()), val
-                ),
-            )
+    # Receive Text
+    # ------------    
+    def handle_rx(self, sender, data: bytes):
+        """Handle incoming data from BLE device."""
+        if not data:
             return
-        if self._ser_open:
-            self.ser.baudrate = val  # set new baudrate
-            self._baud = self.ser.baudrate  # request baudrate
-            if self._baud == val:
-                self.logger.log(
-                    logging.DEBUG,
-                    "[SER {}]: baudrate:{}.".format(
-                        int(QThread.currentThreadId()), val
-                    ),
-                )
-            else:
-                self.logger.log(
-                    logging.ERROR,
-                    "[SER {}]: failed to set baudrate to {}.".format(
-                        int(QThread.currentThreadId()), val
-                    ),
-                )
-            # clear buffers
-            self.ser.reset_input_buffer()
-            self.ser.reset_output_buffer()
+
+        self.bytes_received += len(data)
+
+        if self.eol:
+            # EOL-based parsing
+            if self.partial_line:
+                data = self.partial_line + data
+                self.partial_line = b""
+
+            lines = data.split(self.eol)
+            if not data.endswith(self.eol):
+                self.partial_line = lines.pop()
+
+            if lines:
+                self.receivedLines.emit(lines)
         else:
-            self.logger.log(
-                logging.ERROR,
-                "[SER {}]: failed to set baudrate, serial port not open!".format(
-                    int(QThread.currentThreadId())
-                ),
-            )
+            self.receivedData.emit(data)
 
-    @property
-    def eol(self):
-        """ returns current line termination """
-        return self._eol
-
-    @eol.setter
-    def eol(self, val):
-        """ sets serial ioWrapper line termination """
-        if val is None:
-            self.logger.log(
-                logging.WARNING,
-                "[SER {}]: EOL not changed, need to provide string.".format(
-                    int(QThread.currentThreadId())
-                ),
-            )
-            return
-        else:
-            self._eol = val
-            # self._eol = ""
-            self.logger.log(
-                logging.ERROR, 
-                "[SER {}]: EOL: {}".format(int(QThread.currentThreadId()), repr(val))
-            )
-
-    @property
-    def esp_reset(self):
-        """ returns current line termination """
-        return self._esp_reset
-        
-    @esp_reset.setter
-    def esp_reset(self, val):
-        """ sets serial ioWrapper line termination """
-        if (val is None):
-            self.logger.log(
-                logging.WARNING, 
-                "[SER {}]: ESP reset not changed, need to provide true or false.".format(
-                    int(QThread.currentThreadId())
-                )
-            )
-            return
-        else:
-            self._esp_reset = val
-            self.logger.log(
-                logging.ERROR, 
-                "[SER {}]: ESP reset: {}".format(
-                    int(QThread.currentThreadId()), repr(val)
-                )
-            )
-
-    @property
-    def timeout(self):
-        """ returns current serial timeout """
-        return self._timeout
 
 #####################################################################################
 # Testing

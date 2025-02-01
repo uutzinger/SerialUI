@@ -94,7 +94,7 @@
           <property name="orientation">
            <enum>Qt::Horizontal</enum>
           </property>
-          <widget class="QLineEdit" name="lineEdit_SerialText">
+          <widget class="QLineEdit" name="lineEdit_Text">
            <property name="sizePolicy">
             <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
              <horstretch>1</horstretch>
@@ -121,7 +121,7 @@
             </font>
            </property>
           </widget>
-          <widget class="QPushButton" name="pushButton_SerialSend">
+          <widget class="QPushButton" name="pushButton_SendFile">
            <property name="sizePolicy">
             <sizepolicy hsizetype="Minimum" vsizetype="Fixed">
              <horstretch>0</horstretch>
@@ -155,7 +155,7 @@
          </widget>
         </item>
         <item>
-         <widget class="QPlainTextEdit" name="plainTextEdit_SerialTextDisplay">
+         <widget class="QPlainTextEdit" name="plainTextEdit_Text">
           <property name="sizePolicy">
            <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
             <horstretch>1</horstretch>
@@ -1961,7 +1961,7 @@
         </item>
        </layout>
       </widget>
-      <widget class="QLineEdit" name="throughput">
+      <widget class="QLineEdit" name="label_throughput">
        <property name="minimumSize">
         <size>
          <width>200</width>

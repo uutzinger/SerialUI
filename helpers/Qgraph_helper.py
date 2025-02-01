@@ -14,6 +14,9 @@
 import logging, time
 import re
 
+# Numerical Math
+import numpy as np
+
 # QT Libraries
 try:
     from PyQt6.QtCore import (
@@ -40,15 +43,21 @@ except:
 
 # QT Graphing for chart plotting
 import pyqtgraph as pg
-import pyqtgraph.exporters
-
-# Numerical Math
-import numpy as np
 
 try:
     from helpers.Qgraph_colors import color_names_sweet16 as COLORS
 except:
     from Qgraph_colors import color_names_sweet16 as COLORS
+
+########################################################################################
+# Debug
+DEBUGCHART = False
+# try:
+#     import debugpy
+#     DEBUGPY_ENABLED = True
+# except ImportError:
+#     DEBUGPY_ENABLED = False
+
 
 # Constants
 ########################################################################################
@@ -234,13 +243,13 @@ class QChartUI(QObject):
     The vertical axis is auto scaled to the max and minimum values of the data.
 
     Slots (functions available to respond to external signals)
-        on_pushButton_StartStop
-        on_pushButton_Clear
+        on_pushButton_ChartStartStop
+        on_pushButton_ChartClear
         on_pushButton_ChartSave
         on_pushButton_ChartSaveFigure
         on_HorizontalSliderChanged(int)
         on_HorizontalLineEditChanged
-        on_SerialReceivedLines(list)
+        on_receivedLines(list)
         on_changeDataSeparator
 
     Functions
@@ -265,22 +274,27 @@ class QChartUI(QObject):
         else:
             self.logger = logger
 
+        if parent is not None:
+            # user parents logger if available
+            if hasattr(parent, "handle_log"):
+                self.handle_log = parent.handle_log
+
         if ui is None:
-            self.logger.log(
+            self.handle_log(
                 logging.ERROR,
                 f"[{self.thread_id}]: Need to have access to User Interface"
             )
         self.ui = ui
 
         if serialUI is None:
-            self.logger.log(
+            self.handle_log(
                 logging.ERROR,
                 f"[{self.thread_id}]: Need to have access to Serial User Interface"
             )
         self.serialUI = serialUI
 
         if serialWorker is None:
-            self.logger.log(
+            self.handle_log(
                 logging.ERROR,
                 f"[{self.thread_id}]: Need to have access to Serial Worker"
             )
@@ -346,7 +360,7 @@ class QChartUI(QObject):
         self.textDataSeparator = 'No Labels (simple)'                                 # default data separator
         index = self.ui.comboBoxDropDown_DataSeparator.findText("No Labels (simple)") # find default data separator in drop down
         self.ui.comboBoxDropDown_DataSeparator.setCurrentIndex(index)                 # update data separator combobox
-        self.logger.log(
+        self.handle_log(
             logging.DEBUG, 
             f"[{int(QThread.currentThreadId())}]: Data separator {repr(self.textDataSeparator)}."
         )
@@ -358,7 +372,7 @@ class QChartUI(QObject):
         self.ChartTimer.setInterval(50)  # milliseconds, we can not see more than 50 Hz, it takes about 4ms to update plot
         self.ChartTimer.timeout.connect(self.updatePlot)
 
-        self.logger.log(
+        self.handle_log(
             logging.INFO, 
             f"[{self.thread_id}]: Initialized."
         )
@@ -366,6 +380,9 @@ class QChartUI(QObject):
     # Utility functions
     ########################################################################################
 
+    def handle_log(self, level, message):
+        self.logger.log(level, message)
+    
     def cleanup(self):
         """
         Cleanup the chart UI.
@@ -379,7 +396,7 @@ class QChartUI(QObject):
             self.ChartTimer.timeout.disconnect()
         self.data_line.clear()
         self.chartWidget.clear()
-        self.logger.log(
+        self.handle_log(
             logging.INFO, 
             f"[{self.thread_id}]: cleaned up."
         )
@@ -454,10 +471,12 @@ class QChartUI(QObject):
             self.chartWidget.setYRange(min_y, max_y)
 
         toc = time.perf_counter()
-        self.logger.log(
-            logging.DEBUG,
-            f"[{self.thread_id}]: Plot updated in {1000 * (toc - tic):.2f} ms"
-        )
+
+        if DEBUGCHART:
+            self.handle_log(
+                logging.DEBUG,
+                f"[{self.thread_id}]: Plot updated in {1000 * (toc - tic):.2f} ms"
+            )
 
     ########################################################################################
     # Process Lines Function without Headers
@@ -484,7 +503,7 @@ class QChartUI(QObject):
                 try:
                     segment_data = np.array(segment.split(), dtype=float)
                 except:
-                    self.logger.log(
+                    self.handle_log(
                         logging.ERROR,
                         f"[{self.thread_id}]: Could not convert '{segment}' to float. Line '{line}'. "
                     )
@@ -684,7 +703,7 @@ class QChartUI(QObject):
     ########################################################################################
 
     @pyqtSlot(list)
-    def on_SerialReceivedLines(self, lines: list):
+    def on_receivedLines(self, lines: list):
         """
         Decode/Parse a list of lines for data and add it to the circular buffer
         """
@@ -701,29 +720,35 @@ class QChartUI(QObject):
             self.process_lines(lines, encoding = self.encoding)
 
         else:
-            self.logger.log(
+            self.handle_log(
                 logging.WARNING,
                 f"[{self.thread_id}]: Data separator {repr(self.textDataSeparator)} not available."
             )
 
         toc = time.perf_counter()
-        self.logger.log(
-            logging.DEBUG,
-            f"[{self.thread_id}]: Data points received: parsing took {1000 * (toc - tic)} ms"
-        )        
+
+        if DEBUGCHART:
+            self.handle_log(
+                logging.DEBUG,
+                f"[{self.thread_id}]: Data points received: parsing took {1000 * (toc - tic)} ms"
+            )        
+
+    @pyqtSlot(list)
+    def on_receivedData(self, byte_array: bytes):
+        pass
 
     @pyqtSlot()
     def on_changeDataSeparator(self):
         ''' user wants to change the data separator '''
         self.textDataSeparator = self.ui.comboBoxDropDown_DataSeparator.currentText()
-        self.logger.log(
+        self.handle_log(
             logging.INFO, 
             f"[{self.thread_id}]: Data separator {self.textDataSeparator}"
         )
         self.ui.statusBar().showMessage('Data Separator changed.', 2000)            
 
     @pyqtSlot()
-    def on_pushButton_StartStop(self):
+    def on_pushButton_ChartStartStop(self):
         """
         Start/Stop plotting
 
@@ -733,16 +758,14 @@ class QChartUI(QObject):
         if self.ui.pushButton_ChartStartStop.text() == "Start":
             # We want to start plotting
             if self.serialUI.textLineTerminator == "":
-                self.logger.log(
+                self.handle_log(
                     logging.ERROR,
                     f"[{self.thread_id}]: Plotting of of raw data not yet supported"
                 )
                 return
             self.plottingRunning.emit(True)
             self.ChartTimer.start()
-            self.ui.pushButton_ChartStartStop.setText("Stop")
-
-            self.logger.log(
+            self.handle_log(
                 logging.INFO,
                 f"[{self.thread_id}]: Start plotting"
             )
@@ -751,16 +774,14 @@ class QChartUI(QObject):
             # We want to stop plotting
             self.ChartTimer.stop()
             self.plottingRunning.emit(False)
-            self.ui.pushButton_ChartStartStop.setText("Start")
-
-            self.logger.log(
+            self.handle_log(
                 logging.INFO,
                 f"[{self.thread_id}]: Stopped plotting"
             )
             self.ui.statusBar().showMessage("Chart update stopped.", 2000)
 
     @pyqtSlot()
-    def on_pushButton_Clear(self):
+    def on_pushButton_ChartClear(self):
         """
         Clear Plot
 
@@ -769,7 +790,7 @@ class QChartUI(QObject):
         # clear plot
         self.buffer.clear()
         self.updatePlot()
-        self.logger.log(
+        self.handle_log(
             logging.INFO,
             f"[{self.thread_id}]: Cleared plotted data."
         )
@@ -788,7 +809,7 @@ class QChartUI(QObject):
             self.ui, "Save as", stdFileName, "Text files (*.txt)"
         )
         np.savetxt(fname, self.buffer.data, delimiter=",")
-        self.logger.log(
+        self.handle_log(
             logging.INFO,
             f"[{self.thread_id}]: Saved plotted data."
         )
@@ -821,7 +842,7 @@ class QChartUI(QObject):
             exporter.export(fname)
 
         except Exception as e:
-            self.logger.log(
+            self.handle_log(
                 logging.ERROR,
                 f"[{self.thread_id}]: Error saving chart."
             )
@@ -829,7 +850,7 @@ class QChartUI(QObject):
             if was_running:
                 self.ChartTimer.start()  # Ensure the timer restarts if something goes wrong
 
-        self.logger.log(
+        self.handle_log(
             logging.INFO,
             f"[{self.thread_id}]: Chart saved as {fname}."
         )
@@ -854,10 +875,11 @@ class QChartUI(QObject):
         self.horizontalSlider.blockSignals(True)
         self.horizontalSlider.setValue(int(value))
         self.horizontalSlider.blockSignals(False)
-        self.logger.log(
-            logging.DEBUG,
-            f"[{self.thread_id}]: Horizontal zoom set to {value}."
-        )
+        if DEBUGCHART:
+            self.handle_log(
+                logging.DEBUG,
+                f"[{self.thread_id}]: Horizontal zoom set to {value}."
+            )
         self.updatePlot()
 
     @pyqtSlot()
@@ -868,13 +890,13 @@ class QChartUI(QObject):
         """
         sender = self.sender() # obtain the name of the sender of the signal so we can access its text
         if sender is None:
-            self.logger.log(logging.WARNING, f"[{self.thread_id}]: No sender found for Horizontal Line Edit change.")
+            self.handle_log(logging.WARNING, f"[{self.thread_id}]: No sender found for Horizontal Line Edit change.")
             return
 
         try:
             value = int(sender.text().strip())  # Strip spaces to prevent errors
         except ValueError:
-            self.logger.log(logging.WARNING, f"[{self.thread_id}]: Invalid input in Horizontal Line Edit.")
+            self.handle_log(logging.WARNING, f"[{self.thread_id}]: Invalid input in Horizontal Line Edit.")
             return  # Exit without applying changes if input is invalid
 
         # Ensure value is within the allowed range
@@ -891,10 +913,11 @@ class QChartUI(QObject):
 
         self.maxPoints = value  # Update maxPoints
 
-        self.logger.log(
-            logging.DEBUG,
-            f"[{self.thread_id}]: Horizontal zoom line edit set to {value}."
-        )
+        if DEBUGCHART:
+            self.handle_log(
+                logging.DEBUG,
+                f"[{self.thread_id}]: Horizontal zoom line edit set to {value}."
+            )
 
         self.updatePlot()
 

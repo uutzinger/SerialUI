@@ -14,21 +14,20 @@
 # Need to rewrite code. I can not run bluetoothctl wrapper with Bleak simultaneously. 
 # I need to start it up each time I use trust/distrust, pair/remove, status.
 
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
 # Basic libraries
 import sys
 import os
 import re
 import logging
 import time
-import warnings
 import platform
-
-warnings.filterwarnings("ignore", category=DeprecationWarning)
-
-# Other standard libraries
+from markdown import markdown    
 from datetime import datetime
 from types import SimpleNamespace
-from markdown import markdown    
+
 
 # Qt library
 try:
@@ -105,6 +104,10 @@ if not PYQT6:
         QtWidgets.QApplication.setAttribute(QtCore.Qt.ApplicationAttribute.AA_EnableHighDpiScaling, True)
     if hasattr(QtCore.Qt.ApplicationAttribute, "AA_UseHighDpiPixmaps"):
         QtWidgets.QApplication.setAttribute(QtCore.Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)
+
+# Future release will include option for displaying data in indicators
+#  and 3D vector plots.
+USE3DPLOT = False
 
 ##########################################################################################################################################        
 ##########################################################################################################################################        
@@ -1801,19 +1804,22 @@ class MainWindow(QMainWindow):
     This is the Viewer  of the Model - View - Controller (MVC) architecture.
     """
 
-    def wait_for_signal(self, signal) -> float:
-        """Utility to wait until a signal is emitted."""
-        tic = time.perf_counter()
-        loop = QEventLoop()
-        signal.connect(loop.quit)
-        loop.exec()
-        return time.perf_counter() - tic
 
     # -------------------------------------------------------------------------------------
     # Initialize
     # -------------------------------------------------------------------------------------
 
     def __init__(self, logger=None):
+        """
+        Initialize the components of the main window.
+        This will create the connections between slots and signals in both directions.
+
+        BLESerial:
+        Create serial BLE worker and move it to separate thread.
+
+        Serial Plotter:
+        Create chart user interface object.
+        """
         super().__init__()
 
         if logger is None:
@@ -1830,22 +1836,25 @@ class MainWindow(QMainWindow):
 
         self.instance_name = self.objectName() if self.objectName() else self.__class__.__name__
 
+        self.isDisplaying = False
+        self.isPlotting   = False
+
         # Stream Processors
         self.binaryStream  = BinaryStreamProcessor(eop=b'\x00', logger = self.logger)
-        self.arduinoStream = ArduinoTextStreamProcessor(eol=b'\n', encoding='utf-8', logger=self.logger)
 
         # ----------------------------------------------------------------------------------------------------------------------
         # User Interface
         # ----------------------------------------------------------------------------------------------------------------------
 
+        # Create an empty container object
+        self.ui = SimpleNamespace()
+        # self.ui = uic.loadUi("assets/BLEserialUI.ui", self)
         icon_path = os.path.join(main_dir, "assets", "BLE_48.png")
         window_icon = QIcon(icon_path)
         self.setWindowIcon(QIcon(window_icon))
         self.setWindowTitle("BLE Serial GUI")
 
-        # Create an empty container object
-        self.ui = SimpleNamespace()
-        # self.ui = uic.loadUi("assets/BLEserialUI.ui", self)
+        # Creating the user interface manually for now
 
         # Text Areas
         self.ui.plainTextEdit_Log                = QTextEdit(self)    # BLE logs
@@ -1993,8 +2002,29 @@ class MainWindow(QMainWindow):
         self.ui.plainTextEdit_Log.setTextCursor(self.ui.logCursor)
         self.ui.plainTextEdit_Log.ensureCursorVisible()
 
+
+        # Find the tabs and connect to tab change
         # ----------------------------------------------------------------------------------------------------------------------
-        # Worker & Thread
+        self.tabs = self.findChild(QTabWidget, "tabWidget_MainWindow")
+        self.tabs.currentChanged.connect(self.on_tab_change)
+
+        # 3D plot windows
+        # ----------------------------------------------------------------------------------------------------------------------
+
+        # if USE3DPLOT ==  True:
+        #     self.ui.ThreeD_1.setEnabled(True)
+        #     self.ui.ThreeD_2.setEnabled(True)
+        #     self.ui.ThreeD_3.setEnabled(True)
+        #     self.ui.ThreeD_4.setEnabled(True)
+        # else:
+        #     self.ui.ThreeD_1.setEnabled(False)
+        #     self.ui.ThreeD_2.setEnabled(False)
+        #     self.ui.ThreeD_3.setEnabled(False)
+        #     self.ui.ThreeD_4.setEnabled(False)
+
+
+        # ----------------------------------------------------------------------------------------------------------------------
+        # BLE Serial Worker & Thread
         # ----------------------------------------------------------------------------------------------------------------------
 
         self.bleWorkerThread = QThread()                                                # create QThread object
@@ -2014,6 +2044,8 @@ class MainWindow(QMainWindow):
         # ---------------------------------
         self.bleWorker.receivedData.connect(            self.bleUI.on_receivedData)          # connect text display to BLE receiver signal
         self.bleWorker.receivedLines.connect(           self.bleUI.on_receivedLines)         # connect text display to BLE receiver signal
+        self.bleWorker.finished.connect(                self.bleUI.workerFinished)           # connect worker finished signal to BLE UI
+
         self.bleWorker.deviceListReady.connect(         self.bleUI.on_deviceListReady)       # connect new port list to its ready signal
         self.bleWorker.statusReady.connect(             self.bleUI.on_statusReady)           # connect 
         self.bleWorker.throughputReady.connect(         self.bleUI.on_throughputReady)       # connect display throughput status
@@ -2023,10 +2055,9 @@ class MainWindow(QMainWindow):
         self.bleWorker.connectingSuccess.connect(       self.bleUI.on_connectingSuccess)     # connect connecting status to BLE UI
         self.bleWorker.disconnectingSuccess.connect(    self.bleUI.on_disconnectingSuccess)  # connect disconnecting status to BLE UI
         self.bleWorker.removalSuccess.connect(          self.bleUI.on_removalSuccess)        # connect removal status to BLE UI
-        self.bleWorker.logSignal.connect(               self.bleUI.on_logSignal)             # connect log messages to BLE UI
         self.bleWorker.setupBLEWorkerFinished.connect(  self.bleUI.setupBLEWorkerFinished)   # connect setupBLEWorkerFinished signal to BLE UI
         self.bleWorker.setupTransceiverFinished.connect(self.bleUI.setupTransceiverFinished) # connect setupTransceiverFinished signal to BLE UI
-        self.bleWorker.finished.connect(                self.bleUI.workerFinished)           # connect worker finished signal to BLE UI
+        self.bleWorker.logSignal.connect(               self.bleUI.on_logSignal)             # connect log messages to BLE UI
 
         # Signals from BLE-UI to BLE Worker
         # ---------------------------------
@@ -2046,7 +2077,11 @@ class MainWindow(QMainWindow):
         self.bleUI.setupTransceiverRequest.connect(     self.bleWorker.on_setupTransceiverRequest)
         self.bleUI.finishWorkerRequest.connect(         self.bleWorker.on_finishWorkerRequest)
         self.bleUI.stopTransceiverRequest.connect(      self.bleWorker.on_stopTransceiverRequest)
-        
+
+        # Signals from BLESerial-UI to Main
+        # ---------------------------------
+        self.bleUI.displayingRunning.connect(     self.handle_SerialReceiverRunning)
+
         # Signals from User Interface to BLESerial-UI
         # -------------------------------------------
         # Connect Buttons
@@ -2066,12 +2101,63 @@ class MainWindow(QMainWindow):
         self.ui.comboBoxDropDown_DataSeparator.currentIndexChanged.connect(      self.bleUI.on_comboBoxDropDown_DataSeparator)
         #
         # User hit up/down arrow in BLE lineEdit
-        self.ui.shortcutUpArrow   = QShortcut(QKeySequence.MoveToPreviousLine,   self.ui.lineEdit_Text, self.bleUI.on_upArrowPressed)
-        self.ui.shortcutDownArrow = QShortcut(QKeySequence.MoveToNextLine,       self.ui.lineEdit_Text, self.bleUI.on_downArrowPressed)
-        #
+        self.ui.shortcutUpArrow   = QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Up),   self.ui.lineEdit_Text, self.bleUI.on_upArrowPressed)
+        self.ui.shortcutDownArrow = QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Down), self.ui.lineEdit_Text, self.bleUI.on_downArrowPressed)
+        
         # User hit carriage return in BLE lineEdit
         self.ui.lineEdit_Text.returnPressed.connect(                              self.bleUI.on_carriageReturnPressed) # Send text as soon as enter key is pressed
-        
+
+
+
+        # # ----------------------------------------------------------------------------------------------------------------------
+        # # Serial Plotter
+        # # ----------------------------------------------------------------------------------------------------------------------
+        # # Create user interface hook for chart plotting
+        # self.chartUI = QChartUI(ui=self.ui, serialUI=self.serialUI, serialWorker=self.serialWorker)  # create chart user interface object
+
+        # # Signals from Chart-UI to Main
+        # # ---------------------------------
+        # self.chartUI.plottingRunning.connect(                self.handle_SerialReceiverRunning)
+
+        # self.ui.pushButton_ChartStartStop.clicked.connect(  self.chartUI.on_pushButton_StartStop)
+        # self.ui.pushButton_ChartClear.clicked.connect(      self.chartUI.on_pushButton_Clear)
+        # self.ui.pushButton_ChartSave.clicked.connect(       self.chartUI.on_pushButton_ChartSave)
+        # self.ui.pushButton_ChartSaveFigure.clicked.connect( self.chartUI.on_pushButton_ChartSaveFigure)
+
+        # self.ui.comboBoxDropDown_DataSeparator.currentIndexChanged.connect(self.chartUI.on_changeDataSeparator)
+
+        # # Horizontal Zoom
+        # self.horizontalSlider_Zoom = self.ui.findChild(QSlider, "horizontalSlider_Zoom")
+        # self.horizontalSlider_Zoom.setMinimum(8)
+        # self.horizontalSlider_Zoom.setMaximum(MAX_ROWS)
+        # self.horizontalSlider_Zoom.valueChanged.connect(    self.chartUI.on_HorizontalSliderChanged)
+
+        # self.lineEdit_Zoom = self.ui.findChild(QLineEdit, "lineEdit_Horizontal")
+        # self.lineEdit_Zoom.returnPressed.connect(           self.chartUI.on_HorizontalLineEditChanged)
+
+        # # Done with Plotter
+        # self.logger.log(
+        #     logging.INFO,
+        #     f"[{int(QThread.currentThreadId())}]: Plotter initialized."
+        # )
+
+        # # ----------------------------------------------------------------------------------------------------------------------
+        # # Menu Bar
+        # # ----------------------------------------------------------------------------------------------------------------------
+        # # Connect the action_about action to the show_about_dialog slot
+        # self.ui.action_About.triggered.connect(self.show_about_dialog)
+        # self.ui.action_Help.triggered.connect( self.show_help_dialog)
+
+        # # ----------------------------------------------------------------------------------------------------------------------
+        # # Status Bar
+        # # ----------------------------------------------------------------------------------------------------------------------
+        # self.statusTimer = QTimer(self)
+        # self.statusTimer.timeout.connect(self.on_resetStatusBar)
+        # self.statusTimer.start(10000)  # Trigger every 10 seconds
+
+        # Getting UI and Worker Running
+        # -----------------------------
+                
         # Move the BLE Worker to its thread and start it
         self.bleWorker.moveToThread(self.bleWorkerThread)
         self.bleWorkerThread.start()  
@@ -2090,6 +2176,96 @@ class MainWindow(QMainWindow):
         self.bleUI.scanDevicesRequest.emit()       # request to scan for BLE ports
 
         self.show()
+
+
+    def wait_for_signal(self, signal) -> float:
+        """Utility to wait until a signal is emitted."""
+        tic = time.perf_counter()
+        loop = QEventLoop()
+        signal.connect(loop.quit)
+        loop.exec()
+        return time.perf_counter() - tic
+
+    def on_tab_change(self, index):
+        """
+        Respond to tab change event
+        """
+        tab_name = self.tabs.tabText(index)
+        if tab_name == "Monitor":
+            self.ui.plainTextEdit_SerialTextDisplay.verticalScrollBar().setValue(self.ui.plainTextEdit_SerialTextDisplay.verticalScrollBar().maximum())
+            self.ui.plainTextEdit_SerialTextDisplay.ensureCursorVisible()
+        elif tab_name == "Plotter":
+            pass
+        elif tab_name == "Indicator":
+            pass
+        else:
+            try:
+                self.logger.log(
+                    logging.ERROR,
+                    "[{}]: unknown tab name: {}".format(
+                        int(QThread.currentThreadId()), tab_name
+                    ),
+                )
+            except:
+                pass
+
+    def handle_SerialReceiverRunning(self, running):
+        """
+        Handle the serial receiver running state.
+        
+        When text display is requested we connect the signals from the serial worker to the display function
+        When charting is requested, we connect the signals from the serial worker to the charting function
+        
+        When either displaying or charting is requested we start the serial text receiver and the throughput calculator
+        If neither of them is requested we stop the serial text receiver
+        """
+        sender = self.sender()  # Get the sender object
+        self.logger.log(logging.DEBUG, f"handle_SerialReceiverRunning called by {sender}")
+
+        # Plotting --------------------------------------
+        if sender == self.chartUI:
+            if running and not self.isPlotting:
+                self.serialWorker.linesReceived.connect(        self.chartUI.on_SerialReceivedLines) # connect chart display to serial receiver signal
+              # self.serialWorker.textReceived.connect(         self.chartUI.on_SerialReceivedText)  # connect chart display to serial receiver signal
+            elif not running and self.isPlotting:
+                try:
+                    self.serialWorker.linesReceived.disconnect( self.chartUI.on_SerialReceivedLines) # disconnect chart display to serial receiver signal
+                  # self.serialWorker.textReceived.disconnect(  self.chartUI.on_SerialReceivedText)  # disconnect chart display to serial receiver signal
+                except:
+                    self.logger.log(logging.ERROR, "disconnect to chartUI.on_SerialReceivedLines failed")
+
+            self.isPlotting = running
+
+        # Displaying --------------------------------------
+        elif sender == self.serialUI:
+            if running and not self.isDisplaying:
+                self.serialWorker.linesReceived.connect(        self.serialUI.on_SerialReceivedLines) # connect text display to serial receiver signal
+                self.serialWorker.textReceived.connect(         self.serialUI.on_SerialReceivedText)  # connect text display to serial receiver signal
+            elif not running and self.isDisplaying:
+                try:
+                    self.serialWorker.linesReceived.disconnect( self.serialUI.on_SerialReceivedLines) # disconnect text display to serial receiver signal
+                    self.serialWorker.textReceived.disconnect(  self.serialUI.on_SerialReceivedText)  # disconnect text display to serial receiver signal
+                except:
+                    self.logger.log(logging.ERROR, "disconnect to serialUI.on_SerialReceivedLines failed")
+            else:
+                pass
+
+            self.isDisplaying = running
+            
+        else:
+            # Signal should not move from other than SerialUI or ChartUI
+            pass
+
+        # Start or Stop the serial receiver ---------------
+        #   If we neither plot nor display incoming data we dont need to run the serial worker
+        if not (self.isPlotting or self.isDisplaying):
+            self.serialUI.stopReceiverRequest.emit()     # emit signal to finish worker
+        else:
+        #   If we are plotting or displaying data we need to run the serial worker        
+            self.serialUI.startReceiverRequest.emit()
+        #   We also need to run the throughput calculator
+            QTimer.singleShot(50,lambda: self.serialUI.startThroughputRequest.emit())
+
 
     def show_about_dialog(self):
         # Information to be displayed
@@ -2138,28 +2314,43 @@ class MainWindow(QMainWindow):
         Respond to window close event.
         Close the device, stop the BLE worker thread.
         """
+
         self.logger.info(f"[{self.instance_name}] Finishing worker ...")
-        self.bleUI.finishWorkerRequest.emit()
-        time_elapsed = self.wait_for_signal(self.bleUI.workerFinished) * 1000    
-        self.logger.info(f"[{self.instance_name}] Worker finished in {time_elapsed:.2f} ms.")
-        
+        if self.bleWorker:
+            if self.bleUI:
+                self.bleUI.finishWorkerRequest.emit()
+                time_elapsed = self.wait_for_signal(self.bleUI.workerFinished) * 1000    
+                self.logger.info(f"[{self.instance_name}] Worker finished in {time_elapsed:.2f} ms.")
+            else:
+                self.logger.log(
+                    logging.ERROR,
+                    f"[{int(QThread.currentThreadId())}]: bleUI not initialized."
+                )
+        else:
+            self.logger.log(
+                logging.ERROR,
+                f"[{int(QThread.currentThreadId())}]: bleWorker not initialized."
+            )
+
+            
         self.logger.info([f"{self.instance_name}] Stopping worker thread..."])
         self.bleWorkerThread.quit()
         self.bleWorkerThread.wait()
         self.logger.info(f"[{self.instance_name}] Worker thread stopped")
 
         # Request cleanup of QBLESerialUI
+        # Check if this needs to go first
         self.bleUI.cleanup()
+        self.chartUI.cleanup()
+
 
         event.accept()
-        
-###############################################################################################################################
-#
+#############################################################################################################################################        
 #    Main
-#
-################################################################################################################################
+#############################################################################################################################################
 
 if __name__ == "__main__":
+
     # set logging level
     # CRITICAL  50
     # ERROR     40

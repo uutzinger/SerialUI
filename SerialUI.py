@@ -9,6 +9,17 @@
 # This code is maintained by Urs Utzinger
 #############################################################################################################################################
 
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
+# Basic libraries
+import sys
+import os
+import logging
+import time
+from markdown import markdown
+from datetime import datetime
+
 # QT imports, QT5 or QT6
 try:
     from PyQt6 import QtCore, QtWidgets, QtGui, uic
@@ -16,34 +27,29 @@ try:
     from PyQt6.QtWidgets import (
         QMainWindow, QLineEdit, QSlider, 
         QMessageBox, QDialog, QVBoxLayout, 
-        QTextEdit, QTabWidget,
+        QTextEdit, QTabWidget, QShortcut
     )
-    from PyQt6.QtGui import QIcon, QShortcut, QKeySequence
+    from PyQt6.QtGui import QIcon, QKeySequence
     hasQt6 = True
 except:
     from PyQt5 import QtCore, QtWidgets, QtGui, uic
-    from PyQt5.QtCore import QThread, QTimer, QEventLoop
+    from PyQt5.QtCore import QThread, QTimer, QEventLoop, Qt
     from PyQt5.QtWidgets import (
         QMainWindow, QLineEdit, QSlider, 
         QMessageBox, QDialog, QVBoxLayout, 
-        QTextEdit, QTabWidget
+        QTextEdit, QTabWidget, QShortcut
     )
     from PyQt5.QtGui import QIcon, QTextCursor, QPalette, QColor
     hasQt6 = False
 
-# Markdown for documentation
-from markdown import markdown    
-
-# System
-import logging, os, sys
-from datetime import datetime
-
 # Custom program specific imports
-from helpers.Qserial_helper     import QSerial, QSerialUI, USBMonitorWorker
+from helpers.Qserial_helper     import QSerial, QSerialUI, USBMonitorWorker, QPlainTextEditExtended
 from helpers.Qgraph_helper      import QChartUI, MAX_ROWS
+from helpers.Codec_helper       import BinaryStreamProcessor
 
+
+# Deal with high resolution displays
 if not hasQt6:
-    # Deal with high resolution displays
     if hasattr(QtCore.Qt.ApplicationAttribute, "AA_EnableHighDpiScaling"):
         QtWidgets.QApplication.setAttribute(QtCore.Qt.ApplicationAttribute.AA_EnableHighDpiScaling, True)
     if hasattr(QtCore.Qt.ApplicationAttribute, "AA_UseHighDpiPixmaps"):
@@ -51,7 +57,27 @@ if not hasQt6:
 
 # Future release will include option for displaying data in indicators
 #  and 3D vector plots.
+
+########################################################################################
+# Debug
+DEBUGRECEIVER = False # enable/disable low level serial debugging
+# try:
+#     import debugpy
+#     DEBUGPY_ENABLED = True
+# except ImportError:
+#     DEBUGPY_ENABLED = False
+
+# Constants
+########################################################################################
 USE3DPLOT = False
+DEBUG_LEVEL = logging.INFO
+# logging level and priority
+# CRITICAL  50
+# ERROR     40
+# WARNING   30
+# INFO      20
+# DEBUG     10
+# NOTSET     0
 
 #############################################################################################################################################
 #############################################################################################################################################
@@ -66,6 +92,12 @@ USE3DPLOT = False
 class mainWindow(QMainWindow):
     """
     Create the main window that stores all of the widgets necessary for the application.
+
+    QSerial:
+    Create serial worker and move it to separate thread.
+
+    Serial Plotter:
+    Create chart user interface object.
     """
 
     # ----------------------------------------------------------------------------------------------------------------------
@@ -84,17 +116,22 @@ class mainWindow(QMainWindow):
         Create chart user interface object.
         """
         super(mainWindow, self).__init__(parent)  # parent constructor
+        # super().__init__()
 
         if logger is None:
-            self.logger = logging.getLogger("Main___")
+            self.logger = logging.getLogger("QMain")
         else:
             self.logger = logger
         
-
         main_dir = os.path.dirname(os.path.abspath(__file__))
+
+        self.instance_name = self.objectName() if self.objectName() else self.__class__.__name__
 
         self.isDisplaying = False
         self.isPlotting   = False
+
+       # Stream Processors
+        self.binaryStream  = BinaryStreamProcessor(eop=b'\x00', logger = self.logger)
 
         # ----------------------------------------------------------------------------------------------------------------------
         # User Interface
@@ -124,93 +161,124 @@ class mainWindow(QMainWindow):
             self.ui.ThreeD_3.setEnabled(False)
             self.ui.ThreeD_4.setEnabled(False)
 
+        # Configure Drop Down Menus
+        # ----------------------------------------------------------------------------------------------------------------------
+
+        # Find the index of "none"
+        idx = self.ui.comboBoxDropDown_LineTermination.findText("none")
+        if idx != -1:
+            self.ui.comboBoxDropDown_LineTermination.setCurrentIndex(idx)
+        self.textLineTerminator = b""
+
+        # Find the index of "none"
+        idx = self.ui.comboBoxDropDown_DataSeparator.findText("No Labels (simple)")
+        if idx != -1:
+            self.ui.comboBoxDropDown_DataSeparator.setCurrentIndex(idx)
+        self.textDataSeparator = 'No Labels (simple)'  
+
+        # Configure the Buttons
+        # ----------------------------------------------------------------------------------------------------------------------
+        self.ui.pushButton_SerialStartStop.setText("Start")
+        self.ui.pushButton_SerialOpenClose.setText("Open")
+        self.ui.pushButton_ChartStartStop.setText("Start")
+
+        self.ui.pushButton_SerialScan.setEnabled(True)
+        self.ui.pushButton_SerialOpenClose.setEnabled(False)
+        self.ui.pushButton_SerialStartStop.setEnabled(False)
+        self.ui.pushButton_SendFile.setEnabled(False)
+        self.ui.pushButton_SerialClearOutput.setEnabled(True)
+        self.ui.pushButton_SerialSave.setEnabled(True)
+        self.ui.pushButton_SerialOpenClose.setEnabled(False)
+        self.ui.pushButton_ChartStartStop.setEnabled(False)
+        self.ui.pushButton_ChartClear.setEnabled(True)
+        self.ui.pushButton_ChartSave.setEnabled(True)
+        self.ui.pushButton_ChartSaveFigure.setEnabled(True)
+
         #----------------------------------------------------------------------------------------------------------------------
-        # Serial
+        # Serial Worker & Thread
         # ----------------------------------------------------------------------------------------------------------------------
 
         # Serial Thread
-        self.serialThread = QThread()                                      # create QThread object
-        self.serialThread.start()                                          # start thread which will start worker
-
+        self.serialWorkerThread = QThread()                                                             # create QThread object
+        self.serialWorkerThread.start()                                                                 # start thread which will start worker
+        
         # Create serial worker
-        self.serialWorker = QSerial()                                      # create serial worker object
+        self.serialWorker = QSerial()                                                                   # create serial worker object
 
         # Create user interface hook for serial
-        self.serialUI = QSerialUI(ui=self.ui, worker=self.serialWorker, logger=self.logger)    # create serial user interface object
+        self.serialUI = QSerialUI(ui=self.ui, worker=self.serialWorker, logger=self.logger)             # create serial user interface object
 
-        # Connect worker / thread
-        self.serialWorker.finished.connect(self.serialThread.quit)         # if worker emits finished quite worker thread
-        self.serialWorker.finished.connect(self.serialWorker.deleteLater)  # delete worker at some time
-        self.serialThread.finished.connect(self.serialThread.deleteLater)  # delete thread at some time
+        # Connect worker / thread finished
+        self.serialWorker.finished.connect(                 self.serialWorkerThread.quit)               # if worker emits finished quite worker thread
+        self.serialWorker.finished.connect(                 self.serialWorker.deleteLater)              # delete worker at some time
+        self.serialWorkerThread.finished.connect(           self.serialWorkerThread.deleteLater)        # delete thread at some time
+        self.serialWorker.finished.connect(                 self.serialUI.workerFinished)               # connect worker finished signal to BLE UI
 
-        # Signals from Serial to Serial-UI
-        # ---------------------------------
-        self.serialWorker.newPortListReady.connect( self.serialUI.on_newPortListReady)    # connect new port list to its ready signal
-        self.serialWorker.newBaudListReady.connect( self.serialUI.on_newBaudListReady)    # connect new baud list to its ready signal
-        self.serialWorker.serialStatusReady.connect(self.serialUI.on_serialStatusReady)   # connect display serial status to ready signal
-        self.serialWorker.throughputReady.connect(  self.serialUI.on_throughputReceived)  # connect display throughput status
-        self.serialWorker.serialWorkerStateChanged.connect( self.serialUI.on_serialWorkerStateChanged) # mirror serial worker state to serial UI
-        self.serialWorker.logSignal.connect(        self.serialUI.on_logSignal)           # connect log messages to BLE UI
+        # Signals from Serial Worker to Serial-UI
+        # ---------------------------------------
+        self.serialWorker.newPortListReady.connect(         self.serialUI.on_newPortListReady)          # connect new port list to its ready signal
+        self.serialWorker.newBaudListReady.connect(         self.serialUI.on_newBaudListReady)          # connect new baud list to its ready signal
+        self.serialWorker.serialStatusReady.connect(        self.serialUI.on_serialStatusReady)         # connect display serial status to ready signal
+        self.serialWorker.throughputReady.connect(          self.serialUI.on_throughputReady)           # connect display throughput status
+        self.serialWorker.serialWorkerStateChanged.connect( self.serialUI.on_serialWorkerStateChanged)  # mirror serial worker state to serial UI
+        self.serialWorker.logSignal.connect(                self.serialUI.on_logSignal)                 # connect log messages to BLE UI
 
-        # Signals from Serial-UI to Serial
-        # ---------------------------------
-        self.serialUI.changePortRequest.connect(     self.serialWorker.on_changePortRequest)     # connect changing port
-        self.serialUI.closePortRequest.connect(      self.serialWorker.on_closePortRequest)      # connect close port
-        self.serialUI.changeBaudRequest.connect(     self.serialWorker.on_changeBaudRateRequest) # connect changing baud rate
-        self.serialUI.changeLineTerminationRequest.connect(self.serialWorker.on_changeLineTerminationRequest)  # connect changing line termination
-        self.serialUI.scanPortsRequest.connect(      self.serialWorker.on_scanPortsRequest)      # connect request to scan ports
-        self.serialUI.scanBaudRatesRequest.connect(  self.serialWorker.on_scanBaudRatesRequest)  # connect request to scan baud rates
-        self.serialUI.setupReceiverRequest.connect(  self.serialWorker.on_setupReceiverRequest)  # connect start receiver
-        self.serialUI.startReceiverRequest.connect(  self.serialWorker.on_startReceiverRequest)  # connect start receiver
-        self.serialUI.stopReceiverRequest.connect(   self.serialWorker.on_stopReceiverRequest)   # connect start receiver
-        self.serialUI.sendTextRequest.connect(       self.serialWorker.on_sendTextRequest)       # connect sending text
-        self.serialUI.sendLineRequest.connect(       self.serialWorker.on_sendLineRequest)       # connect sending line of text
-        self.serialUI.sendLinesRequest.connect(      self.serialWorker.on_sendLinesRequest)      # connect sending lines of text
-        self.serialUI.serialStatusRequest.connect(   self.serialWorker.on_serialStatusRequest)   # connect request for serial status
-        self.serialUI.finishWorkerRequest.connect(   self.serialWorker.on_stopWorkerRequest)     # connect finish request
-        self.serialUI.startThroughputRequest.connect(self.serialWorker.on_startThroughputRequest) # start throughput
-        self.serialUI.stopThroughputRequest.connect( self.serialWorker.on_stopThroughputRequest) # stop throughput
-        self.serialUI.serialSendFileRequest.connect( self.serialWorker.on_sendFileRequest)       # send file to serial port
+        # Signals from Serial-UI to Serial Worker
+        # ---------------------------------------
+        self.serialUI.changePortRequest.connect(            self.serialWorker.on_changePortRequest)     # connect changing port
+        self.serialUI.closePortRequest.connect(             self.serialWorker.on_closePortRequest)      # connect close port
+        self.serialUI.changeBaudRequest.connect(            self.serialWorker.on_changeBaudRateRequest) # connect changing baud rate
+        self.serialUI.changeLineTerminationRequest.connect( self.serialWorker.on_changeLineTerminationRequest)  # connect changing line termination
+        self.serialUI.scanPortsRequest.connect(             self.serialWorker.on_scanPortsRequest)      # connect request to scan ports
+        self.serialUI.scanBaudRatesRequest.connect(         self.serialWorker.on_scanBaudRatesRequest)  # connect request to scan baud rates
+        self.serialUI.serialStatusRequest.connect(          self.serialWorker.on_serialStatusRequest)   # connect request for serial status
+
+        self.serialUI.sendFileRequest.connect(              self.serialWorker.on_sendFileRequest)       # send file to serial port
+        self.serialUI.sendTextRequest.connect(              self.serialWorker.on_sendTextRequest)       # connect sending text
+        self.serialUI.sendLineRequest.connect(              self.serialWorker.on_sendLineRequest)       # connect sending line of text
+        self.serialUI.sendLinesRequest.connect(             self.serialWorker.on_sendLinesRequest)      # connect sending lines of text
+
+        self.serialUI.setupReceiverRequest.connect(         self.serialWorker.on_setupReceiverRequest)  # connect start receiver
+        self.serialUI.startReceiverRequest.connect(         self.serialWorker.on_startReceiverRequest)  # connect start receiver
+        self.serialUI.stopReceiverRequest.connect(          self.serialWorker.on_stopReceiverRequest)   # connect start receiver
+        self.serialUI.finishWorkerRequest.connect(          self.serialWorker.on_stopWorkerRequest)     # connect finish request
+        self.serialUI.startThroughputRequest.connect(       self.serialWorker.on_startThroughputRequest)# start throughput
+        self.serialUI.stopThroughputRequest.connect(        self.serialWorker.on_stopThroughputRequest) # stop throughput
 
         # Signals from Serial-UI to Main
-        # ---------------------------------
-        self.serialUI.displayingRunning.connect(     self.handle_SerialReceiverRunning)
-
-        # Prepare the Serial Worker and User Interface
-        # --------------------------------------------
-        self.serialWorker.moveToThread(self.serialThread)  # move worker to thread
-        self.serialUI.scanPortsRequest.emit()              # request to scan for serial ports
-        self.serialUI.scanBaudRatesRequest.emit()              # request to scan for serial ports
-        self.serialUI.setupReceiverRequest.emit()          # establishes QTimer in the QThread above
-        # do not initialize baud rate, serial port or line termination, user will need to select at startup
+        # ------------------------------
+        self.serialUI.displayingRunning.connect(            self.handle_SerialReceiverRunning)
 
         # Signals from User Interface to Serial-UI
         # ----------------------------------------
-        # User selected port or baud
-        self.ui.comboBoxDropDown_SerialPorts.currentIndexChanged.connect(    self.serialUI.on_comboBoxDropDown_SerialPorts) # user changed serial port
-        self.ui.comboBoxDropDown_BaudRates.currentIndexChanged.connect(      self.serialUI.on_comboBoxDropDown_BaudRates)   # user changed baud rate
-        self.ui.comboBoxDropDown_LineTermination.currentIndexChanged.connect(self.serialUI.on_comboBoxDropDown_LineTermination) # User changed line termination
+        #
+        # General Buttons
         self.ui.pushButton_SerialScan.clicked.connect(      self.serialUI.on_pushButton_SerialScan)         # Scan for ports
         self.ui.pushButton_SerialStartStop.clicked.connect( self.serialUI.on_pushButton_SerialStartStop)    # Start/Stop serial receive
-        self.ui.pushButton_SerialSend.clicked.connect(      self.serialUI.on_serialSendFile)                # Send text from a file to serial port
-        self.ui.lineEdit_SerialText.returnPressed.connect(  self.serialUI.on_serialMonitorSend)             # Send text as soon as enter key is pressed
+        self.ui.pushButton_SendFile.clicked.connect(        self.serialUI.on_pushButton_SendFile)           # Send text from a file to serial port
         self.ui.pushButton_SerialClearOutput.clicked.connect(self.serialUI.on_pushButton_SerialClearOutput) # Clear serial receive window
         self.ui.pushButton_SerialSave.clicked.connect(      self.serialUI.on_pushButton_SerialSave)         # Save text from serial receive window
         self.ui.pushButton_SerialOpenClose.clicked.connect( self.serialUI.on_pushButton_SerialOpenClose)    # Open/Close serial port
-
+        #
+        # Connect ComboBoxes
+        self.ui.comboBoxDropDown_SerialPorts.currentIndexChanged.connect(    self.serialUI.on_comboBoxDropDown_SerialPorts) # user changed serial port
+        self.ui.comboBoxDropDown_BaudRates.currentIndexChanged.connect(      self.serialUI.on_comboBoxDropDown_BaudRates)   # user changed baud rate
+        self.ui.comboBoxDropDown_LineTermination.currentIndexChanged.connect(self.serialUI.on_comboBoxDropDown_LineTermination) # User changed line termination
+        #
         # User hit up/down arrow in serial lineEdit
-        self.shortcutUpArrow   = QtWidgets.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Up),  self.ui.lineEdit_SerialText, self.serialUI.on_serialMonitorSendUpArrowPressed)
-        self.shortcutDownArrow = QtWidgets.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Down),self.ui.lineEdit_SerialText, self.serialUI.on_serialMonitorSendDownArrowPressed)
+        self.shortcutUpArrow   = QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Up),  self.ui.lineEdit_Text, self.serialUI.on_upArrowPressed)
+        self.shortcutDownArrow = QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Down),self.ui.lineEdit_Text, self.serialUI.on_downArrowPressed)
 
+        self.ui.lineEdit_Text.returnPressed.connect(                              self.serialUI.on_carriageReturnPressed)   # Send text as soon as enter key is pressed
 
         # Radio buttons
-        self.ui.radioButton_ResetESPonOpen.clicked.connect( self.serialUI.on_resetESPonOpen) # Reset ESP32 on open
-        self.ui.radioButton_SerialRecord.clicked.connect( self.serialUI.on_SerialRecord) # Record incoming data to file
+        self.ui.radioButton_ResetESPonOpen.clicked.connect(                      self.serialUI.on_resetESPonOpen) # Reset ESP32 on open
+        self.ui.radioButton_SerialRecord.clicked.connect(                        self.serialUI.on_SerialRecord) # Record incoming data to file
 
         # Done with Serial
         self.logger.log(
             logging.INFO,
-            f"[{int(QThread.currentThreadId())}]: Serial initialized."
+            f"[{self.instance_name[:15]:<15}]: Serial initialized."
         )
 
         # ----------------------------------------------------------------------------------------------------------------------
@@ -223,8 +291,8 @@ class mainWindow(QMainWindow):
         # ---------------------------------
         self.chartUI.plottingRunning.connect(                self.handle_SerialReceiverRunning)
 
-        self.ui.pushButton_ChartStartStop.clicked.connect(  self.chartUI.on_pushButton_StartStop)
-        self.ui.pushButton_ChartClear.clicked.connect(      self.chartUI.on_pushButton_Clear)
+        self.ui.pushButton_ChartStartStop.clicked.connect(  self.chartUI.on_pushButton_ChartStartStop)
+        self.ui.pushButton_ChartClear.clicked.connect(      self.chartUI.on_pushButton_ChartClear)
         self.ui.pushButton_ChartSave.clicked.connect(       self.chartUI.on_pushButton_ChartSave)
         self.ui.pushButton_ChartSaveFigure.clicked.connect( self.chartUI.on_pushButton_ChartSaveFigure)
 
@@ -242,7 +310,7 @@ class mainWindow(QMainWindow):
         # Done with Plotter
         self.logger.log(
             logging.INFO,
-            f"[{int(QThread.currentThreadId())}]: Plotter initialized."
+            f"[{self.instance_name[:15]:<15}]: Plotter initialized."
         )
 
         # ----------------------------------------------------------------------------------------------------------------------
@@ -258,6 +326,15 @@ class mainWindow(QMainWindow):
         self.statusTimer = QTimer(self)
         self.statusTimer.timeout.connect(self.on_resetStatusBar)
         self.statusTimer.start(10000)  # Trigger every 10 seconds
+
+
+        # Getting UI and Worker Running
+        # -----------------------------
+        self.serialWorker.moveToThread(self.serialWorkerThread)  # move worker to thread
+
+        self.serialUI.scanPortsRequest.emit()              # request to scan for serial ports
+        self.serialUI.scanBaudRatesRequest.emit()          # request to scan for serial ports
+        self.serialUI.setupReceiverRequest.emit()          # establishes QTimer in the QThread above
 
         # ----------------------------------------------------------------------------------------------------------------------
         # Finish up
@@ -287,36 +364,47 @@ class mainWindow(QMainWindow):
         # Done USB monitor
         self.logger.log(
             logging.INFO,
-            f"[{int(QThread.currentThreadId())}]: USB monitor initialized."
+            f"[{self.instance_name[:15]:<15}]: USB monitor initialized."
         )
 
+    def wait_for_signal(self, signal) -> float:
+        """Utility to wait until a signal is emitted."""
+        tic = time.perf_counter()
+        loop = QEventLoop()
+        signal.connect(loop.quit)
+        loop.exec()
+        return time.perf_counter() - tic
+    
     def on_tab_change(self, index):
         """
         Respond to tab change event
         """
         tab_name = self.tabs.tabText(index)
+
         if tab_name == "Monitor":
-            self.ui.plainTextEdit_SerialTextDisplay.verticalScrollBar().setValue(self.ui.plainTextEdit_SerialTextDisplay.verticalScrollBar().maximum())
-            self.ui.plainTextEdit_SerialTextDisplay.ensureCursorVisible()
+            scrollbar = self.ui.plainTextEdit_Text.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
+
         elif tab_name == "Plotter":
             pass
+
         elif tab_name == "Indicator":
             pass
+
         else:
-            try:
-                self.logger.log(
-                    logging.ERROR,
-                    "[{}]: unknown tab name: {}".format(
-                        int(QThread.currentThreadId()), tab_name
-                    ),
-                )
-            except:
-                pass
+            self.logger.log(
+                logging.ERROR,
+                f"[{self.instance_name[:15]:<15}]: unknown tab name: {tab_name}"
+            )
+
 
     def handle_usbThread_finished(self):
-        self.logger.log(logging.INFO, "USB monitor thread finished.")
+        self.logger.log(
+            logging.DEBUG,
+            f"[{self.instance_name[:15]:<15}]:USB monitor thread finished."
+        )
 
-    def handle_SerialReceiverRunning(self, running):
+    def handle_SerialReceiverRunning(self, runIt):
         """
         Handle the serial receiver running state.
         
@@ -327,86 +415,103 @@ class mainWindow(QMainWindow):
         If neither of them is requested we stop the serial text receiver
         """
         sender = self.sender()  # Get the sender object
-        self.logger.log(logging.DEBUG, f"handle_SerialReceiverRunning called by {sender}")
+        if DEBUGRECEIVER:
+            self.logger.log(
+                logging.DEBUG,
+                f"[{self.instance_name[:15]:<15}]: handle_SerialReceiverRunning called by {sender} at {time.perf_counter()}."
+            )
 
         # Plotting --------------------------------------
         if sender == self.chartUI:
-            if running and not self.isPlotting:
-                self.serialWorker.linesReceived.connect(        self.chartUI.on_SerialReceivedLines) # connect chart display to serial receiver signal
-              # self.serialWorker.textReceived.connect(         self.chartUI.on_SerialReceivedText)  # connect chart display to serial receiver signal
-            elif not running and self.isPlotting:
+            if runIt and not self.isPlotting:
+                self.serialWorker.receivedLines.connect(        self.chartUI.on_receivedLines) # connect chart display to serial receiver signal
+              # self.serialWorker.receivedData.connect(         self.chartUI.on_receivedData)  # connect chart display to serial receiver signal
+                self.ui.pushButton_ChartStartStop.setText("Stop")
+                if DEBUGRECEIVER:
+                    self.logger.log(
+                        logging.DEBUG,
+                        f"[{self.instance_name[:15]:<15}]: connected signals for charting at {time.perf_counter()}."
+                    )
+            elif not runIt and self.isPlotting:
                 try:
-                    self.serialWorker.linesReceived.disconnect( self.chartUI.on_SerialReceivedLines) # disconnect chart display to serial receiver signal
-                  # self.serialWorker.textReceived.disconnect(  self.chartUI.on_SerialReceivedText)  # disconnect chart display to serial receiver signal
+                    self.serialWorker.receivedLines.disconnect( self.chartUI.on_receivedLines) # disconnect chart display to serial receiver signal
+                  # self.serialWorker.receivedData.disconnect(  self.chartUI.on_receivedData)  # disconnect chart display to serial receiver signal
+                    if DEBUGRECEIVER:
+                        self.logger.log(
+                            logging.DEBUG,
+                            f"[{self.instance_name[:15]:<15}]: disconnected signals for charting at {time.perf_counter()}."
+                        )
                 except:
-                    self.logger.log(logging.ERROR, "disconnect to chartUI.on_SerialReceivedLines failed")
-
-            self.isPlotting = running
+                    self.logger.log(
+                        logging.ERROR,
+                        f"[{self.instance_name[:15]:<15}]: disconnect to signals for charting failed."
+                    )
+                finally:
+                    self.ui.pushButton_ChartStartStop.setText("Start")
+        
+            self.isPlotting = runIt
 
         # Displaying --------------------------------------
         elif sender == self.serialUI:
-            if running and not self.isDisplaying:
-                self.serialWorker.linesReceived.connect(        self.serialUI.on_SerialReceivedLines) # connect text display to serial receiver signal
-                self.serialWorker.textReceived.connect(         self.serialUI.on_SerialReceivedText)  # connect text display to serial receiver signal
-            elif not running and self.isDisplaying:
+            if runIt and not self.isDisplaying:
+                self.serialWorker.receivedLines.connect(        self.serialUI.on_receivedLines) # connect text display to serial receiver signal
+                self.serialWorker.receivedData.connect(         self.serialUI.on_receivedData)  # connect text display to serial receiver signal
+                self.ui.pushButton_SerialStartStop.setText("Stop")
+                if DEBUGRECEIVER:
+                    self.logger.log(
+                        logging.DEBUG,
+                        f"[{self.instance_name[:15]:<15}]: connected signals for text displaying at {time.perf_counter()}."
+                    )
+            elif not runIt and self.isDisplaying:
                 try:
-                    self.serialWorker.linesReceived.disconnect( self.serialUI.on_SerialReceivedLines) # disconnect text display to serial receiver signal
-                    self.serialWorker.textReceived.disconnect(  self.serialUI.on_SerialReceivedText)  # disconnect text display to serial receiver signal
+                    self.serialWorker.receivedLines.disconnect( self.serialUI.on_receivedLines) # disconnect text display to serial receiver signal
+                    self.serialWorker.receivedData.disconnect(  self.serialUI.on_receivedData)  # disconnect text display to serial receiver signal
+                    if DEBUGRECEIVER:
+                        self.logger.log(
+                            logging.DEBUG,
+                            f"[{self.instance_name[:15]:<15}]: disconnected signals for text displaying at {time.perf_counter()}."
+                        )
                 except:
-                    self.logger.log(logging.ERROR, "disconnect to serialUI.on_SerialReceivedLines failed")
+                    self.logger.log(
+                        logging.ERROR,
+                        f"[{self.instance_name[:15]:<15}]: disconnect to signals for text displaying failed."
+                    )
+                finally:
+                    self.ui.pushButton_SerialStartStop.setText("Start")
             else:
                 pass
 
-            self.isDisplaying = running
+            self.isDisplaying = runIt
             
         else:
             # Signal should not move from other than SerialUI or ChartUI
-            pass
+            self.logger.log(
+                logging.ERROR,
+                f"[{self.instance_name[:15]:<15}]: should not end up here, neither serialUI nor chartUI emitted the signal."
+            )
 
         # Start or Stop the serial receiver ---------------
         #   If we neither plot nor display incoming data we dont need to run the serial worker
         if not (self.isPlotting or self.isDisplaying):
-            self.serialUI.stopReceiverRequest.emit()     # emit signal to finish worker
+            # If we are neither plotting nor displaying data we need to stop the serial worker        
+            if self.serialUI.receiverIsRunning:
+                self.serialUI.stopReceiverRequest.emit()     # emit signal to finish worker
+                QTimer.singleShot(50,lambda: self.serialUI.stopThroughputRequest.emit()) # finish throughput calc
+                if DEBUGRECEIVER:
+                    self.logger.log(
+                        logging.DEBUG,
+                        f"[{self.instance_name[:15]:<15}]: stopped receiver as it is not needed {time.perf_counter()}."
+                    )
         else:
-        #   If we are plotting or displaying data we need to run the serial worker        
-            self.serialUI.startReceiverRequest.emit()
-        #   We also need to run the throughput calculator
-            QTimer.singleShot(50,lambda: self.serialUI.startThroughputRequest.emit())
-
-    def closeEvent(self, event):
-        """
-        Respond to window close event.
-        Close the serial port, stop the serial thread and the chart update timer.
-        """
-        self.serialUI.cleanup()  # close serial port and stop thread 
-        self.chartUI.cleanup()  # stop the chart timer
-
-        if self.serialWorker:
-            if self.serialUI:
-                self.serialUI.finishWorkerRequest.emit()     # emit signal to finish worker
-
-                if self.usbWorker:                           # stop the USB monitor thread
-                    self.usbWorker.stop()
-                    self.usbThread.quit()
-
-                try:
-                    loop = QEventLoop()                          # create event loop
-                    self.serialWorker.finished.connect(loop.quit)                                            # connect the loop to finish signal
-                    loop.exec()                              # wait until worker is finished
-                except:
-                    pass
-            else:
-                self.logger.log(
-                    logging.ERROR,
-                    f"[{int(QThread.currentThreadId())}]: serialUI not initialized."
-                )
-        else:
-            self.logger.log(
-                logging.ERROR,
-                f"[{int(QThread.currentThreadId())}]: serialWorker not initialized."
-            )
-
-        event.accept()  # accept the close event to proceed closing the application
+            # If we are plotting or displaying data we need to run the serial worker and throughput calc
+            if not self.serialUI.receiverIsRunning:
+                self.serialUI.startReceiverRequest.emit()
+                QTimer.singleShot(50,lambda: self.serialUI.startThroughputRequest.emit())
+                if DEBUGRECEIVER:
+                    self.logger.log(
+                        logging.DEBUG,
+                        f"[{self.instance_name[:15]:<15}]: started receiver at {time.perf_counter()}."
+                    )
 
     def on_resetStatusBar(self):
         now = datetime.now()
@@ -415,7 +520,7 @@ class mainWindow(QMainWindow):
 
     def show_about_dialog(self):
         # Information to be displayed
-        info_text = "Serial Terminal & Plotter\nVersion: 1.0\nAuthor: Urs Utzinger\n2022,2023,2024"
+        info_text = "Serial Terminal & Plotter\nVersion: 1.0\nAuthor: Urs Utzinger\n2022-2025"
         QMessageBox.about(self, "About Program", info_text) # Create and display the MessageBox
         self.show()
 
@@ -455,6 +560,46 @@ class mainWindow(QMainWindow):
         # Show the dialog
         dialog.exec()
 
+    def closeEvent(self, event):
+        """
+        Respond to window close event.
+        Close the serial port, stop the serial thread and the chart update timer.
+        """
+        self.serialUI.cleanup()  # close serial port and stop thread 
+        self.chartUI.cleanup()  # stop the chart timer
+
+        self.logger.log(
+            logging.INFO,
+            f"[{self.instance_name[:15]:<15}]: finishing worker..."
+        )
+
+        if self.serialWorker:
+            if self.serialUI:
+                self.serialUI.finishWorkerRequest.emit()     # emit signal to finish worker
+
+                if self.usbWorker:                           # stop the USB monitor thread
+                    self.usbWorker.stop()
+                    self.usbThread.quit()
+
+                try:
+                    loop = QEventLoop()                          # create event loop
+                    self.serialWorker.finished.connect(loop.quit)                                            # connect the loop to finish signal
+                    loop.exec()                              # wait until worker is finished
+                except:
+                    pass
+            else:
+                self.logger.log(
+                    logging.ERROR,
+                    f"[{self.instance_name[:15]:<15}]: serialUI not initialized."
+                )
+
+        else:
+            self.logger.log(
+                logging.ERROR,
+                f"[{self.instance_name[:15]:<15}]: serialWorker not initialized."
+            )
+
+        event.accept()  # accept the close event to proceed closing the application
 
 #############################################################################################################################################
 # Main 
@@ -462,15 +607,7 @@ class mainWindow(QMainWindow):
 
 if __name__ == "__main__":
 
-    # set logging level
-    # CRITICAL  50
-    # ERROR     40
-    # WARNING   30
-    # INFO      20
-    # DEBUG     10
-    # NOTSET     0
-
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=DEBUG_LEVEL)
 
     root_logger = logging.getLogger("SerialUI")
     current_level = root_logger.getEffectiveLevel()
@@ -483,4 +620,7 @@ if __name__ == "__main__":
     scalingY = screen.logicalDotsPerInchY() / 96.0
     win.resize(int(1200 * scalingX), int(665 * scalingY))
     win.show()
-    sys.exit(app.exec())
+
+    exit_code = app.exec()
+
+    sys.exit(exit_code)
