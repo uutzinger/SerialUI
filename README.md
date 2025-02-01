@@ -29,10 +29,11 @@ From an ESP32 we can retrieve about 400kBytes/s. For simple simulated data more 
 - `qasync` and `bleak` for bluetooth communication
 
 In future version we will also need:
- - `scipy` image decompression
- - `numba` binary transmission parsing
- - `cobs` serial data encoding (byte stuffing)
- - `zlib` and `tamp` for compression 
+
+- `scipy` image decompression
+- `numba` acceleration of numpy code
+- `cobs` serial data encoding (byte stuffing)
+- `zlib` and `tamp` for compression 
 
 Installation of PyQt5/6 has its own dependencies. If it fails, read the suggested solution in the error messages.
 For example pyOpenGL might be required.
