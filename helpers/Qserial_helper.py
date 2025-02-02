@@ -76,6 +76,7 @@ NUM_LINES_COLLATE      = 10          # [lines] estimated number of lines to coll
                                      #   plotting and processing large amounts of data is more efficient for display and plotting
 MAX_RECEIVER_INTERVAL  = 100         # [ms]
 MIN_RECEIVER_INTERVAL  = 5           # [ms]
+TRIM_INTERVAL          = 30000       # [ms] interval to trim text display window
 
 class SerialReceiverState(Enum):
     """
@@ -770,7 +771,7 @@ class QSerialUI(QObject):
         # Setup Automatic Text Trimming to Prevent Memory Overload
         self.textTrimTimer = QTimer(self)
         self.textTrimTimer.timeout.connect(self._requestTrim)
-        self.textTrimTimer.start(10000)  # Adjust timing based on performance needs
+        self.textTrimTimer.start(TRIM_INTERVAL)  # Adjust timing based on performance needs
 
         # Disable closing serial port button
         self.ui.pushButton_SerialOpenClose.setText("Open")

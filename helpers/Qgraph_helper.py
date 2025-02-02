@@ -344,6 +344,10 @@ class QChartUI(QObject):
         self.variable_index = {} # stores the variable names and their column index in the buffer
 
         self.sample_number = 0 
+        self._prev_num_columns = 0
+        self._prev_variable_index = {}
+        self._sorted_variables = []
+        self._variable_names = []
 
         # Initialize the plot axis ranges
         self.chartWidget.setXRange(0, self.maxPoints)
@@ -411,68 +415,178 @@ class QChartUI(QObject):
         - Sets vertical range dynamically based on min/max values of the data.
         """
 
-        tic = time.perf_counter()
+        if DEBUGCHART:
+            tic = time.perf_counter()
+    
         data = self.buffer.data  # Retrieve circular buffer data
         num_rows, num_cols = self.buffer.shape
         oldest_sample, newest_sample = self.buffer.counter
+        num_traces =len(self.data_line)
+        
+        # Only consider the newest samples for plotting
+        # self.maxPoints is set by user
+        if num_rows > self.maxPoints:
+            start_index = num_rows - self.maxPoints
+        else:
+            start_index = 0
 
-        self.legend.clear()  # Clear the existing legend
+        data_slice = data[start_index:]  # shape (maxPoints, num_cols)
+        # Compute corresponding x-values for that slice
+        # if oldest_sample is the index of the 0th row in the buffer,
+        # then row `start_index` corresponds to sample # (oldest_sample + start_index)
+        x_start = oldest_sample + start_index
+        x_end   = oldest_sample + num_rows - 1
 
-        # 1 Ensure there are enough data_line objects for each data column
-        while len(self.data_line) < num_cols:
-            new_line_index = len(self.data_line)
-            new_line = self.chartWidget.plot([], [], pen=self.pen[new_line_index % len(self.pen)], name=str(new_line_index))
-            self.data_line.append(new_line)
-
-        #  2 Legends
-
-        # Sort variable names for consistent legend display
-        sorted_variables = sorted(self.variable_index.items(), key=lambda x: x[1])
-        variable_names = [name for name, _ in sorted_variables]
-
-        # 3 Determine x-values using sample numbers
-        if num_rows > 0:
-            x = np.arange(oldest_sample, newest_sample + 1)  # ✅ Generate x-values dynamically
+        if data_slice.shape[0] > 0:
+            x = np.arange(x_start, x_end + 1)
         else:
             x = np.array([])
 
-        # Find valid data (non-NaN values)
-        have_data = ~np.isnan(data)
+        # Re-sort if variable_index actually changed.
+        if self.variable_index != self._prev_variable_index:
+            self._sorted_variables = sorted(self.variable_index.items(), key=lambda x: x[1])
+            self._variable_names   = [name for name, _ in self._sorted_variables]
+            self._prev_variable_index = dict(self.variable_index)  # store a copy
 
-        # Compute min/max Y values for scaling
-        max_y = np.nanmax(data, initial=-np.inf)  # ✅ Compute across all columns
-        min_y = np.nanmin(data, initial=np.inf)
+        # Num columns changed:
+        if num_cols != self._prev_num_columns:
+            # Clear the legend
+            self.legend.clear()  # Clear the existing legend
+            self._prev_num_columns = num_cols
 
-        # 5 Iterate through data columns, updating traces and legends
+            # Ensure there are enough data_line objects for each data column
+            while num_traces < num_cols:
+                new_line_index = len(self.data_line)
+                new_line = self.chartWidget.plot([], [], pen=self.pen[new_line_index % len(self.pen)], name=str(new_line_index))
+                self.data_line.append(new_line)
+                num_traces = len(self.data_line)
+
+            # Clear traces that are no longer active if we have too many
+            while num_traces > num_cols:
+                old_line = self.data_line.pop()
+                self.chartWidget.removeItem(old_line)
+                num_traces = len(self.data_line)
+
+            # Rebuild the legend since columns changed
+            for i, line in enumerate(self.data_line):
+                # Add the line item to the legend; name is updated below
+                self.legend.addItem(line, line.opts["name"])
+
+        # Plot data
+        ########################################################
+        
+        # Compute min_y, max_y on the sliced data
+        if data_slice.size > 0:
+            max_y = np.nanmax(data_slice)
+            min_y = np.nanmin(data_slice)
+        else:
+            max_y =  1
+            min_y = -1
+
+        # For each column, update the plot
         for i in range(num_cols):
-            have_column_data = have_data[:, i]
-            y = data[have_column_data, i]  # Extract non-NaN values for this column
+            # A bit more direct approach:
+            column_data = data_slice[:, i] if data_slice.shape[0] > 0 else np.array([])
+            # Remove NaNs
+            mask = ~np.isnan(column_data)
+            y = column_data[mask]
+            # matching x
+            valid_x = x[mask] if len(x) > 0 else np.array([])
 
-            # Ensure x and y have the same length
-            valid_x = x[have_column_data] if len(x) > 0 else np.array([])
+            # Enable autoDownsample and clipToView to reduce overhead
+            self.data_line[i].setData(
+                valid_x,
+                y,
+                autoDownsample=True,
+                clipToView=True
+            )
 
-            self.data_line[i].setData(valid_x, y)  # ✅ Update plot data with computed x-values
-
-            # Update the plot name from variable_index
-            if i < len(variable_names):
-                self.data_line[i].opts["name"] = variable_names[i]
+            # Update the legend name from variable_index cache
+            if i < len(self._variable_names):
+                self.data_line[i].opts["name"] = self._variable_names[i]
             else:
-                self.data_line[i].opts["name"] = str(i)
+                self.data_line[i].opts["name"] = f"Trace {i}"
 
-            # Update the legend dynamically
-            self.legend.addItem(self.data_line[i], self.data_line[i].opts["name"])
-
-        # 6 Adjust axis ranges dynamically
-        if num_rows > 0 and len(x) > 0:
-            min_x, max_x = x[0], x[-1]
-            self.chartWidget.setXRange(max_x - self.maxPoints, max_x)  # ✅ Adjust based on computed sample numbers
-
+        # Adjust axis ranges dynamically
+        if data_slice.size > 0 and len(valid_x) > 0:
+            min_x, max_x = valid_x[0], valid_x[-1]
+            self.chartWidget.setXRange(max_x - self.maxPoints, max_x)
+        # If we have valid data
         if min_y <= max_y:
             self.chartWidget.setYRange(min_y, max_y)
 
-        toc = time.perf_counter()
+        # data = self.buffer.data  # Retrieve circular buffer data
+        # num_rows, num_cols = self.buffer.shape
+        # oldest_sample, newest_sample = self.buffer.counter
+        # num_traces =len(self.data_line)
+
+        # # 0 Clear the legend if number of columns has changed
+        # if num_cols != self.previous_num_columns
+        #     self.legend.clear()  # Clear the existing legend
+        #     self.previous_num_columns = num_cols
+
+        # # 1 Ensure there are enough data_line objects for each data column
+        # while num_traces < num_cols:
+        #     new_line_index = len(self.data_line)
+        #     new_line = self.chartWidget.plot([], [], pen=self.pen[new_line_index % len(self.pen)], name=str(new_line_index))
+        #     self.data_line.append(new_line)
+        #     num_traces = len(self.data_line)
+
+        # # 2 Clear traces that are no longer active
+        # if num_traces > num_cols:
+        #     # Remove any extra traces
+        #     while len(self.data_line) > num_cols:
+        #         old_line = self.data_line.pop()
+        #         self.chartWidget.removeItem(old_line)
+
+
+        # # 3 Legends
+        # #   Sort variable names for consistent legend display
+        # sorted_variables = sorted(self.variable_index.items(), key=lambda x: x[1])
+        # variable_names = [name for name, _ in sorted_variables]
+
+        # # 4 Determine x-values using sample numbers
+        # if num_rows > 0:
+        #     x = np.arange(oldest_sample, newest_sample + 1)  # Generate x-values dynamically
+        # else:
+        #     x = np.array([])
+
+        # # Find valid data (non-NaN values)
+        # have_data = ~np.isnan(data)
+
+        # # Compute min/max Y values for scaling
+        # max_y = np.nanmax(data, initial=-np.inf)  # Compute across all columns
+        # min_y = np.nanmin(data, initial=np.inf)
+
+        # # 6 Iterate through data columns, updating traces and legends
+        # for i in range(num_cols):
+        #     have_column_data = have_data[:, i]
+        #     y = data[have_column_data, i]  # Extract non-NaN values for this column
+
+        #     # Ensure x and y have the same length
+        #     valid_x = x[have_column_data] if len(x) > 0 else np.array([])
+
+        #     self.data_line[i].setData(valid_x, y)  # Update plot data with computed x-values
+
+        #     # Update the plot name from variable_index
+        #     if i < len(variable_names):
+        #         self.data_line[i].opts["name"] = variable_names[i]
+        #     else:
+        #         self.data_line[i].opts["name"] = str(i)
+
+        #     # Update the legend dynamically
+        #     self.legend.addItem(self.data_line[i], self.data_line[i].opts["name"])
+
+        # # 7 Adjust axis ranges dynamically
+        # if num_rows > 0 and len(x) > 0:
+        #     min_x, max_x = x[0], x[-1]
+        #     self.chartWidget.setXRange(max_x - self.maxPoints, max_x)  # Adjust based on computed sample numbers
+
+        # if min_y <= max_y:
+        #     self.chartWidget.setYRange(min_y, max_y)
 
         if DEBUGCHART:
+            toc = time.perf_counter()
             self.handle_log(
                 logging.DEBUG,
                 f"[{self.thread_id}]: Plot updated in {1000 * (toc - tic):.2f} ms"
@@ -707,8 +821,8 @@ class QChartUI(QObject):
         """
         Decode/Parse a list of lines for data and add it to the circular buffer
         """
-
-        tic = time.perf_counter()
+        if DEBUGCHART:
+            tic = time.perf_counter()
 
         # Make a copy of the lines
         # lines_copy = [item[:] for item in lines]
@@ -725,11 +839,11 @@ class QChartUI(QObject):
                 f"[{self.thread_id}]: Data separator {repr(self.textDataSeparator)} not available."
             )
 
-        toc = time.perf_counter()
 
         if DEBUGCHART:
+            toc = time.perf_counter()
             self.handle_log(
-                logging.DEBUG,
+                logging.INFO,
                 f"[{self.thread_id}]: Data points received: parsing took {1000 * (toc - tic)} ms"
             )        
 
@@ -787,8 +901,9 @@ class QChartUI(QObject):
 
         Clear data buffer then update plot
         """
-        # clear plot
+        # clear buffer
         self.buffer.clear()
+
         self.updatePlot()
         self.handle_log(
             logging.INFO,

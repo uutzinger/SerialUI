@@ -39,13 +39,13 @@ int           scenario = 6; // Default scenario
                             // 9 Mono Sawtooth, 10 64 Chars"
 
 // Configuration (adjustable frequencyuencies and amplitudes)
-float frequency   = 500.0;   // High frequency (Hz)
+float frequency   = 100.0;   // Frequency (Hz)
 float amplitude   = 1024;    // Amplitude for Channel 1
 int16_t signalTable[TABLESIZE];
 
 unsigned long currentTime;
 unsigned long interval = 10000;             // Default interval at which to generate data in micro seconds
-int           samplerate =  5000;           // Samples per second
+int           samplerate = 5000;            // Samples per second
 bool          paused = true;                // Flag to pause the data generation
 String        receivedCommand = "";
 char          data[1024];
@@ -67,7 +67,7 @@ void setup()
   Serial.println("resume");
   Serial.println("interval >=0 ms");
   Serial.println("samplerate");
-  Serial.println("scenario number: ");
+  Serial.println("scenario ");
   Serial.println("   1 Agriculture, 2 Satelite, 3 Environmental, 4 Medical, 5 Power");
   Serial.println("   6 Stereo Sinewave, 7 Mono Sinewave, 8 Mono Sinewave Header, 9 Mono Sawtooth, 10 Squarewave");
   Serial.println("  11 64 Chars");
@@ -77,6 +77,7 @@ void setup()
   Serial.println("Interval:   " + String(interval) + " microseconds");
   Serial.println("Samplerate: " + String(samplerate) + " Hz");
   Serial.println("Scenario:   " + String(scenario));
+  Serial.println("Frequency:  " + String(frequency));
   Serial.println("Paused:     " + String(paused ? "Yes" : "No"));
 
   updateSignalTable(scenario);
@@ -173,6 +174,20 @@ void handleSerialCommands()
       Serial.println("Invalid scenario value.");
     }
   }
+  else if (command.startsWith("frequency"))
+  {
+    float new_freq = command.substring(9).toFloat();
+    if (new_freq >= 0 && new_freq <= 10000)
+    {
+      frequency = new_freq;
+      updateSignalTable(scenario);
+      Serial.println("Frequency set to " + String(frequency));
+    }
+    else
+    {
+      Serial.println("Invalid frequency value.");
+    }
+  }
   else if (command.equals("pause"))
   {
     paused = true;
@@ -202,6 +217,7 @@ void handleSerialCommands()
     Serial.println("resume");
     Serial.println("interval >=0 ms");
     Serial.println("samplerate");
+    Serial.println("frequency 0..10000");    
     Serial.println("scenario number: ");
     Serial.println("   1 Agriculture, 2 Satelite, 3 Environmental, 4 Medical, 5 Power");
     Serial.println("   6 Stereo Sinewave, 7 Mono Sinewave, 8 Mono Sinewave Header, 9 Mono Sawtooth, 10 Squarewave");
@@ -353,8 +369,9 @@ void updateSineWaveTable() {
     Serial.println("Updating sine table...");
     for (int i = 0; i < TABLESIZE; i++) {
         int16_t value1 = int16_t(amplitude       * sin(( 2.0 * M_PI * i) / float(TABLESIZE))); 
-        int16_t value2 = int16_t((amplitude / 4) * sin((10.0 * M_PI * i) / float(TABLESIZE))); // Adjusted frequency
-        signalTable[i] = value1 + value2;
+        // int16_t value2 = int16_t((amplitude / 4) * sin((10.0 * M_PI * i) / float(TABLESIZE))); // Adjusted frequency
+        // signalTable[i] = value1 + value2;
+        signalTable[i] = value1;
     }
 }
 
