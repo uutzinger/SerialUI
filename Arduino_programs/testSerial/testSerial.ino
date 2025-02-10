@@ -22,10 +22,10 @@
 #include "src/dataGeneratorPowerSystem.h"            // Include the data generator for the Power Monitoring System
 #include "src/dataGeneratorSineWave.h"            // Include the data generator for the Power Monitoring System
 
-#include "src/RingBuffer.h"
+#include <RingBuffer.h>
 
 // Serial Settings
-#define BAUDRATE               500000 // 500 kBaud
+#define BAUDRATE              1000000 // 1 MBaud
 
 // Measurement
 #define BUFFERSIZE              2048  // Buffer to hold data, should be a few times larger than FRAME_SIZE
@@ -60,6 +60,7 @@ RingBuffer dataBuffer(BUFFERSIZE); // Create a ring buffer
 void setup()
 {
   Serial.begin(BAUDRATE);
+  while (!Serial) { delay(5); }
 
   Serial.println("=================================");
   Serial.println("Commands are:");

@@ -2,7 +2,7 @@
   Data Generator for Sine Wave Generation
 */
 
-#include "src/RingBuffer.h"
+#include <RingBuffer.h>
 #include <cmath>
 extern RingBuffer dataBuffer;
 extern char data[1024];

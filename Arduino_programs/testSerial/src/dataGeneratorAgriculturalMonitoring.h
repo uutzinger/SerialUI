@@ -4,7 +4,7 @@
   This file contains the data generation function for an agricultural monitoring system scenario.
 */
 
-#include "src/RingBuffer.h"
+#include <RingBuffer.h>
 extern RingBuffer dataBuffer;
 extern char data[1024];
 

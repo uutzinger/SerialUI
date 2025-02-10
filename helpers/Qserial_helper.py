@@ -1,28 +1,16 @@
 ##########################################################################################################################################        
 # QT Serial Helper
 ##########################################################################################################################################        
-# July 2022: initial work
-# December 2023: implemented line reading
-# Summer 2024: 
-#   fixes and improvements
-#   added pyqt6 support
-# Fall 2024
-#   reconnect when same device is removed and then reinserted into USB port
-# Spring 2025
-#   checked all routines for efficiency and errors. 
-#   improved low level serial
 #
-# This code is maintained by Urs Utzinger
-##########################################################################################################################################        
-
-##########################################################################################################################################        
 # This code has 3 sections
 # QSerialUI: Controller - Interface to GUI, runs in main thread.
 # QSerial:   Model - - Functions running in separate thread, communication through signals and slots.
 # PSerial:   Sub Model - Low level interaction with serial ports, called from QSerial.
+#
+# This code is maintained by Urs Utzinger
 ##########################################################################################################################################        
 
-from serial import Serial as sp
+from serial import Serial
 from serial import SerialException, EIGHTBITS, PARITY_NONE, STOPBITS_ONE
 from serial.tools import list_ports 
 
@@ -36,6 +24,8 @@ from enum import Enum
 from pathlib import Path
 from collections import deque
 from html.parser import HTMLParser
+from difflib import SequenceMatcher
+
 
 try: 
     from PyQt6.QtCore import (
@@ -95,9 +85,14 @@ class SerialReceiverState(Enum):
 #
 # QPlainTextEdit Extension
 # 
+# Appends Text with no new line
+# Appends List of lines
+# Appends HTML with no new line, attempts to add only complete html blocks
+# Trims display with text buffer
+# Provides clear and insert new line functions
+#
 ##########################################################################################################################################        
 ##########################################################################################################################################        
-
 
 class QPlainTextEditExtended(QObject):
 
@@ -497,6 +492,9 @@ class IncompleteHTMLTracker(HTMLParser):
 #
 # Serial Port Monitor
 # 
+# Monitors USB device insertion and removal on both Windows and Linux
+# Emits signal when insertion/removal event occurs
+# 
 ##########################################################################################################################################        
 ##########################################################################################################################################        
 
@@ -647,12 +645,12 @@ class QSerialUI(QObject):
         on_comboBoxDropDown_SerialPorts      user selected a new port on the drop down list
         on_comboBoxDropDown_BaudRates        user selected a different baudrate on drop down list
         on_comboBoxDropDown_LineTermination  user selected a different line termination from drop down menu
-        on_serialStatusReady(str, int, bytes, float) pickup QSerial status on port, baudrate, line termination, timeout
-        on_newPortListReady(list, list)      pickup new list of serial ports
+        on_serialStatusReady                 pickup QSerial status on port, baudrate, line termination, timeout, esp_reset, connected
+        on_newPortListReady                  pickup new list of serial ports (ports,portNames, portHWID)
         on_newBaudListReady(tuple)           pickup new list of baudrates
         on_receivedData(bytes)               pickup text from serial port
         on_receivedLines(list)               pickup lines of text from serial port
-        on_throughputReady(int, int)      pickup throughput data from QSerial
+        on_throughputReady(int, int)         pickup throughput data from QSerial
         on_usb_event_detected(str)           pickup USB device insertion or removal
     """
 
@@ -690,9 +688,11 @@ class QSerialUI(QObject):
         # state variables, populated by service routines
         self.defaultBaudRate       = DEFAULT_BAUDRATE
         self.BaudRates             = []                                                    # e.g. (1200, 2400, 9600, 115200)
+        self.serialPortHWIDs       = []                                                    # device specific identifier
         self.serialPortNames       = []                                                    # human readable
         self.serialPorts           = []                                                    # e.g. COM6
         self.serialPort            = ""                                                    # e.g. COM6
+        self.serialPortHWID        = ""                                                    # e.g. USB VID:PID=1A86:7523 
         self.serialBaudRate        = DEFAULT_BAUDRATE                                      # e.g. 115200
         self.serialSendHistory     = []                                                    # previously sent text (e.g. commands)
         self.serialSendHistoryIndx = -1                                                    # init history
@@ -706,11 +706,15 @@ class QSerialUI(QObject):
         self.serialTimeout         = 0                                                     # default timeout    
         self.isScrolling           = False                                                 # keep track of text display scrolling
         self.esp_reset             = False                                                 # reset ESP32 on open
+        self.connected             = False                                                 # keep track of connection state
 
+        # Backup for reconnection/device removal
         self.serialPort_backup     = ""
+        self.serialPortHWID_backup = ""
         self.serialBaudRate_backup = DEFAULT_BAUDRATE
         self.esp_reset_backup      = False
         self.awaitingReconnection  = False
+
         self.record                = False                                                 # record serial data
         self.recordingFileName     = ""
         self.recordingFile         = None
@@ -824,24 +828,26 @@ class QSerialUI(QObject):
         """
         This responds to an USB device insertion on removal
         """
-        port_scan = [ [p.device, p.description, p.hwid] for p in list_ports.comports() ]
-        ports = [sublist[0] for sublist in port_scan if sublist[1] != 'n/a']
+
+        # Scan the ports (not using serial worker)
+        port_scan  = [ [p.device, p.description, p.hwid] for p in list_ports.comports() ]
+        ports      = [sublist[0] for sublist in port_scan if sublist[1] != 'n/a']
+        port_names = [sublist[1] for sublist in port_scan if sublist[1] != 'n/a']
+        port_hwids = [sublist[2] for sublist in port_scan if sublist[1] != 'n/a']
 
         if "USB device removed" in message:
             # Check if the device is still there
             if self.serialPort not in ports and self.serialPort != "":
                 # Device is no longer there, close the port
                 if self.serialPort != "":
-                    self.serialPort_backup     = self.serialPort
-                    self.serialBaudRate_backup = self.serialBaudRate
-                    self.esp_reset_backup      = self.esp_reset
-                    self.awaitingReconnection  = True
+                    self.serialPortHWID_backup  = self.serialPortHWID
+                    self.serialBaudRate_backup  = self.serialBaudRate
+                    self.esp_reset_backup       = self.esp_reset
+                    self.serialPort_previous    = self.serialPort
+                    self.awaitingReconnection   = True
                 QTimer.singleShot(  0, lambda: self.stopThroughputRequest.emit()) # request to stop throughput
                 QTimer.singleShot( 50, lambda: self.closePortRequest.emit())      # request to close serial port
                 QTimer.singleShot(250, lambda: self.serialStatusRequest.emit())   # request to report serial port status
-                # shade sending text
-                self.ui.lineEdit_Text.setEnabled(False)
-                self.ui.pushButton_SendFile.setEnabled(False)                
                 self.handle_log(
                     logging.INFO, 
                     f"[{self.thread_id}]: requesting Closing serial port."
@@ -852,40 +858,65 @@ class QSerialUI(QObject):
 
         elif "USB device added" in message:
             if self.awaitingReconnection: 
-                if self.serialPort in ports:
-                    QTimer.singleShot(  0, lambda: self.changePortRequest.emit(self.serialPort_backup, self.serialBaudRate_backup, self.esp_reset_backup) ) # takes 11ms to open port
+                best_match = None
+                best_score = 0.0
+                for hwid in port_hwids:
+                    score = SequenceMatcher(None, self.serialPortHWID_backup, hwid).ratio()
+                    if score > best_score:  # Keep track of the best match
+                        best_score = score
+                        best_match = hwid
+                if score > 0.8:
+                    # find the port that matches the previous hwid
+                    indx = port_hwids.index(best_match)
+                    self.serialPort_backup = ports[indx]
+                    self.serialPort_previous = ports[indx]
+                    QTimer.singleShot(  0, lambda: self.scanPortsRequest.emit())                # request new port list
+                    QTimer.singleShot( 50, lambda: self.changePortRequest.emit(self.serialPort_backup, self.serialBaudRate_backup, self.esp_reset_backup) ) # takes 11ms to open port
                     QTimer.singleShot(150, lambda: self.scanBaudRatesRequest.emit())            # update baudrates
                     QTimer.singleShot(200, lambda: self.serialStatusRequest.emit())             # request to report serial port status            
                     QTimer.singleShot(250, lambda: self.startThroughputRequest.emit())          # request to start serial receiver
                     self.awaitingReconnection = False
                     self.handle_log(
                         logging.INFO, 
-                        f"[{self.thread_id}]: port {self.serialPort_backup} reopened with baud {self.serialBaudRate_backup} "
+                        f"[{self.thread_id}]: device {port_names[indx]} on port {self.serialPort_backup} reopened with baud {self.serialBaudRate_backup} "
                         f"eol {repr(self.textLineTerminator)} timeout {self.serialTimeout} and esp_reset {self.esp_reset_backup}."
                     )
-                    self.ui.statusBar().showMessage('USB device added back, Serial Open requested.', 5000)            
+                    self.ui.statusBar().showMessage('USB device reconnection.', 5000)
+                else:
+                    self.handle_log(
+                        logging.INFO, 
+                        f"[{self.thread_id}]: new device {best_match} does not match hardware id {self.serialPortHWID_backup} ."
+                    )
+
             else:
                 # We have new device insertion, connect to it
                 if self.serialPort == "":
+                    # new_ports     = [port for port in ports if port not in self.serialPorts] # prevents device to be opened that was previously found but not opened
+                    new_ports = [port for port in ports]
+                    new_portnames = [port_names[ports.index(port)] for port in new_ports if port in ports]  # Get corresponding names
+
                     # Figure out if useable port
-                    if ports:
-                        new_ports = [port for port in ports if port not in self.serialPorts]
-                        if new_ports:
-                            new_port = new_ports[0]
-                            new_baudrate = self.serialBaudRate if self.serialBaudRate > 0 else DEFAULT_BAUDRATE
-                            new_esp_reset = self.esp_reset
+                    if new_ports:
+                        new_port      = new_ports[0] # Consider first found new port
+                        new_portname  = new_portnames[0] if new_portnames else "Unknown Device"
+                        new_baudrate  = self.serialBaudRate if self.serialBaudRate > 0 else DEFAULT_BAUDRATE
+                        new_esp_reset = self.esp_reset
+
+                        # Show user confirmation dialog
+                        reply = QMessageBox.question(self.ui, "New USB Device Detected",
+                            f"Do you want to connect to {new_port} ({new_portname})?",
+                            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+                        if reply == QMessageBox.Yes:
                             # Start the receiver
-                            QTimer.singleShot(  0, lambda: self.changePortRequest.emit(new_port, new_baudrate, new_esp_reset)) # takes 11ms to open
-                            QTimer.singleShot(100, lambda: self.scanPortsRequest.emit())                # request new port list
+                            self.serialPort_previous = new_port
+                            QTimer.singleShot(  0, lambda: self.scanPortsRequest.emit())                # request new port list
+                            QTimer.singleShot( 50, lambda: self.changePortRequest.emit(new_port, new_baudrate, new_esp_reset)) # takes 11ms to open
                             QTimer.singleShot(150, lambda: self.scanBaudRatesRequest.emit())            # request new baud rate list
                             QTimer.singleShot(200, lambda: self.serialStatusRequest.emit())             # request to report serial port status            
                             QTimer.singleShot(250, lambda: self.startThroughputRequest.emit())          # request to start serial receiver
-                            # un-shade sending text
-                            self.ui.lineEdit_Text.setEnabled(True)
-                            self.ui.pushButton_SendFile.setEnabled(True)                
                             self.handle_log(
                                 logging.INFO, 
-                                f"[{self.thread_id}]: requesting Opening Serial port {new_port} with {new_baudrate} baud and ESP reset {'on' if new_esp_reset else 'off'}."
+                                f"[{self.thread_id}]: requested opening Serial port {new_port} with {new_baudrate} baud and ESP reset {'on' if new_esp_reset else 'off'}."
                             )
                             self.ui.statusBar().showMessage('Serial Open requested.', 2000)
 
@@ -1136,12 +1167,16 @@ class QSerialUI(QObject):
         if self.ui.pushButton_SerialOpenClose.text() == "Close":
             # Close the serial port
             #   stop the receiver
+            self.serialPort_previous = self.serialPort
             QTimer.singleShot(  0, lambda: self.stopThroughputRequest.emit()) # request to stop throughput
             QTimer.singleShot( 50, lambda: self.closePortRequest.emit())      # request to close serial port
             QTimer.singleShot(250, lambda: self.serialStatusRequest.emit())   # request to report serial port status
             #   shade sending text
             self.ui.lineEdit_Text.setEnabled(False)
             self.ui.pushButton_SendFile.setEnabled(False)
+            # do not want to automatically reconnect when device is reinserted
+            self.awaitingReconnection = False
+
             self.handle_log(
                 logging.INFO, 
                 f"[{self.thread_id}]: requesting closing serial port."
@@ -1171,9 +1206,6 @@ class QSerialUI(QObject):
                 QTimer.singleShot(150, lambda: self.scanBaudRatesRequest.emit())   #
                 QTimer.singleShot(200, lambda: self.serialStatusRequest.emit())    # request to report serial port status            
                 QTimer.singleShot(250, lambda: self.startThroughputRequest.emit()) # request to start serial receiver
-                #   un-shade sending text
-                self.ui.lineEdit_Text.setEnabled(True)
-                self.ui.pushButton_SendFile.setEnabled(True)                
                 self.handle_log(
                     logging.INFO, 
                     f"[{self.thread_id}]: requesting opening serial port {port} with {self.serialBaudRate} baud {'with esp reset.' if self.esp_reset else 'with reset.'}."
@@ -1309,9 +1341,9 @@ class QSerialUI(QObject):
         self.textLineTerminator = self.update_LineTermination()
 
         # ask line termination to be changed if port is open
-        if self.serialPort != "":
-            QTimer.singleShot( 0, lambda: self.changeLineTerminationRequest.emit(self.textLineTerminator))
-            QTimer.singleShot(50, lambda: self.serialStatusRequest.emit()) # request to report serial port status
+        # if self.serialPort != "":
+        QTimer.singleShot( 0, lambda: self.changeLineTerminationRequest.emit(self.textLineTerminator))
+        QTimer.singleShot(50, lambda: self.serialStatusRequest.emit()) # request to report serial port status
 
         self.handle_log(
             logging.INFO,
@@ -1322,133 +1354,138 @@ class QSerialUI(QObject):
     def update_LineTermination(self):
         """ update line termination from UI"""
         _tmp = self.ui.comboBoxDropDown_LineTermination.currentText()
-        if   _tmp == "newline (\\n)":           return(b"\n")
-        elif _tmp == "return (\\r)":            return(b"\r")
-        elif _tmp == "newline return (\\n\\r)": return(b"\n\r")
-        elif _tmp == "none":                    return(b"")
-        else:                                   return(b"\r\n")
+
+        eol_dict = {
+            "newline (\\n)"          : b"\n",
+            "return (\\r)"           : b"\r",
+            "newline return (\\n\\r)": b"\n\r",
+            "return newline (\\r\\n)": b"\r\n",
+            "none"                   : b""
+        }
+        
+        eol = eol_dict.get(_tmp, b"\r\n")
+        return eol
 
     ########################################################################################
     # Slots for Worker Signals
     ########################################################################################
 
-    @pyqtSlot(str, int, bytes, float)
-    def on_serialStatusReady(self, port: str, baud: int, eol: bytes, timeout: float):
+    @pyqtSlot(str, int, bytes, float, bool, bool, str)
+    def on_serialStatusReady(self, port: str, baud: int, eol: bytes, timeout: float, esp_reset: bool, connected: bool, serialPortHWID: str):
         """
         Serial status report available
         """
-        self.serialPort = port
 
-        if self.serialPort == "":
-            self.ui.pushButton_SerialOpenClose.setText("Open")
+        # Port
+        self.serialPort     = port
+        self.serialPortHWID = serialPortHWID
+        self.connected      = connected
 
-        else: 
-            # update only if we have valid port
-            self.textLineTerminator = eol
-            self.serialTimeout = timeout
-            if baud > 0:
-                self.serialBaudRate  = baud
-                self.defaultBaudRate = baud
+        # ESP reset
+        self.esp_reset = esp_reset
+        self.ui.radioButton_ResetESPonOpen.setChecked(self.esp_reset)
+
+        # Timeout
+        self.serialTimeout = timeout
+
+        # Line termination
+        self.textLineTerminator = eol
+
+        eol_dict = {
+            b"\n": "newline (\\n)",
+            b"\r": "return (\\r)",
+            b"\n\r": "newline return (\\n\\r)",
+            b"\r\n": "return newline (\\r\\n)",
+            b"": "none"
+        }
+        
+        _tmp = eol_dict.get(eol, "return newline (\\r\\n)")
+
+        if eol not in eol_dict:
+            self.handle_log(logging.WARNING, f"[{self.thread_id}]: unknown line termination {eol}.")
+            self.handle_log(logging.WARNING, f"[{self.thread_id}]: set line termination to {_tmp}.")
+
+        # Update UI Combobox for Line Termination
+        try:
+            index = self.ui.comboBoxDropDown_LineTermination.findText(_tmp)
+            if index > -1:
+                self.ui.comboBoxDropDown_LineTermination.blockSignals(True)
+                self.ui.comboBoxDropDown_LineTermination.setCurrentIndex(index)
+                self.handle_log(logging.DEBUG, f"[{self.thread_id}]: selected line termination {_tmp}.")
+        except Exception as e:
+            self.handle_log(logging.ERROR, f"[{self.thread_id}]: line termination error: {e}.")
+        finally:
+            self.ui.comboBoxDropDown_LineTermination.blockSignals(False)
+
+    
+        # Update UI Based on Connection State
+        self.ui.pushButton_SerialOpenClose.setText("Close" if connected else "Open")
+        self.ui.pushButton_SerialOpenClose.setEnabled(connected or self.serialPort != "")
+        self.ui.lineEdit_Text.setEnabled(connected)
+        self.ui.pushButton_SendFile.setEnabled(connected)
+    
+        if not connected:
+
+            # Not Connected
+
+            self.ui.comboBoxDropDown_SerialPorts.blockSignals(True)
+            if self.serialPort != "":
+                index = self.ui.comboBoxDropDown_SerialPorts.findText(self.serialPort)
+            elif self.serialPort_previous != "":
+                index = self.ui.comboBoxDropDown_SerialPorts.findText(self.serialPort_previous)
             else:
-                self.serialBaudRate = self.defaultBaudRate
+                index = -1
+            if index > -1: # if we found item
+                self.ui.comboBoxDropDown_SerialPorts.setCurrentIndex(index)
+                self.ui.pushButton_SerialOpenClose.setEnabled(True)
 
-            self.ui.pushButton_SerialOpenClose.setText("Close")
+            else:  # if we did not find item, set box to last item (None)
+                self.ui.comboBoxDropDown_SerialPorts.setCurrentIndex(len(self.serialPortNames))
+                self.ui.pushButton_SerialOpenClose.setEnabled(False)
+            self.ui.comboBoxDropDown_SerialPorts.blockSignals(False)
 
-            # adjust the combobox current item to match the current port
+        else:
+
+            # Handle Connection UI Updates**
+            self.ui.pushButton_ChartStartStop.setEnabled(True)
+            self.ui.pushButton_SerialStartStop.setEnabled(True)
+
+            # Update Baud Rate
+            self.serialBaudRate = baud if baud > 0 else self.defaultBaudRate
+            self.defaultBaudRate = self.serialBaudRate
+
+            self.ui.lineEdit_Text.setEnabled(True)
+            self.ui.pushButton_SendFile.setEnabled(True)
+
+            # Set Serial Port Combobox**
             try:
-                index = self.ui.comboBoxDropDown_SerialPorts.findText(
-                    self.serialPort
-                )  # find current port in serial port list
+                index = self.ui.comboBoxDropDown_SerialPorts.findText(self.serialPort)
                 self.ui.comboBoxDropDown_SerialPorts.blockSignals(True)
-                self.ui.comboBoxDropDown_SerialPorts.setCurrentIndex(index)  # update serial port combobox
-                self.ui.comboBoxDropDown_SerialPorts.blockSignals(False)
-                self.handle_log(
-                    logging.DEBUG,
-                    f'[{self.thread_id}]: selected port "{self.serialPort}".'
-                )
+                self.ui.comboBoxDropDown_SerialPorts.setCurrentIndex(index)
+                self.handle_log(logging.DEBUG, f"[{self.thread_id}]: selected port \"{self.serialPort}\".")
             except Exception as e:
-                self.handle_log(
-                    logging.ERROR,
-                    f"[{self.thread_id}]: port not available. Error {str(e)}."
-                )
-            # adjust the combobox current item to match the current baudrate
+                self.handle_log(logging.ERROR, f"[{self.thread_id}]: port error: {e}.")
+            finally:
+                self.ui.comboBoxDropDown_SerialPorts.blockSignals(False)
+
+            # Set Baud Rate Combobox**
             try:
                 index = self.ui.comboBoxDropDown_BaudRates.findText(str(self.serialBaudRate))
                 if index > -1:
                     self.ui.comboBoxDropDown_BaudRates.blockSignals(True)
-                    self.ui.comboBoxDropDown_BaudRates.setCurrentIndex(index)  #  baud combobox
-                    self.handle_log(
-                        logging.DEBUG,
-                        f"[{self.thread_id}]: selected baudrate {self.serialBaudRate}."
-                    )
-                else:
-                    self.handle_log(
-                        logging.DEBUG,
-                        f"[{self.thread_id}]: baudrate {self.serialBaudRate} not found."
-                    )            
+                    self.ui.comboBoxDropDown_BaudRates.setCurrentIndex(index)
+                    self.handle_log(logging.DEBUG, f"[{self.thread_id}]: selected baudrate {self.serialBaudRate}.")
             except Exception as e:
-                self.handle_log(
-                    logging.ERROR,
-                    f"[{self.thread_id}]: could not select baudrate. Error {str(e)}"
-                )
+                self.handle_log(logging.ERROR, f"[{self.thread_id}]: baudrate error: {e}.")
             finally:
                 self.ui.comboBoxDropDown_BaudRates.blockSignals(False)
 
-
-            # adjust the combobox current item to match the current line termination
-            if   eol == b"\n":   _tmp = "newline (\\n)"
-            elif eol == b"\r":   _tmp = "return (\\r)"
-            elif eol == b"\n\r": _tmp = "newline return (\\n\\r)"
-            elif eol == b"\r\n": _tmp = "return newline (\\r\\n)"
-            elif eol == b"":     _tmp = "none"
-            else:               
-                _tmp = "return newline (\\r\\n)"
-                self.handle_log(
-                    logging.WARNING,
-                    f"[{self.thread_id}]: unknown line termination {eol}."
-                )
-                self.handle_log(
-                    logging.WARNING,
-                    f"[{self.thread_id}]: set line termination to {_tmp}."
-                )
-
-            try:
-                index = self.ui.comboBoxDropDown_LineTermination.findText(_tmp)
-                if index > -1:  # Check if the text was found
-                    self.ui.comboBoxDropDown_LineTermination.blockSignals(True)
-                    self.ui.comboBoxDropDown_LineTermination.setCurrentIndex(index)
-                    self.handle_log(
-                        logging.DEBUG,
-                        f"[{self.thread_id}]: selected line termination {_tmp}."
-                    )
-                else:  # Handle case when the text is not found
-                    self.handle_log(
-                        logging.DEBUG,
-                        f"[{self.thread_id}]: line termination {_tmp} not found."
-                    )
-            except Exception as e:  # Catch specific exceptions if possible
-                self.handle_log(
-                    logging.ERROR,
-                    f"[{self.thread_id}]: line termination not available. Error: {str(e)}"
-                )
-            finally:
-                self.ui.comboBoxDropDown_LineTermination.blockSignals(False)
-
-            self.handle_log(
-                logging.DEBUG,
-                f"[{self.thread_id}]: receiver is {'running' if self.receiverIsRunning else 'not running'}."
-            )
-
-        # handle timeout and encoding
-        #  not implemented as currently not selectable in the UI
-        #  encoding is fixed to utf-8
-        #  timeout can be computed from baud rate and longest expected line of text
-        #  however it is set to zero resulting in non blocking reads and writes
+            self.handle_log(logging.DEBUG, f"[{self.thread_id}]: receiver is {'running' if self.receiverIsRunning else 'not running'}.")
 
         self.ui.statusBar().showMessage("Serial status updated", 2000)
 
-    @pyqtSlot(list, list)
-    def on_newPortListReady(self, ports: list, portNames: list):
+    @pyqtSlot(list, list, list)
+    def on_newPortListReady(self, ports: list, portNames: list, portHWIDs: list):
         """
         New serial port list available
         """
@@ -1456,8 +1493,10 @@ class QSerialUI(QObject):
             logging.DEBUG,
             f"[{self.thread_id}]: port list received."
         )
-        self.serialPorts = ports
+        self.serialPorts     = ports
         self.serialPortNames = portNames
+        self.serialPortHWIDs = portHWIDs
+        
         lenPortNames = len(self.serialPortNames)
         self.ui.comboBoxDropDown_SerialPorts.blockSignals(True) # block the box from emitting changed index signal when items are added
         # populate new items
@@ -1468,9 +1507,10 @@ class QSerialUI(QObject):
             self.ui.comboBoxDropDown_SerialPorts.setCurrentIndex(index)
         else:  # if we did not find previous item, set box to last item (None)
             self.ui.comboBoxDropDown_SerialPorts.setCurrentIndex(lenPortNames)
-            QTimer.singleShot(  0, lambda: self.stopThroughputRequest.emit())          # request to stop throughput
-            QTimer.singleShot( 50, lambda: self.closePortRequest.emit())               # request to close serial port
-            QTimer.singleShot(250, lambda: self.serialStatusRequest.emit())            # request to report serial port status
+            self.serialPort_previous = ""
+            # QTimer.singleShot(  0, lambda: self.stopThroughputRequest.emit())          # request to stop throughput
+            # QTimer.singleShot( 50, lambda: self.closePortRequest.emit())               # request to close serial port
+            # QTimer.singleShot(250, lambda: self.serialStatusRequest.emit())            # request to report serial port status
         # enable signals again
         self.ui.comboBoxDropDown_SerialPorts.blockSignals(False)
         self.ui.statusBar().showMessage("Port list updated", 2000)
@@ -1599,7 +1639,7 @@ class QSerialUI(QObject):
         # self.rx = 0.5 * self.rx + 0.5 * rx
         # self.tx = 0.5 * self.tx + 0.5 * tx
         self.ui.label_throughput.setText(
-            "RX:{:<5.1f} TX:{:<5.1f} kB/s".format(self.rx / 1024, self.tx / 1024)
+            "Rx:{:<5.1f} Tx:{:<5.1f} kB/s".format(self.rx / 1024, self.tx / 1024)
         )
         self.lastNumReceived = numReceived
         self.lastNumSent = numSent
@@ -1719,11 +1759,15 @@ class QSerialUI(QObject):
 # these routines have no access to the user interface,
 # communication occurs through signals
 #
-# for serial write we send bytes
-# for serial read we receive bytes
-# conversion from text to bytes occurs in QSerialUI
-#
 #    This is the Model of the Model - View - Controller (MVC) architecture.
+#
+# start and stop worker
+# sent text, lines,
+# scan for serial ports and baudrate
+# change or open port
+# change line termination, baudrate 
+# change esp serial reset
+# calculate serial throughput 
 #
 ##########################################################################################################################################        
 ##########################################################################################################################################        
@@ -1765,12 +1809,12 @@ class QSerial(QObject):
     ########################################################################################
     receivedData             = pyqtSignal(bytes)                                           # text received on serial port
     receivedLines            = pyqtSignal(list)                                            # lines of text received on serial port
-    newPortListReady         = pyqtSignal(list, list)                                      # updated list of serial ports is available
+    newPortListReady         = pyqtSignal(list, list, list)                                # updated list of serial ports is available
     newBaudListReady         = pyqtSignal(tuple)                                           # updated list of baudrates is available
-    serialStatusReady        = pyqtSignal(str, int, bytes, float)                          # serial status is available
+    serialStatusReady        = pyqtSignal(str, int, bytes, float, bool, bool, str)         # serial status is available
     throughputReady          = pyqtSignal(int,int)                                         # number of characters received/sent on serial port
     serialWorkerStateChanged = pyqtSignal(bool)                                            # worker started or stopped
-    logSignal                = pyqtSignal(int, str)                                         # Logging
+    logSignal                = pyqtSignal(int, str)                                        # Logging
     finished                 = pyqtSignal() 
         
     # Init
@@ -1787,7 +1831,7 @@ class QSerial(QObject):
         self.PSer.scanports()
         self.serialPorts     = [sublist[0] for sublist in self.PSer.ports]                  # COM3 ...
         self.serialPortNames = [sublist[1] for sublist in self.PSer.ports]                  # USB ... (COM3)
-        self.serialPortHWID  = [sublist[2] for sublist in self.PSer.ports]                  # USB VID:PID=1A86:7523 LOCATION=3-2
+        self.serialPortHWIDs = [sublist[2] for sublist in self.PSer.ports]                  # USB VID:PID=1A86:7523 LOCATION=3-2
 
         # Baud Rates
         self.serialBaudRates = self.PSer.baudrates                                          # will have default baudrate as no port is open
@@ -1806,6 +1850,10 @@ class QSerial(QObject):
         self.receiverIntervalStandby = 10 * MIN_RECEIVER_INTERVAL  # in milliseconds
         self.serialReadTimeOut       = 0  # in seconds
         self.serialReceiverCountDown = 0  # initialize
+
+        # Throughput calculations for serial polling
+        self.in_rate = 0
+        self.last_CharsReceived = 0
 
         self.handle_log(
             logging.INFO,
@@ -1875,6 +1923,9 @@ class QSerial(QObject):
             )
         else:
             self.throughputReady.emit(0, 0)
+        
+        self.in_rate = self.PSer.totalCharsReceived - self.last_CharsReceived
+        self.last_CharsReceived = self.PSer.totalCharsReceived
 
     @pyqtSlot()
     def on_startReceiverRequest(self):
@@ -1888,7 +1939,8 @@ class QSerial(QObject):
         # start the receiver timer
         serialReadTimeOut, receiverInterval, receiverIntervalStandby = (
             self.compute_timeouts(self.PSer.baud)
-        )
+        ) 
+
         self.receiverIntervalStandby = receiverIntervalStandby
         self.receiverInterval = receiverInterval
         self.serialReadTimeOut = serialReadTimeOut
@@ -2248,15 +2300,16 @@ class QSerial(QObject):
         if self.PSer.scanports() > 0 :
             self.serialPorts     = [sublist[0] for sublist in self.PSer.ports if sublist[1] != 'n/a']
             self.serialPortNames = [sublist[1] for sublist in self.PSer.ports if sublist[1] != 'n/a']
-            self.serialPortHWID  = [sublist[2] for sublist in self.PSer.ports if sublist[1] != 'n/a']
+            self.serialPortHWIDs = [sublist[2] for sublist in self.PSer.ports if sublist[1] != 'n/a']
         else :
-            self.serialPorts = []
+            self.serialPorts     = []
             self.serialPortNames = []
+            self.serialPortHWIDs = []
         self.handle_log(
             logging.INFO,
             f"[{self.thread_id}]: port(s) {self.serialPortNames} available."
         )
-        self.newPortListReady.emit(self.serialPorts, self.serialPortNames)
+        self.newPortListReady.emit(self.serialPorts, self.serialPortNames, self.serialPortHWIDs)
 
     @pyqtSlot()
     def on_scanBaudRatesRequest(self):
@@ -2291,18 +2344,18 @@ class QSerial(QObject):
         )
         if self.PSer.connected:
             self.serialStatusReady.emit(
-                self.PSer.port, self.PSer.baud, self.PSer.eol, self.PSer.timeout
+                self.PSer.port, self.PSer.baud, self.PSer.eol, self.PSer.timeout, self.PSer.esp_reset, self.PSer.connected, self.PSer.hwid
             )
         else:
             self.serialStatusReady.emit(
-                "", self.PSer.baud, self.PSer.eol, self.PSer.timeout
+                "", self.PSer.baud, self.PSer.eol, self.PSer.timeout, self.PSer.esp_reset, self.PSer.connected, ""
             )
 
-    # TODO
-    # !!!!!!!!!!!!!!! Will want to update this based on actual data rate !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    # 
-
     def compute_timeouts(self, baud: int, chars_per_line: int = 50):
+
+        if baud == None or baud <= 0:
+            baud = DEFAULT_BAUDRATE
+
         # Set timeout to the amount of time it takes to receive the shortest expected line of text
         # integer '123/n/r' 5 bytes, which is at least 45 serial bits
         # serialReadTimeOut = 40 / baud [s] is very small and we should just set it to zero (non blocking)
@@ -2332,6 +2385,12 @@ class QSerial(QObject):
 #
 # Serial Low Level
 #
+# Provides 
+#   open, close
+#   read, readline, readlines 
+#   write, writeline, writelines
+#   serial status
+#   ESP reset logic (DTR/RTS toggling)
 #
 #############################################################################################################################################
 #############################################################################################################################################
@@ -2368,6 +2427,8 @@ class PSerial():
 
         self.ser                = None
         self._port              = ""
+        self._hwid              = ""
+        self._portname          = ""
         self._baud              = -1
         self._eol               = b""
         self._timeout           = -1
@@ -2428,7 +2489,7 @@ class PSerial():
             )
             self._ports = []  # Ensure `_ports` is empty on failure
             return 0
-        
+
     def open(self, port: str, baud: int, eol: bytes, timeout: float, esp_reset: bool) -> bool:
         """ 
         Opens the specified serial port.
@@ -2437,27 +2498,51 @@ class PSerial():
         if self._ser_open and self._port == port and self._baud == baud and self._timeout == timeout and self._eol == eol:
             return True
 
+        # Find port and hwid in list of available ports
+        port_found = False
+        for _port in self._ports:
+            if _port[0] == port:
+                port_found = True
+                self._portname_temp = _port[1]
+                self._hwid_temp = _port[2]
+                break
+
+        # If port not in system, exit
+        if not port_found:
+            self.handle_log(
+                logging.ERROR, 
+                f"[SER            ]: port {port} not found in list of available ports."
+            )
+            return False
+
         # Always close first in case it was already open or partially open
         self.close()
 
         try:
-            self.ser = sp(
-                port = port,                    # The serial device
-                baudrate = baud,                # Standard baud rate (115200 is common)
-                bytesize = EIGHTBITS,           # Most common option
-                parity = PARITY_NONE,           # No parity bit
-                stopbits = STOPBITS_ONE,        # Standard stop bit
-                timeout = timeout,              # Timeout for read operations
-                write_timeout = timeout,        # Timeout for write operations
-                inter_byte_timeout = None,      # Disable inter-character timeout
-                rtscts = False,                 # No RTS/CTS handshaking
-                dsrdtr = False,                 # No DSR/DTR signaling
-                xonxoff = False                 # No software flow control
-            )
+            self.ser = Serial()
+            self.ser.port = port                    # The serial device
+            self.ser.baudrate = baud                # Standard baud rate (115200 is common)
+            self.ser.bytesize = EIGHTBITS           # Most common option
+            self.ser.parity = PARITY_NONE           # No parity bit
+            self.ser.stopbits = STOPBITS_ONE        # Standard stop bit
+            self.ser.timeout = timeout              # Timeout for read operations
+            self.ser.write_timeout = timeout        # Timeout for write operations
+            self.ser.inter_byte_timeout = None      # Disable inter-character timeout
+            self.ser.rtscts = False                 # No RTS/CTS handshaking
+            self.ser.dsrdtr = False                 # No DSR/DTR signaling
+            self.ser.xonxoff = False                # No software flow control
+
+            # Set RTS and DTR before opening to avoid unintended resets
+            self.ser.rts = False  # Ensure EN (Reset) stays HIGH
+            self.ser.dtr = False  # Ensure GPIO0 stays HIGH
+
+            # Now open the serial port
+            self.ser.open()
+
         except SerialException as e:
             self.handle_log(
                 logging.ERROR, 
-                f"[SER            ]: SerialException: {e}; failed to open {port} with baud {baud}."
+                f"[SER            ]: SerialException: {e}; failed to create {port} with baud {baud}."
             )
             self._ser_open = False
             self.ser = None
@@ -2474,19 +2559,7 @@ class PSerial():
             return False
 
         # Attempt to set buffer size
-        try:
-            self.ser.set_buffer_size(rx_size=16384, tx_size=16384)
-        except Exception as e:
-            self.handle_log(
-                logging.ERROR, 
-                f"[SER            ]: error setting buffer size - {e}"
-            )
-
-        # If no exceptions occurred, the port was successfully opened
-        self.handle_log(
-            logging.INFO, 
-            f"[SER            ]: opened {port} at {baud} baud, timeout {timeout}."
-        )
+        self.set_serial_buffer(self.ser, rx_size=16384, tx_size=16384)
 
         # Mark serial as open
         self._ser_open  = True
@@ -2496,6 +2569,16 @@ class PSerial():
         self._eol       = eol
         self._leneol    = len(eol)
         self._esp_reset = esp_reset
+        self._hwid      = self._hwid_temp
+        self._portname  = self._portname_temp
+
+        # If no exceptions occurred, the port was successfully opened
+        self.handle_log(
+            logging.INFO, 
+            f"[SER            ]: opened {self._portname} at {port} with {baud} baud, timeout {timeout}"
+            f"{', with esp reset' if esp_reset else ''} and hwid {self._hwid}."
+        )
+
 
         # Perform ESP reset after the port is open
         if esp_reset:
@@ -2509,6 +2592,37 @@ class PSerial():
         self.clear()
         
         return True
+
+    def set_serial_buffer(self, ser, rx_size=16384, tx_size=16384):
+        """
+        Manually set the serial buffer size on Linux/macOS using ioctl.
+        """
+        try:
+            if platform.system() == "Windows":
+                ser.set_buffer_size(rx_size=rx_size, tx_size=tx_size)
+            elif platform.system() == "Linux":
+                # Set read buffer size
+                bufsize = struct.pack("I", rx_size)
+                fcntl.ioctl(ser.fileno(), termios.TIOCSWINSZ, bufsize)
+
+                # Set write buffer size
+                bufsize = struct.pack("I", tx_size)
+                fcntl.ioctl(ser.fileno(), termios.TIOCSWINSZ, bufsize)
+
+            elif platform.system() == "Darwin":  # macOS
+                # macOS does not have TIOCSWINSZ for serial devices.
+                # Instead, we can try adjusting TIOCOUTQ to affect buffer sizes.
+                fcntl.ioctl(ser.fileno(), termios.TIOCOUTQ, struct.pack("I", tx_size))
+                fcntl.ioctl(ser.fileno(), termios.TIOCOUTQ, struct.pack("I", rx_size))
+
+            else:
+                self.handle_log(logging.INFO, f"[SER            ]: Can not buffer size on {platform.system()}")
+                return
+
+            self.handle_log(logging.INFO, f"[SER            ]: Buffer size set to {rx_size}/{tx_size} on {platform.system()}")
+
+        except Exception as e:
+            self.handle_log(logging.WARNING, f"[SER            ]: Could not set buffer size on {platform.system()} - {e}")
 
 
     def clear(self) -> None:
@@ -2679,16 +2793,21 @@ class PSerial():
 
         self.bufferIn.extend(chunk)
 
+        # Ensure `_eol` exists in buffer before splitting
+        if self._eol not in self.bufferIn:
+            return []  # No complete lines yet
+    
         # Delimiter found, split byte array into lines
         lines = self.bufferIn.split(self._eol)
 
-        if lines[-1] == b"":
-            # No partial line, clear the buffer
-            lines.pop()
-            self.bufferIn.clear()
-        else:
-            # Partial line detected, store it for the next read
-            self.bufferIn[:] = lines.pop() 
+        if lines:
+            if lines[-1] == b"":
+                # No partial line, clear the buffer
+                lines.pop()
+                self.bufferIn.clear()
+            else:
+                # Partial line detected, store it for the next read
+                self.bufferIn[:] = lines.pop() 
 
         if DEBUGSERIAL:
             toc = time.perf_counter()
@@ -2771,34 +2890,42 @@ class PSerial():
 
     def _setDTR(self, state: bool):
         """ 
-        Sets the DTR (Data Terminal Ready) signal. 
+        Sets the DTR (Data Terminal Ready) signal.
         """
         if self.ser is None:
             self.handle_log(logging.WARNING, "[ESP Reset      ]: Serial port not initialized.")
             return
 
         try:
-            self.ser.setDTR(state)
-            self.handle_log(logging.DEBUG, f"[ESP Reset      ]: DTR set to {'HIGH' if state else 'LOW'}.")
+            self.ser.dtr = state
+            self.handle_log(logging.DEBUG, f"[ESP Reset      ]: DTR set to {'ACTIVE' if not state else 'INACTIVE'}.")
         except SerialException as e:
             self.handle_log(logging.ERROR, f"[ESP Reset      ]: Failed to set DTR - {e}")
+
 
     def _setRTS(self, state: bool):
         """
         Sets the RTS (Request To Send) signal.
-        Windows Workaround: Forces an update by toggling DTR.
+        Windows Workaround: Some drivers require RTS toggling for changes to take effect.
         """
         if self.ser is None:
             self.handle_log(logging.WARNING, "[ESP Reset      ]: Serial port not initialized.")
             return
 
         try:
-            self.ser.setRTS(state)
+            self.ser.rts = state
+
+            # Windows workaround: Toggle RTS if the system requires it
             if platform.system() == "Windows":
-                self.ser.setDTR(self.ser.dtr)
-            self.handle_log(logging.DEBUG, f"[ESP Reset      ]: RTS set to {'HIGH' if state else 'LOW'}.")
+                time.sleep(0.01)  # Small delay before toggling
+                self.ser.rts = not state
+                time.sleep(0.01)
+                self.ser.rts = state  # Restore intended state
+
+            self.handle_log(logging.DEBUG, f"[ESP Reset      ]: RTS set to {'ACTIVE' if not state else 'INACTIVE'}.")
         except SerialException as e:
             self.handle_log(logging.ERROR, f"[ESP Reset      ]: Failed to set RTS - {e}")
+
 
     def _setDTRandRTS(self, dtr: bool = False, rts: bool = False):
         """
@@ -2818,10 +2945,16 @@ class PSerial():
             status = (status | TIOCM_RTS) if rts else (status & ~TIOCM_RTS)
             fcntl.ioctl(self.ser.fileno(), TIOCMSET, struct.pack("I", status))
 
-            self.handle_log(logging.DEBUG, f"[ESP Reset      ]: DTR={'HIGH' if dtr else 'LOW'}, RTS={'HIGH' if rts else 'LOW'}.")
+            self.handle_log(logging.DEBUG, f"[ESP Reset      ]: DTR={'ACTIVE' if dtr else 'INACTIVE'}, RTS={'ACTIVE' if rts else 'INACTIVE'}.")
         except Exception as e:
             self.handle_log(logging.ERROR, f"[ESP Reset      ]: Failed to set DTR/RTS - {e}")
 
+    # DTR is connected to GPIO0
+    # RTS is connected to EN
+    #
+    # DTR = True, GPIO0 low
+    # RTS = True, EN low    
+    #
     # Sparkfun ESP32 Thing Plus Schematic Notes:
     #
     # - If DTR is LOW, toggling RTS from HIGH to LOW resets to run mode
@@ -2839,14 +2972,21 @@ class PSerial():
         """
         self.handle_log(logging.INFO, "[ESP Reset      ]: Starting Classic Reset (Bootloader Mode).")
 
-        self._setDTR(False)  # IO0 = HIGH
-        self._setRTS(True)   # EN = LOW (Reset active)
-        time.sleep(0.1)
-        self._setDTR(True)   # IO0 = LOW
-        self._setRTS(False)  # EN = HIGH (Reset released)
-        time.sleep(self.reset_delay)
-        self._setDTR(False)  # IO0 = HIGH (Bootloader mode)
+        # self._setDTR(False)  # IO0 = HIGH
+        # self._setRTS(True)   # EN = LOW (Reset active)
+        # time.sleep(0.1)
+        # self._setDTR(True)   # IO0 = LOW
+        # self._setRTS(False)  # EN = HIGH (Reset released)
+        # time.sleep(self.reset_delay)
+        # self._setDTR(False)  # IO0 = HIGH (Bootloader mode)
 
+        self._setDTR(False)  # GPIO0 = high
+        self._setRTS(True)   # EN = low (reset active)
+        time.sleep(0.1)      # Wait for reset
+        self._setDTR(True)   # GPIO0 = low
+        time.sleep(self.reset_delay)
+        self._setRTS(False)  # EN = HIGH (reset inactive)
+    
     def espUnixReset_Bootloader(self):
         """
         UNIX-only ESP reset sequence setting DTR and RTS lines together.
@@ -2877,14 +3017,22 @@ class PSerial():
 
         self.handle_log(logging.INFO, "[ESP Reset      ]: Starting Hard Reset.")
 
-        self._setDTR(False)  # IO0 = HIGH
-        self._setRTS(False)  # EN = HIGH
-        time.sleep(0.2)
-        self._setRTS(True)   # EN = LOW (Reset active)
-        time.sleep(0.2)
-        self._setRTS(False)  # EN = HIGH (Reset released)
-        time.sleep(0.2)
+        # self._setDTR(False)  # IO0 = HIGH
+        # self._setRTS(False)  # EN = HIGH
+        # time.sleep(0.2)
+        # self._setRTS(True)   # EN = LOW (Reset active)
+        # time.sleep(0.2)
+        # self._setRTS(False)  # EN = HIGH (Reset released)
+        # time.sleep(0.2)
 
+        self._setDTR(False)   # IO0 = high
+        time.sleep(0.05)      # Allow GPIO0 state to settle
+        self._setRTS(True)    # EN = low (reset active)
+        time.sleep(0.1)
+        self._setRTS(False)   # EN = high (reset in active)
+        time.sleep(0.2)
+        
+        self.handle_log(logging.INFO, "[ESP Reset      ]: Hard Reset Completed.")
 
     ########################################################################################
     # Reading and Setting Properties of Class
@@ -2945,6 +3093,22 @@ class PSerial():
         else:
             self.handle_log(logging.ERROR, f"[SER            ]: Failed to change port {val}.")
 
+    @property
+    def portname(self) -> str:
+        """ 
+        Returns the name of the currently connected port. 
+        If the port is not open, returns an empty string. 
+        """
+        return self._portname if self._ser_open else ""
+    
+    @property
+    def hwid(self) -> str:
+        """ 
+        Returns the hardware ID of the currently connected port. 
+        If the port is not open, returns an empty string. 
+        """
+        return self._hwid if self._ser_open else ""
+    
     @property
     def baud(self) -> int:
         """ 

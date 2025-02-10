@@ -1,3 +1,4 @@
 #!/bin/bash
 source ~/Python/latest/bin/activate
-python3 /home/uutzinger/Documents/GitHub/SerialUI/SerialUI.py > /home/uutzinger/Documents/GitHub/SerialUI/SerialUI.log 2>&1
+cd /home/uutzinger/Documents/GitHub/SerialUI
+python3 SerialUI.py > SerialUI.log 2>&1

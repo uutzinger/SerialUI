@@ -1859,12 +1859,17 @@
             </property>
             <item>
              <property name="text">
-              <string>newline (\n)</string>
+              <string>none</string>
              </property>
             </item>
             <item>
              <property name="text">
               <string>return newline (\r\n)</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string>newline (\n)</string>
              </property>
             </item>
             <item>
@@ -1875,11 +1880,6 @@
             <item>
              <property name="text">
               <string>newline return (\n\r)</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>none</string>
              </property>
             </item>
            </widget>
