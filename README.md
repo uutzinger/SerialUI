@@ -17,9 +17,10 @@ Comparing Arduino IDE with SerialUI:
 Teensy 4.0 using the Test Program from [Paul Stoffregen](https://github.com/PaulStoffregen/USB-Serial-Print-Speed-Test/blob/master/usb_serial_print_speed.ino) with default settings:
 
 - [Arduino IDE](https://www.pjrc.com/improving-arduino-serial-monitor-performance/) : 526k lines/sec
+- [Putty](https://www.putty.org/) 483k lines/sec
 - [SerialUI](https://github.com/uutzinger/SerialUI): >64k lines/sec and 800 kBytes/sec
 
-Arduino IDE is about 8 times faster in raw text display. With Qt plainText widget, appendText would be the most efficient approach to display text but this method can not be used as it adds a newline after each insertion.
+Arduino IDE is about 8 times faster in raw text display. This is likely due to Qt plainText widget. `appendText` would be the most efficient approach to display text but this method can not be used as it adds a newline after each insertion.
 
 ESP32-S3 Adafruit Feather:
 
