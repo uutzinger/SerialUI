@@ -6,6 +6,8 @@
 ![BLE Serial Monitor](assets/BLE_96.png)
 **BLESerialUI** is equivalent to SerialUI but uses the Nordic Serial UART on a BLE connection (Experimental, Unfinished Code)
 
+The programs are written in python using pyQt. 
+
 ## Efficiency
 
 Comparing Arduino IDE with SerialUI:
@@ -17,7 +19,7 @@ Teensy 4.0 using the Test Program from [Paul Stoffregen](https://github.com/Paul
 - [Arduino IDE](https://www.pjrc.com/improving-arduino-serial-monitor-performance/) : 526k lines/sec
 - [SerialUI](https://github.com/uutzinger/SerialUI): >64k lines/sec and 800 kBytes/sec
 
-Arduino IDE is about 8 times faster in raw text display.
+Arduino IDE is about 8 times faster in raw text display. With Qt plainText widget, appendText would be the most efficient approach to display text but this method can not be used as it adds a newline after each insertion.
 
 ESP32-S3 Adafruit Feather:
 
