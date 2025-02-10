@@ -41,5 +41,5 @@ Results in Channel named "HeaderA" with two values and Channel named HeaderB wit
 ```
 Line 1: "HeaderA: value1, value 2 HeaderB: value1"
 ```
-Results in Channel named "HeaderA_1" with value1 and Channel named HeaderA_1 with value2 and Channel named "HeaderB" with value1.
+Results in Channel named "HeaderA_1" with value1 and Channel named HeaderA_2 with value2 and Channel named "HeaderB" with value1.
 
