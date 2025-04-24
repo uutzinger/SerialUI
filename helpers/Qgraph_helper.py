@@ -6,8 +6,10 @@
 ############################################################################################
 
 # General Imports
-import logging, time
+import logging
+import time
 import re
+import textwrap
 
 # Numerical Math
 import numpy as np
@@ -39,6 +41,7 @@ except:
 # QT Graphing for chart plotting
 import pyqtgraph as pg
 
+# Colors
 try:
     from helpers.Qgraph_colors import color_names_sweet16 as COLORS
 except:
@@ -47,22 +50,16 @@ except:
 ########################################################################################
 # Debug
 DEBUGCHART = False
-# try:
-#     import debugpy
-#     DEBUGPY_ENABLED = True
-# except ImportError:
-#     DEBUGPY_ENABLED = False
-
+PROFILEME   = True
 
 # Constants
 ########################################################################################
 MAX_ROWS = 131072        # data history length
-MAX_COLS = len(COLORS)   # maximum number of columns [available colors]
-DEF_COLS = 2             # default number of columns
-UPDATE_INTERVAL = 100    # milliseconds, visualization does not improve with updates faster than 10 Hz
+MAX_COLS = len(COLORS)   # maximum number of data traces [available colors]
+DEF_COLS          =   2  # default number of data traces
+UPDATE_INTERVAL   =  50  # [ms] 20 Hz plot update, visualization does not improve with higher rate, it takes about 4ms to update plot
 MAX_ROWS_LINEDATA = 512  # maximum number of rows for temporary array when parsing line data
 
-# 131072 * 16 * size_of(float)[8] = 16 MByte
 ########################################################################################
 # Support Functions and Classes
 ########################################################################################
@@ -242,8 +239,8 @@ class QChartUI(QObject):
         on_pushButton_ChartClear
         on_pushButton_ChartSave
         on_pushButton_ChartSaveFigure
-        on_HorizontalSliderChanged(int)
-        on_HorizontalLineEditChanged
+        on_ZoomSliderChanged(int)
+        on_ZoomLineEditChanged
         on_receivedLines(list)
         on_changeDataSeparator
 
@@ -263,6 +260,9 @@ class QChartUI(QObject):
 
         self.thread_id = int(QThread.currentThreadId()) if QThread.currentThreadId() else "N/A"
 
+        self.mtoc_updatePlot = 0.
+        self.mtoc_process_lines_simple = 0.
+        self.mtoc_process_lines = 0.
 
         # Logging setup
         self.logger = logger if logger else logging.getLogger("QChartUI")
@@ -329,7 +329,7 @@ class QChartUI(QObject):
         self.horizontalSlider.setMinimum(8)
         self.horizontalSlider.setMaximum(MAX_ROWS)
         self.horizontalSlider.setValue(int(self.maxPoints))
-        self.lineEdit = self.ui.findChild(QLineEdit, "lineEdit_Horizontal")
+        self.lineEdit = self.ui.findChild(QLineEdit, "lineEdit_Horizontal_Zoom")
         self.lineEdit.setText(str(self.maxPoints))
         
         self.textDataSeparator = 'No Labels (simple)'                                 # default data separator
@@ -340,7 +340,7 @@ class QChartUI(QObject):
 
         # Plot update frequency
         self.ChartTimer = QTimer()
-        self.ChartTimer.setInterval(50)  # milliseconds, we can not see more than 50 Hz, it takes about 4ms to update plot
+        self.ChartTimer.setInterval(UPDATE_INTERVAL)
         self.ChartTimer.timeout.connect(self.updatePlot)
 
         self.handle_log(
@@ -354,6 +354,18 @@ class QChartUI(QObject):
     def handle_log(self, level, message):
         self.logger.log(level, message)
     
+    @pyqtSlot()
+    def handle_mtoc(self):
+        """Emit the mtoc signal with a function name and time in a single log call."""
+        log_message = textwrap.dedent(f"""
+            Chart UI Profiling
+            =============================================================
+            mtoc_updatePlot         took {self.mtoc_updatePlot*1000:.2f} ms
+            mtoc_process_lines      took {self.mtoc_process_lines*1000:.2f} ms
+            mtoc_process_lines_smpl took {self.mtoc_process_lines_simple*1000:.2f} ms
+        """)
+        self.handle_log(logging.INFO, log_message)
+
     def cleanup(self):
         """
         Cleanup the chart UI.
@@ -389,7 +401,7 @@ class QChartUI(QObject):
         - Sets vertical range dynamically based on min/max values of the data.
         """
 
-        if DEBUGCHART:
+        if DEBUGCHART or PROFILEME:
             tic = time.perf_counter()
     
         data = self.buffer.data  # Retrieve circular buffer data
@@ -483,12 +495,19 @@ class QChartUI(QObject):
                 f"[{self.thread_id}]: Plot updated in {1000 * (toc - tic):.2f} ms"
             )
 
+        if PROFILEME:
+            toc = time.perf_counter()
+            self.mtoc_updatePlot = max ((toc - tic), self.mtoc_updatePlot)
+
     ########################################################################################
     # Process Lines Function without Headers
     ########################################################################################
 
     def process_lines_simple(self, lines, encoding="utf-8"):
         """Fast processing of data without headers, dynamically expanding the buffer."""
+
+        if PROFILEME:
+            tic = time.perf_counter()
 
         row_idx = 0             # Tracks row position in data_array
         max_segment_length = 0  # Track longest segment
@@ -555,6 +574,10 @@ class QChartUI(QObject):
         # Clear only the used portion of `data_array`
         self.data_array[:new_samples, :num_columns] = np.nan  
 
+        if PROFILEME:
+            toc = time.perf_counter()
+            self.mtoc_process_lines_simple = max((toc - tic), self.mtoc_process_lines_simple)
+
     ########################################################################################
     # Process Lines Function with Headers
     ########################################################################################
@@ -619,6 +642,9 @@ class QChartUI(QObject):
     #   [  16.  nan  nan]]
 
     def process_lines(self, lines, encoding="utf-8"):
+
+        if PROFILEME:
+            tic = time.perf_counter()
 
         # Initialize variables
         row_idx = 0
@@ -701,6 +727,10 @@ class QChartUI(QObject):
         # Clear only the used portion of `data_array`
         self.data_array[:new_samples, :num_columns] = np.nan  
 
+        if PROFILEME:
+            toc = time.perf_counter()
+            self.mtoc_process_lines = max ((toc - tic), self.mtoc_process_lines)
+
     ########################################################################################
     ########################################################################################
     # Response Functions to User Interface Signals
@@ -712,6 +742,7 @@ class QChartUI(QObject):
         """
         Decode/Parse a list of lines for data and add it to the circular buffer
         """
+
         if DEBUGCHART:
             tic = time.perf_counter()
 
@@ -887,7 +918,7 @@ class QChartUI(QObject):
             self.ChartTimer.start()
 
     @pyqtSlot(int)
-    def on_HorizontalSliderChanged(self, value):
+    def on_ZoomSliderChanged(self, value):
         """
         Serial Plotter Horizontal Slider Handling
         This sets the maximum number of points back in history shown on the plot
@@ -895,11 +926,11 @@ class QChartUI(QObject):
         Update the line edit box when the slider is moved
         This changes how far back in history we plot
         """
-        value = clip_value(value, 16, MAX_ROWS)
-        self.lineEdit.setText(str(int(value)))
-        self.maxPoints = int(value)
+        new_value = int(clip_value(value, 16, MAX_ROWS))
+        self.lineEdit.setText(str(new_value))
+        self.maxPoints = new_value
         self.horizontalSlider.blockSignals(True)
-        self.horizontalSlider.setValue(int(value))
+        self.horizontalSlider.setValue(new_value)
         self.horizontalSlider.blockSignals(False)
         if DEBUGCHART:
             self.handle_log(
@@ -909,7 +940,7 @@ class QChartUI(QObject):
         self.updatePlot()
 
     @pyqtSlot()
-    def on_HorizontalLineEditChanged(self):
+    def on_ZoomLineEditChanged(self):
         """
         Serial Plotter Horizontal Line Edit Handling
         Updates the slider and the history range when text is entered manually.
@@ -937,13 +968,12 @@ class QChartUI(QObject):
         self.horizontalSlider.setValue(value)
         self.horizontalSlider.blockSignals(False)
 
-        self.maxPoints = value  # Update maxPoints
+        self.maxPoints = value  # Update max points
 
-        if DEBUGCHART:
-            self.handle_log(
-                logging.DEBUG,
-                f"[{self.thread_id}]: Horizontal zoom line edit set to {value}."
-            )
+        self.handle_log(
+            logging.DEBUG,
+            f"[{self.thread_id}]: Horizontal zoom line edit set to {value}."
+        )
 
         self.updatePlot()
 

@@ -10,28 +10,33 @@ The programs are written in python using pyQt.
 
 ## Efficiency
 
-Comparing Arduino IDE with SerialUI:
+Comparing SerialUI to other serial IO programs:
 
 **Text Display**
 
-Teensy 4.0 using the Test Program from [Paul Stoffregen](https://github.com/PaulStoffregen/USB-Serial-Print-Speed-Test/blob/master/usb_serial_print_speed.ino) with default settings:
+Teensy 4.0 using the Test Program from [Paul Stoffregen](https://github.com/PaulStoffregen/USB-Serial-Print-Speed-Test/blob/master/usb_serial_print_speed.ino) with default settings produces about 530k lines/second and 19Mbytes/second on the USB port:
 
-- [Arduino IDE](https://www.pjrc.com/improving-arduino-serial-monitor-performance/) : 526k lines/sec
-- [Putty](https://www.putty.org/) 483k lines/sec
-- [SerialUI](https://github.com/uutzinger/SerialUI): >64k lines/sec and 800 kBytes/sec
+- [SerialUI](https://github.com/uutzinger/SerialUI): ~500k lines/sec at ~17 MBytes/sec
+- [Arduino IDE (2.3.5)](https://www.pjrc.com/improving-arduino-serial-monitor-performance/): 530k lines/sec
+- [Putty](https://www.putty.org/): 483k lines/sec
+- `cat /dev/ttyACM0 | pv -r > /dev/null` 14-18 MB/s
+- `screen /dev/ttyACM0 4000000` 160k lines/sec
 
-Arduino IDE is about 8 times faster in raw text display. This is likely due to Qt plainText widget. `appendText` would be the most efficient approach to display text but this method can not be used as it adds a newline after each insertion.
+Arduino IDE is slightly faster in raw text display. 
+
+Limit in SerialUI is the Qt plain text display widget. It can display about 70k lines/sec.
+SerialUI displays the most recent text in the display window. It saves all data to file at the reported throughput.
 
 ESP32-S3 Adafruit Feather:
 
-- [Arduino IDE](https://www.pjrc.com/improving-arduino-serial-monitor-performance/) : 17k lines/sec
+- [Arduino IDE](https://www.pjrc.com/improving-arduino-serial-monitor-performance/): 17k lines/sec
 - [Serial UI](https://github.com/uutzinger/SerialUI): 17k lines/sec and 560 kBytes/sec
 
-There is no difference between Arduino IDE and SerialUI.
+There is no difference between SerialUI and ArduinoIDE.
 
 **Charting**
 
-With simple simulated data from Teensy 4.0 we can retrieve and plot about 2 channels with 80k samples/second/channel.
+With simple simulated data from Teensy 4.0 we can retrieve and plot 2 channels with about 80k samples/second/channel.
 
 Arduino IDE plotter does not provide performance metrics.
 

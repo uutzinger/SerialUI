@@ -4,29 +4,30 @@
 ############################################################################################
 #
 # - GeneralCodec: 
-#       Encodes and decodes data to a limited set of number 0..BASE-1.
+#       Encodes and decodes data to a limited set of alternatives: 0..BASE-1. 
+#       No encoding is 0..255. BASE 10 is 0..9. BASE 2 is 0..1.
 # - PrintableCodec: 
 #       Encodes binary data to printable ASCII characters.
 # - Compressor: 
 #       Compresses and decompresses data using 
-#           Run-Length Encoding, 
-#           zlib, or 
+#           rle: Run-Length Encoding, 
+#           zlib, 
 #           tamp.
 # - ADPCMCodec: 
 #       Encodes and decodes audio data using 
 #           raw on mono stereo int8 or int16 data
 #           ADPCM on mono or stereo int8 or int16 data.
-#          (can handle about 1-2 M samples/sec on Ryzen 5 laptop)
+#          (can handle about 1-2 M samples/sec on Ryzen 7 laptop)
 # - StreamProcessors: 
 #       Binary Stream: 
 #           Processes a stream of data packets separated by a packet separator.
 #           Packets are encoded using COBS (Consistent Overhead Byte Stuffing) encoding, 
 #             essentially removing b\\x00 bytes from the data and using it as end of packet marker
-#           The first byte of each packet is the data type, followed by the data.
-#           (can handle about 20-30 MBytes/sec without compression and 2-4 MBytes/sec with compression on Ryzen 5 laptop)
+#           The first byte of each packet determines the data type, followed by the data.
+#           (can handle about 20-30 MBytes/sec without compression and 2-4 MBytes/sec with compression on Ryzen 7 laptop)
 #       Arduino Text Stream Processor:
 #           Processes text data in a format similar to the Arduino Serial Plotter.
-#           (can handle about 5-10k short lines/sec on Ryzen 5 laptop)
+#           (can handle about 5-10k short lines/sec on Ryzen 7 laptop)
 #
 # Dependencies:
 # 
@@ -53,7 +54,7 @@
 # SCIPY https://docs.scipy.org/doc/scipy/reference/fft.html
 #       used for discrete cosine transformation for image compression/decompression
 #       uses RLE compression
-#       arduino library not yet made, need for image tranmission
+#       arduino library not yet made, needed for image transmission
 #
 # Notes:
 #
@@ -62,7 +63,7 @@
 #  boolean                          1
 #  byte                             1
 #  character                        1
-#  int8                             1 -128..127
+#  int8                             1: -128..127
 #  short integer, int16             2
 #  unsigned short integer, uint16   2
 #  integer, int32                   4
@@ -72,8 +73,8 @@
 #  float                            4
 #  double                           8
 #
-# Nordic UART Service typical 185 MTU and therefore has 182 bytes payload
-# Max MTU for BLE is 247 and therefore 244 bytes payload
+# Nordic UART Service has typical 185 MTU and therefore it has a 182 bytes payload
+# Max MTU for BLE is 247 and therefore a 244 bytes payload
 # If packet size is larger, they need to be assembled from multiple payloads
 #
 # ------------------------------------------------
@@ -1193,7 +1194,7 @@ class BinaryStreamProcessor:
 
     def __init__(self, eop=b'\x00', logger = None):
 
-        self.eop = eop                   # End of packet marker, default for COBS
+        self.eop = eop                     # End of packet marker, default for COBS
         self.partial_packet = bytearray()  # Partial packet buffer
 
         # Audio ADPCM codecs
@@ -2740,8 +2741,8 @@ if __name__ == "__main__":
     assert byte_data == decompressed
 
     # COBS  [PASSED]
-    # 80 microscends for 1k text encode
-    # 85 microscends for 1k text decode`
+    # 80 microseconds for 1k text encode
+    # 85 microseconds for 1k text decode`
 
     data = os.urandom(1024)
     print(f"Original: {data}")

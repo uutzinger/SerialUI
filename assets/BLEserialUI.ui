@@ -342,7 +342,7 @@
          </widget>
         </item>
         <item>
-         <layout class="QHBoxLayout" name="horizontalLayout_bottom_Plotter" stretch="1,1,1">
+         <layout class="QHBoxLayout" name="horizontalLayout_bottom_Plotter" stretch="1,1,0">
           <item>
            <layout class="QHBoxLayout" name="horizontalLayout_bottom_left">
             <property name="spacing">
@@ -588,9 +588,9 @@
             <widget class="QWidget" name="layoutWidget">
              <property name="geometry">
               <rect>
-               <x>10</x>
+               <x>0</x>
                <y>20</y>
-               <width>470</width>
+               <width>321</width>
                <height>27</height>
               </rect>
              </property>

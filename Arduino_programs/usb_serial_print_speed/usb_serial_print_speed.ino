@@ -26,9 +26,9 @@ uint32_t count_per_second;
 //#define Serial SerialUSB
 
 void setup() {
-  Serial.begin(1000000); // edit for highest baud your board can use
+  Serial.begin(4000000); // edit for highest baud your board can use
   while (!Serial){delay(5);}
-  count = 10000000; // starting with 8 digits gives consistent chars/line
+  count = 100000000; // starting with 8 digits gives consistent chars/line
   prior_count = count;
   count_per_second = 0;
   prior_msec = millis();
@@ -42,7 +42,7 @@ void loop() {
   count = count + 1;
   uint32_t msec = millis();
   if (msec - prior_msec > 1000) {
-    // when 1 second as elapsed, update the lines/sec count
+    // when 1 second has elapsed, update the lines/sec count
     prior_msec = prior_msec + 1000;
     count_per_second = count - prior_count;
     prior_count = count;
