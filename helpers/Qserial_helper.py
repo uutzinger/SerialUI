@@ -1709,29 +1709,39 @@ class QSerialUI(QObject):
 
         tic = time.perf_counter()
         deltaTime = tic - self.lastNumComputed
+        self.lastNumComputed = tic
 
         # delta num chars received and sent
         rx = numReceived - self.lastNumReceived
         tx = numSent - self.lastNumSent
 
+        self.lastNumReceived = numReceived
+        self.lastNumSent = numSent
+
         # calculate throughput
         # deltaTime is in milli seconds -> *1000
         # numReceived and numSent are in kilo bytes -> /1024
-        if rx >=0: self.rx = (rx * 1000 / 1024.) / deltaTime
-        if tx >=0: self.tx = (tx * 1000 / 1024.) / deltaTime
+        if rx >=0: 
+            self.rx = rx / deltaTime
+        if tx >=0: 
+            self.tx = tx / deltaTime
 
         # # poor man's low pass
         # self.rx = 0.5 * self.rx + 0.5 * rx
         # self.tx = 0.5 * self.tx + 0.5 * tx
 
-        self.ui.label_throughput.setText(
-            f"Rx:{self.rx:7,.0f}  Tx:{self.tx:7,.0f} kB/s"
-        )
-
-        self.lastNumReceived = numReceived
-        self.lastNumSent = numSent
-
-        self.lastNumComputed = tic
+        if self.rx>1_000_000 or self.tx>1_000_000:
+            self.ui.label_throughput.setText(
+                f"Rx:{self.rx/1048576.:7,.2f}  Tx:{self.tx/1048576.:7,.2f} MB/s".replace(",","_")
+            )
+        elif self.rx>1_000 or self.tx>1_000:
+            self.ui.label_throughput.setText(
+                f"Rx:{self.rx/1024.:7,.1f}  Tx:{self.tx/1024.:7,.1f} kB/s".replace(",","_")
+            )
+        else:
+            self.ui.label_throughput.setText(
+                f"Rx:{self.rx:7,.1f}  Tx:{self.tx:7,.1f} B/s".replace(",","_")
+            )
 
         if PROFILEME: 
             toc = time.perf_counter()
