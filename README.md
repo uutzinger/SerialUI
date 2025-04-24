@@ -8,6 +8,52 @@
 
 The programs are written in python using pyQt. 
 
+## Description
+<img src="docs/SerialMonitor.png" alt="Serial Monitor" width="600"/>
+<img src="docs/SerialPlotter.png" alt="Serial Plotter" width="600"/>
+
+## How to Use This Program
+- [Usage instructions](docs/Instructions.md).
+- [Supplemental instructions](docs/Supplementalinstructions.md).
+- [Helpful reading for QT and qtgraph](docs/Helpful_readings.md).
+
+## Installation Requirements
+*One liner Windows:* 
+    - `pip3 install pyqt5 pyqtgraph numpy pyserial markdown wmi bleak qasync`
+
+*One liner Linux:* 
+    - `pip3 install pyqt5 pyqtgraph numpy pyserial markdown pyudev bleak qasync`
+
+- `pyqt5` or `pyqt6` user interface
+- `pyqtgraph` display
+- `numpy` data gathering and manipulation
+- `pyserial` serial interface
+- `markdown` help file
+- `wmi` on Windows for USB device notifications
+- `pyudev` on Linux  for USB device notifications
+- `qasync` and `bleak` for bluetooth communication
+
+In future version we will also need:
+
+- `scipy` image decompression
+- `numba` acceleration of numpy code
+- `cobs` serial data encoding (byte stuffing)
+- `zlib` and `tamp` for compression 
+
+Installation of PyQt5/6 has its own dependencies. If it fails, read the suggested solution in the error messages.
+For example pyOpenGL might be required.
+
+The main programs are `SerialUI.py` and `BLESerialUI.py`. The use files in the `assets` and `helper` folders.
+
+## Data Parsing
+- [Data Parsing](docs/Dataparsing.md)
+
+## Indicating Data
+- [Feature not implemented yet](docs/Indicating.md).
+
+## Arduino Test Programs
+In the `Arduino_programs` folder are example programs that simulate data for display.
+
 ## Efficiency
 
 Comparing SerialUI to other serial IO programs:
@@ -39,52 +85,6 @@ There is no difference between SerialUI and ArduinoIDE.
 With simple simulated data from Teensy 4.0 we can retrieve and plot 2 channels with about 80k samples/second/channel.
 
 Arduino IDE plotter does not provide performance metrics.
-
-## Installation Requirements
-*One liner Windows:* 
-    - `pip3 install pyqt5 pyqtgraph numpy pyserial markdown wmi bleak qasync`
-
-*One liner Linux:* 
-    - `pip3 install pyqt5 pyqtgraph numpy pyserial markdown pyudev bleak qasync`
-
-- `pyqt5` or `pyqt6` user interface
-- `pyqtgraph` display
-- `numpy` data gathering and manipulation
-- `pyserial` serial interface
-- `markdown` help file
-- `wmi` on Windows for USB device notifications
-- `pyudev` on Linux  for USB device notifications
-- `qasync` and `bleak` for bluetooth communication
-
-In future version we will also need:
-
-- `scipy` image decompression
-- `numba` acceleration of numpy code
-- `cobs` serial data encoding (byte stuffing)
-- `zlib` and `tamp` for compression 
-
-Installation of PyQt5/6 has its own dependencies. If it fails, read the suggested solution in the error messages.
-For example pyOpenGL might be required.
-
-The main programs are `SerialUI.py` and `BLESerialUI.py`. The use files in the `assets` and `helper` folders.
-
-## Description
-<img src="docs/SerialMonitor.png" alt="Serial Monitor" width="600"/>
-<img src="docs/SerialPlotter.png" alt="Serial Plotter" width="600"/>
-
-## How to Use This Program
-- [Usage instructions](docs/Instructions.md).
-- [Supplemental instructions](docs/Supplementalinstructions.md).
-- [Helpful reading for QT and qtgraph](docs/Helpful_readings.md).
-
-## Data Parsing
-- [Data Parsing](docs/Dataparsing.md)
-
-## Indicating Data
-- [Feature not implemented yet](docs/Indicating.md).
-
-## Arduino Test Programs
-In the `Arduino_programs` folder are example programs that simulate data for display.
 
 ## Author
 Urs Utzinger, 2022-2025 (University of Arizona)
