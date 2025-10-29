@@ -98,6 +98,12 @@ The data parser extract values and variable names from lines of text. Besides a 
 
 Indicating data is not implemented yet: [Feature not implemented yet](docs/Indicating.md).
 
+## fastplotlib
+
+Fastplotlib itself is under development. There is cusom legend.py in python libraries folder that is needed when you enable fastplotlib in the config file. Legends need work.
+
+During program startup the library and the chart widget is initialized. This requires building pipeline for GPU which takes 5-10 seconds. During that time the program might be sluggish.
+
 ## Arduino Test Programs
 
 In the `Arduino_programs` folder are example programs that simulate data for serial UART and BLE connection.
