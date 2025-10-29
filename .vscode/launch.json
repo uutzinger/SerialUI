@@ -6,16 +6,18 @@
         "type": "python",
         "request": "launch",
         "program": "${file}",
-        "stopOnEntry": true,
         "console": "integratedTerminal",
         "cwd": "${workspaceFolder}",
         "justMyCode": false,
-        "subProcess": true,
-        "debugOptions": [
-          // "WaitOnAbnormalExit",
-          // "WaitOnNormalExit",
-          "RedirectOutput"
-        ]
+        "redirectOutput": true,
+        "env": {
+          //"QT_WAYLAND_DISABLE_WINDOWDECORATION": "0",
+          //"QT_QPA_PLATFORMTHEME": "gtk3"
+          // Optionally test X11 vs Wayland:
+          // "QT_QPA_PLATFORM": "wayland"
+          // "QT_QPA_PLATFORM": "xcb"
+          // "LD_PRELOAD": "/usr/lib/x86_64-linux-gnu/libasan.so.6 /usr/lib/x86_64-linux-gnu/libubsan.so.1"
+        }
       }
     ]
   }

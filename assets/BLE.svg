@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   width="15.807734mm"
+   height="9.1324997mm"
+   viewBox="0 0 15.807734 9.1324997"
+   version="1.1"
+   id="svg5"
+   sodipodi:docname="BLE.svg"
+   inkscape:version="1.1.2 (0a00cf5339, 2022-02-04)"
+   inkscape:export-filename="/home/uutzinger/Documents/GitHub/SerialUI/assets/BLE_128.png"
+   inkscape:export-xdpi="205.67"
+   inkscape:export-ydpi="205.67"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview7"
+     pagecolor="#ffffff"
+     bordercolor="#666666"
+     borderopacity="1.0"
+     inkscape:pageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="true"
+     inkscape:document-units="mm"
+     showgrid="false"
+     inkscape:zoom="16.655888"
+     inkscape:cx="9.3360378"
+     inkscape:cy="6.7843876"
+     inkscape:window-width="2560"
+     inkscape:window-height="1303"
+     inkscape:window-x="0"
+     inkscape:window-y="0"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="layer1"
+     fit-margin-top="0"
+     fit-margin-left="0"
+     fit-margin-right="0"
+     fit-margin-bottom="0" />
+  <defs
+     id="defs2" />
+  <g
+     inkscape:label="Layer 1"
+     inkscape:groupmode="layer"
+     id="layer1"
+     transform="translate(-56.081589,-36.684626)">
+    <path
+       d="m 63.985334,40.195927 -3.233375,-3.313976 c -0.123047,-0.126172 -0.291882,-0.197325 -0.46813,-0.197325 -0.176248,0 -0.345083,0.07115 -0.46813,0.197325 l -3.548224,3.636747 c -0.183734,0.188313 -0.236572,0.468348 -0.134675,0.710807 0.102188,0.24246 0.339705,0.400102 0.602805,0.400102 h 5.851008 l -3.001672,3.076605 c -0.252272,0.258594 -0.247257,0.67265 0.01134,0.924994 0.258594,0.252271 0.672723,0.247184 0.924994,-0.01141 l 3.464133,-3.550476 3.464133,3.550476 c 0.252272,0.258595 0.666401,0.263682 0.924995,0.01141 0.258595,-0.252271 0.263682,-0.666473 0.01134,-0.924994 L 65.3842,41.629607 h 5.851008 c 0.2631,0 0.500617,-0.157642 0.602805,-0.400102 0.0346,-0.08198 0.05131,-0.168253 0.05131,-0.25387 0,-0.167526 -0.06439,-0.332291 -0.185987,-0.456937 l -3.548224,-3.636747 c -0.123047,-0.126172 -0.291882,-0.197325 -0.46813,-0.197325 -0.176248,0 -0.345083,0.07115 -0.46813,0.197325 z m -5.697726,0.125373 1.996148,-2.045934 1.996148,2.045934 z m 11.395379,0 H 65.69069 l 1.996149,-2.045934 z"
+       id="path847"
+       style="fill:#000000;fill-opacity:1;stroke:none;stroke-width:0.046;stroke-miterlimit:4;stroke-dasharray:none;stroke-opacity:1"
+       inkscape:export-filename="/home/uutzinger/Documents/GitHub/SerialUI/assets/BLE_128.png"
+       inkscape:export-xdpi="205.67148"
+       inkscape:export-ydpi="205.67148" />
+  </g>
+</svg>

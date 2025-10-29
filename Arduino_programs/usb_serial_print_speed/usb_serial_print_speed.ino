@@ -35,6 +35,9 @@ void setup() {
 }
 
 void loop() {
+  //fastest for ESP32
+  //Serial.printf("count=%9lu, lines/sec=%6lu\r\n", count, count_per_second);
+  //fastest for Teensy
   Serial.print("count=");
   Serial.print(count);
   Serial.print(", lines/sec=");

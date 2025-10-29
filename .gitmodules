@@ -1,0 +1,6 @@
+[submodule "helpers/line_parsers/third_party/abseil-cpp"]
+	path = helpers/line_parsers/third_party/abseil-cpp
+	url = https://github.com/abseil/abseil-cpp
+[submodule "helpers/line_parsers/abseil-cpp"]
+	path = helpers/line_parsers/abseil-cpp
+	url = https://github.com/abseil/abseil-cpp

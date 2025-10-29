@@ -1,9 +1,0 @@
-[Desktop Entry]
-Version=1.0
-Type=Application
-Categories=Utility;
-Name=BLE Serial UI
-Exec=/home/uutzinger/Documents/GitHub/SerialUI/runBLE.sh
-Terminal=false
-Icon=/home/uutzinger/Documents/GitHub/SerialUI/assets/BLE_96.png
-Path=/home/uutzinger/Documents/GitHub/SerialUI

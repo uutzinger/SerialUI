@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   width="20.548655mm"
+   height="9.132699mm"
+   viewBox="0 0 20.548655 9.132699"
+   version="1.1"
+   id="svg5"
+   sodipodi:docname="Serial.svg"
+   inkscape:version="1.1.2 (0a00cf5339, 2022-02-04)"
+   inkscape:export-filename="/home/uutzinger/Documents/GitHub/SerialUI/assets/USB_128.png"
+   inkscape:export-xdpi="158.2196"
+   inkscape:export-ydpi="158.2196"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview7"
+     pagecolor="#ffffff"
+     bordercolor="#666666"
+     borderopacity="1.0"
+     inkscape:pageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="true"
+     inkscape:document-units="mm"
+     showgrid="false"
+     inkscape:zoom="2.768771"
+     inkscape:cx="17.516797"
+     inkscape:cy="47.674582"
+     inkscape:window-width="2560"
+     inkscape:window-height="1303"
+     inkscape:window-x="0"
+     inkscape:window-y="0"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="layer1"
+     fit-margin-top="0"
+     fit-margin-left="0"
+     fit-margin-right="0"
+     fit-margin-bottom="0" />
+  <defs
+     id="defs2" />
+  <g
+     inkscape:label="Layer 1"
+     inkscape:groupmode="layer"
+     id="layer1"
+     transform="translate(-34.297585,-36.569145)">
+    <path
+       d="M 54.84624,41.135675 52.563539,39.81742 V 40.7578 H 40.895995 l 2.271803,-2.400195 c 0.193339,-0.15497 0.446302,-0.263685 0.706521,-0.269705 1.052688,0 1.677825,-3.45e-4 1.907934,-5e-4 0.155978,0.44439 0.57495,0.765145 1.073034,0.765145 0.63011,0 1.141467,-0.511315 1.141467,-1.141655 0,-0.63061 -0.511312,-1.141745 -1.141467,-1.141745 -0.498084,0 -0.917056,0.320575 -1.073034,0.7646 l -1.88558,-3.45e-4 c -0.511036,0 -1.046528,0.280385 -1.387357,0.60908 0.0093,-0.0097 0.019,-0.02015 -5e-4,1.75e-4 -0.0072,0.0081 -2.410306,2.546264 -2.410306,2.546264 -0.192929,0.15475 -0.445758,0.262775 -0.705796,0.26898 h -1.319887 c -0.174956,-0.87196 -0.944939,-1.528895 -1.868574,-1.528895 -1.053061,0 -1.906668,0.853606 -1.906668,1.906351 0,1.05306 0.853607,1.906709 1.906668,1.906709 0.923817,0 1.693802,-0.657485 1.868756,-1.53016 h 1.296765 c 0.0035,0 0.0067,1.75e-4 0.01005,0 h 2.868193 c 0.259534,0.0066 0.512042,0.11478 0.704791,0.269711 0,0 2.402546,2.537965 2.409986,2.546174 0.01925,0.0204 0.0097,0.0098 1.7e-4,1.75e-4 0.340829,0.328651 0.876551,0.60885 1.387683,0.60885 l 1.817144,-3.4e-4 v 0.76537 h 2.283293 v -2.283125 h -2.283313 v 0.76437 c 0,0 -0.478602,-0.001 -1.839414,-0.001 -0.260264,-0.006 -0.513502,-0.114555 -0.706751,-0.269525 l -2.272303,-2.400655 h 8.814266 v 0.941885 z"
+       id="path1334"
+       style="fill:#000000;fill-opacity:1;stroke-width:0.046;stroke-miterlimit:4;stroke-dasharray:none"
+       inkscape:export-filename="/home/uutzinger/Documents/GitHub/SerialUI/assets/USB_128.png"
+       inkscape:export-xdpi="158.2196"
+       inkscape:export-ydpi="158.2196" />
+  </g>
+</svg>

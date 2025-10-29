@@ -1,135 +1,120 @@
-############################################################################################
+############################################################################################################################################
 # QT BLE Serial UART Helper
-############################################################################################
-# November 2024: initial work
+#
+# QBLESerial:         Controller  - BLE interface to GUI, runs in main thread.
+# BLEAKWorker:        Model       - Functions running in separate async thread, communication through signals and slots with QBLESerial.
+#                                   This offers scanning, connecting, disconnecting, sending and receiving data.
+# AsyncThread:        Model       - Custom QThread to run asyncio event loop for BLEAKWorker.
+# BluetoothctlWorker: Model       - Functions through signals and slots with QBLESerial and wrapping the Bluetoothctl interface (Linux only).
+#                                   This offers pairing, trusting of devices
 #
 # This code is maintained by Urs Utzinger
-############################################################################################
+############################################################################################################################################
+#
+# ==============================================================================
+# Configuration
+# ==============================================================================
+from config import (FLUSH_INTERVAL_MS,
+                    BLEPIN, 
+                    SERVICE_UUID, RX_CHARACTERISTIC_UUID, TX_CHARACTERISTIC_UUID,
+                    USE_BLUETOOTHCTL, BLEMTUMAX, BLEMTUNORMAL, ATT_HDR, BLEMTUDEFAULT,
+                    PROFILEME, DEBUGSERIAL, DEBUG_LEVEL,
+                    EOL_DICT, EOL_DICT_INV, EOL_DEFAULT_BYTES,
+                    DEFAULT_TEXT_LINES,
+                    MAX_DATAREADYCALLS, MAX_EOL_DETECTION_TIME, MAX_EOL_FALLBACK_TIMEOUT,
+                    MAX_BACKLOG_BYTES
+                   )
 
-############################################################################################
-# This code has 3 sections
-# QBLESerialUI: Interface to GUI, runs in main thread.
-# QBLESerial:   Functions running in separate thread, communication through signals and slots.
-############################################################################################
-
-import re
+# ==============================================================================
+# Imports
+# ==============================================================================
+# General Imports
+# ----------------------------------------
 import time
 import logging
-import threading
-
+import textwrap
+import platform
 from pathlib import Path
-
+from typing import Any
+import inspect
+#
+# Array operations
+import numpy as np
+#
+# Bleak IO event 
 import asyncio
-from qasync import QEventLoop  # Library to integrate asyncio with Qt
-from bleak  import BleakClient, BleakScanner, BleakError 
-
-try: 
-    from PyQt6.QtCore import (
-        QObject, QTimer, QThread, pyqtSignal, pyqtSlot, QStandardPaths,
-    )
-    from PyQt6.QtCore import Qt, QObject, QThread, QTimer, pyqtSignal, pyqtSlot, QStandardPaths
-    from PyQt6.QtGui import QTextCursor
-    from PyQt6.QtWidgets import QFileDialog, QMessageBox
-    hasQt6 = True
-except:
-    from PyQt5.QtCore import (
-        QObject, QTimer, QThread, pyqtSignal, pyqtSlot, QStandardPaths,
-    )
-    from PyQt5.QtCore import Qt, QObject, QThread, QTimer, pyqtSignal, pyqtSlot, QStandardPaths
-    from PyQt5.QtGui import QTextCursor
-    from PyQt5.QtWidgets import QFileDialog, QMessageBox
-    hasQt6 = False
-
-# Custom Helpers
-from helpers.Codec_helper         import BinaryStreamProcessor
+#
+# Bluetooth library
+from bleak import BleakClient, BleakScanner, BleakError
+from bleak.backends.device import BLEDevice
+#
+# Custom Imports
+# ----------------------------------------
+from helpers.IncompleteHTMLTracker import IncompleteHTMLTracker
 from helpers.Qbluetoothctl_helper import BluetoothctlWrapper
-
-# Constants
-########################################################################################
-DEBUGSERIAL            = False       # enable debug output
-MAX_TEXTBROWSER_LENGTH = 4096        # display window is trimmed to these number of lines
-                                     # lesser value results in better performance
-MAX_LINE_LENGTH        = 1024        # number of characters after which an end of line characters is expected
-RECEIVER_FINISHCOUNT   = 10          # [times] If we encountered a timeout 10 times we slow down serial polling
-NUM_LINES_COLLATE      = 10          # [lines] estimated number of lines to collate before emitting signal
-                                     #   this results in collating about NUM_LINES_COLLATE * 48 bytes in a list of lines
-                                     #   plotting and processing large amounts of data is more efficient for display and plotting
-MAX_RECEIVER_INTERVAL  = 100         # [ms]
-MIN_RECEIVER_INTERVAL  = 5           # [ms]
-
-
-# UUIDs for the UART service and characteristics
-SERVICE_UUID           = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
-RX_CHARACTERISTIC_UUID = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
-TX_CHARACTERISTIC_UUID = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
-
-#BLE Constants
-BLETIMEOUT             = 30  # Timeout for BLE operations
-BLEMTUMAX              = 517
-BLEMTUNORMAL           = 247
-
-# Medibrick
-TARGET_DEVICE_NAME     = "MediBrick_BLE"  # The name of the BLE device to search for
-BLEPIN                 = 123456           # Known pairing pin for Medibrick_BLE
-
-# Remove ANSI escape sequences
-ANSI_ESCAPE            = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-
-##########################################################################################################################################        
-##########################################################################################################################################        
+from helpers.General_helper import wait_for_signal, connect, disconnect, qobject_alive
+try: 
+    from PyQt6.QtCore import Qt, QObject, QThread, QTimer,  pyqtSignal, pyqtSlot
+    from PyQt6.QtGui import QTextCursor
+    ConnectionType = Qt.ConnectionType
+    PreciseTimerType = Qt.TimerType.PreciseTimer
+    CursorEnd = QTextCursor.MoveOperation.End
+except Exception:
+    from PyQt5.QtCore import Qt, QObject, QThread, QTimer, pyqtSignal, pyqtSlot
+    from PyQt5.QtGui import QTextCursor
+    ConnectionType = Qt
+    PreciseTimerType = QTimer.PreciseTimer
+    CursorEnd = QTextCursor.End
+#
+# Profiling
+# ----------------------------------------
+try:
+    profile                                                                    # provided by kernprof at runtime
+except NameError:
+    def profile(func):                                                         # no-op when not profiling
+        return func
+    
+############################################################################################################################################
 #
 # QBLESerial interaction with Graphical User Interface
 #
-# This section contains routines that can not be moved to a separate thread
-# because it interacts with the QT User Interface.
-# The BLE Worker is in a separate thread and receives data through signals from this class
+# This section contains routines that can not be moved to a separate thread because they interact with the QT User Interface.
 #
-# Receiving from BLE device is bytes or a list of bytes
-# Sending to BLE device is bytes or list of bytes
-# We need to encode/decode received/sent text in QBLESerialUI
+# This is the Controller (Presenter)  of the Model - View - Controller (MVC) architecture.
 #
-#    This is the Controller (Presenter)  of the Model - View - Controller (MVC) architecture.
-#
-##########################################################################################################################################        
-##########################################################################################################################################        
+############################################################################################################################################
 
-class QBLESerialUI(QObject):
+class QBLESerial(QObject):
     """
     Object providing functionality between User Interface and BLE Serial Worker.
     This interface must run in the main thread and interacts with user.
 
-    Signals (to be emitted by UI abd picked up by BLE Worker)
-        scanDevicesRequest                  request that QBLESerial is scanning for devices
-        connectDeviceRequest                request that QBLESerial is connecting to device
-        disconnectDeviceRequest             request that QBLESerial is disconnecting from device
-        pairDeviceRequest                   request that QBLESerial is paring bluetooth device
-        removeDeviceRequest                 request that QBLESerial is removing bluetooth device
-        changeLineTerminationRequest        request that QBLESerial is using difference line termination
-        sendFileRequest                     request that file is sent over BLE
-        sendTextRequest                     request that provided text is transmitted over BLE
-        sendLineRequest                     request that provided line of text is transmitted over BLE
-        sendLinesRequest                    request that provided lines of text are transmitted over BLE
-        bleStatusRequest                    request that QBLESerial reports current status
+    Signals (to be emitted by UI and picked up by BLE Worker)
+        scanDevicesRequest                  request that BLE Worker is scanning for devices
+        connectDeviceRequest                request that BLE Worker is connecting to device
+        disconnectDeviceRequest             request that BLE Worker is disconnecting from device
+        pairDeviceRequest                   request that BLE Worker is paring bluetooth device
+        removeDeviceRequest                 request that BLE Worker is removing bluetooth device
+        changeLineTerminationRequest        request that BLE Worker is using difference line termination
+        bleStatusRequest                    request that BLE Worker reports current status
         setupTransceiverRequest             request that bluetoothctl interface and throughput timer is created
-        setupBLEWorkerRequest               request that asyncio event loop is created and bluetoothctrl wrapper is started
-        stopTransceiverRequest (not used)   request that bluetoothctl and throughput timer are stopped
-        finishWorkerRequest                 request that QBLESerial worker is finished
+        # setupBLEWorkerRequest               request that asyncio event loop is created and bluetoothctrl wrapper is started
+        startTransceiverRequest             request to subscribe to BLE notifications and throughput timer are started
+        stopTransceiverRequest              request to unsubscribe from BLE notifications 0and throughput timer are stopped
+        startThroughputRequest              request that throughput timer is started
+        stopThroughputRequest               request that throughput timer is stopped
+        finishWorkerRequest                 request that BLE Worker worker is finished
+        mtocRequest                         request that BLE worker measures time of code
 
     Slots (functions available to respond to external signals or events from buttons, input fields, etc.)
-        on_pushButton_SendFile              send file over BLE
-        on_pushButton_Clear                 clear the BLE text display window
-        on_pushButton_StartStop             start/stop BLE transceiver
-        on_pushButton_Save                  save text from display window into text file
-        on_pushButton_Scan                  update BLE device list
-        on_pushButton_Connect               open/close BLE device
-        on_pushButton_Pair                  pair or remove BLE device
-        on_pushButton_Trust                 trust or distrust BLE device
-        on_pushButton_Status                request BLE device status
+        on_pushButton_BLEScan               update BLE device list
+        on_pushButton_BLEConnect            open/close BLE device
+        on_pushButton_BLEPair               pair or remove BLE device
+        on_pushButton_BLETrust              trust or distrust BLE device
+        on_pushButton_BLEStatus             request BLE device status
         on_comboBoxDropDown_BLEDevices      user selected a new BLE device from the drop down list
         on_comboBoxDropDown_LineTermination user selected a different line termination from drop down menu
-        on_upArrowPressed                   recall previous line of text from BLE console line buffer
-        on_downArrowPressed                 recall next line of text from BLE console line buffer
-        on_carriageReturnPressed            transmit text from UI to BLE transceiver
+
         on_statusReady                      pickup BLE device status
         on_deviceListReady                  pickup new list of devices
         on_receivedData                     pickup text from BLE transceiver
@@ -137,431 +122,355 @@ class QBLESerialUI(QObject):
         on_throughputReady                  pickup throughput data from BLE transceiver
         on_pairingSuccess                   pickup wether device pairing was successful
         on_removalSuccess                   pickup wether device removal was successful
-        on_logSignal                        pickup log messages
+
+        on_mtocRequest                      emit mtoc signal with function name and time in a single log call
+
+    Functions
+        cleanup                             cleanup the Serial
+
     """
 
     # Signals
-    ########################################################################################
+    # ==========================================================================
 
-    scanDevicesRequest           = pyqtSignal()                  # scan for BLE devices
-    connectDeviceRequest         = pyqtSignal(BLEDevice, int, bool)  # connect to BLE device, mac, timeout, 
-    disconnectDeviceRequest      = pyqtSignal()                  # disconnect from BLE device
-    pairDeviceRequest            = pyqtSignal(str,str)           # pair with BLE device mac and pin
-    removeDeviceRequest          = pyqtSignal(str)               # remove BLE device from systems paired list 
-    trustDeviceRequest           = pyqtSignal(str)               # trust a device
-    distrustDeviceRequest        = pyqtSignal(str)               # distrust a device
-    changeLineTerminationRequest = pyqtSignal(bytes)             # request line termination to change
-    sendTextRequest              = pyqtSignal(bytes)             # request to transmit text
-    sendLineRequest              = pyqtSignal(bytes)             # request to transmit one line of text to TX
-    sendLinesRequest             = pyqtSignal(list)              # request to transmit lines of text to TX
-    sendFileRequest              = pyqtSignal(str)               # request to open file and send with transceiver
-    bleStatusRequest             = pyqtSignal(str)               # request BLE device status
-    setupTransceiverRequest      = pyqtSignal()                  # start transceiver
-    setupBLEWorkerRequest        = pyqtSignal()                  # request that QBLESerial worker is setup
-    stopTransceiverRequest       = pyqtSignal()                  # stop transceiver (display of incoming text, connection remains)
-    finishWorkerRequest          = pyqtSignal()                  # request worker to finish
-    setupBLEWorkerFinished       = pyqtSignal()                  # QBLESerial worker setup is finished
-    setupTransceiverFinished     = pyqtSignal()                  # transceiver setup is finished
-    workerFinished               = pyqtSignal()                  # worker is finished
-           
-    def __init__(self, parent=None, ui=None, worker=None, logger=None):
-        """
-        Need to provide the user interface and worker
-        Start the timers for text display and log display trimming
-        """
+    # BLEAK
+    scanDevicesRequest           = pyqtSignal()                                # scan for BLE devices
+    connectDeviceRequest         = pyqtSignal(object, int, bool)               # connect to BLE device, mac, timeout, 
+    disconnectDeviceRequest      = pyqtSignal()                                # disconnect from BLE device
+    changeLineTerminationRequest = pyqtSignal(bytes)                           # request line termination to change
+    startThroughputRequest       = pyqtSignal()                                # request that throughput timer is started
+    stopThroughputRequest        = pyqtSignal()                                # request that throughput timer is stopped 
+    startTransceiverRequest      = pyqtSignal()                                # start transceiver (display of incoming text, connection remains)
+    stopTransceiverRequest       = pyqtSignal()                                # stop transceiver (display of incoming text, connection remains)
+    setupTransceiverFinished     = pyqtSignal()                                # request to setup transceiver finished
+    finishWorkerRequest          = pyqtSignal()                                # request worker to finish
+    mtocRequest                  = pyqtSignal()                                # request that BLE worker measures time of code
+    logSignal                    = pyqtSignal(int, str)                        # Logging
+    throughputUpdate             = pyqtSignal(float, float, str)               # report rx/tx to main ("ble")
 
-        super(QBLESerialUI, self).__init__(parent)
+    sendFileRequest              = pyqtSignal(Path)                            # request to send file
+    sendTextRequest              = pyqtSignal(bytes)                           # request to transmit text to TX
+    sendLineRequest              = pyqtSignal(bytes)                           # request to transmit one line of text to TX
+    sendLinesRequest             = pyqtSignal(list)                            # request to transmit lines of text to TX
+    txrxReadyChanged             = pyqtSignal(bool)                            # ready to accept send file, text, line or lines
+
+    # bluetooth ctl
+    pairDeviceRequest            = pyqtSignal(str,str)                         # pair with BLE device mac and pin
+    removeDeviceRequest          = pyqtSignal(str)                             # remove BLE device from systems paired list 
+    trustDeviceRequest           = pyqtSignal(str)                             # trust a device
+    distrustDeviceRequest        = pyqtSignal(str)                             # distrust a device
+    bleStatusRequest             = pyqtSignal(str)                             # request BLE device status
+
+    # Init
+    # ==========================================================================
+
+    def __init__(self, parent=None, ui=None):
+
+        super().__init__(parent)
+
+        self.thread_id = int(QThread.currentThreadId()) if QThread.currentThreadId() else -1
+        self.instance_name = self.objectName() if self.objectName() else self.__class__.__name__
+
+        # For debugging initialization
+        self.logger = logging.getLogger(self.instance_name[:10])
+        self.logger.setLevel(DEBUG_LEVEL)
+        if not self.logger.handlers:
+            sh = logging.StreamHandler()
+            fmt = "[%(levelname)-8s] [%(name)-10s] %(message)s"
+            sh.setFormatter(logging.Formatter(fmt))
+            self.logger.addHandler(sh)
+        self.logger.propagate = False
 
         # state variables, populated by service routines
-        self.device                = ""       # BLE device
-        self.device_info           = {}       # BLE device status
-        self.bleSendHistory        = []       # previously sent text (e.g. commands)
-        self.bleSendHistoryIndx    = -1       # init history
-        self.rx                    = 0        # init throughput
-        self.tx                    = 0        # init throughput 
-        self.textLineTerminator    = b""      # default line termination: none
-        self.encoding              = "utf-8"  # default encoding
-        self.isLogScrolling        = False    # keep track of log display scrolling
-        self.isTextScrolling       = False    # keep track of text display scrolling
-        self.device_backup         = ""       # keep track of previously connected device
-        self.transceiverIsRunning  = False    # BLE transceiver is not running
+        self.device                = ""                                        # BLE device
+        self.device_info           = {}                                        # BLE device status
+        self.rx                    = 0                                         # init throughput
+        self.tx                    = 0                                         # init throughput 
+        self.textLineTerminator    = EOL_DEFAULT_BYTES                         # default line termination
+
+        # self.isLogScrolling        = False                                   # keep track of log display scrolling
+        # self.isTextScrolling       = False                                   # keep track of text display scrolling
+        self.device_backup         = ""                                        # keep track of previously connected device
+
+        self.lastNumComputed       = time.perf_counter()                       # init throughput time calculation
+        self.receiverIsRunning     = False                                     # BLE transceiver is not running
 
         self.lastNumReceived       = 0
         self.lastNumSent           = 0
     
         self.awaitingReconnection  = False
-        self.record                = False                                                 # record serial data
+
+        self.record                = False                                     # record serial data
         self.recordingFileName     = ""
         self.recordingFile         = None
 
-        self.textBrowserLength     = MAX_TEXTBROWSER_LENGTH + 1
-
-        self.instance_name = self.objectName() if self.objectName() else self.__class__.__name__
-
-        if logger is None:
-            self.logger = logging.getLogger("QBLE_UI")
+        # terminal/history line budget used by flushers
+        if parent and hasattr(parent, "maxlines"):
+            self.maxlines = int(parent.maxlines)
         else:
-            self.logger = logger
+            self.maxlines = int(DEFAULT_TEXT_LINES)
 
-        if ui is None:
-            self.handle_log(logging.ERROR, f"[{self.instance_name}] This applications needs to have access to User Interface")
-            raise ValueError("User Interface (ui) is required but was not provided.")
-        else:
-            self.ui = ui
+        # self.textBrowserLength     = MAX_TEXTBROWSER_LENGTH + 1
 
-        if worker is None:
-            self.handle_log(logging.ERROR, f"[{self.instance_name}] This applications needs to have access to BLE Worker")
-            raise ValueError("BLE Worker (worker) is required but was not provided.")
-        else:
-            self.worker = worker
+        self.byteArrayBuffer = bytearray()
+        self.byteArrayBufferTimer = QTimer(self)
+        self.byteArrayBufferTimer.setTimerType(PreciseTimerType)
+        self.byteArrayBufferTimer.setInterval(FLUSH_INTERVAL_MS)
+        self.byteArrayBufferTimer.timeout.connect(self.flushByteArrayBuffer)
+
+        self.linesBuffer = list()
+        self.linesBufferTimer = QTimer(self)
+        self.linesBufferTimer.setTimerType(PreciseTimerType)
+        self.linesBufferTimer.setInterval(FLUSH_INTERVAL_MS)
+        self.linesBufferTimer.timeout.connect(self.flushLinesBuffer)
         
-        # Text display window on serial text display
-        self.ui.plainTextEdit_Text.setReadOnly(True)   # Prevent user edits
-        self.ui.plainTextEdit_Text.setWordWrapMode(0)  # No wrapping for better performance
+        # Not yet implemented
+        self.htmlBuffer = ""
+        self.htmlBufferTimer = QTimer(self)
+        self.htmlBufferTimer.setTimerType(PreciseTimerType)
+        self.htmlBufferTimer.setInterval(FLUSH_INTERVAL_MS)
+        # self.htmlBufferTimer.timeout.connect(self.flushHTMLBuffer)
+        
+        self.mtoc_on_deviceListReady = 0.
+        self.mtoc_on_throughputReady = 0.
+        self.mtoc_on_statusReady     = 0.
+        self.mtoc_on_receivedData    = 0. 
+        self.mtoc_on_receivedLines   = 0. 
+        self.mtoc_on_receivedHTML    = 0. 
+        self.mtoc_appendTextLines    = 0.
+        self.mtoc_appendText         = 0.
+        self.mtoc_appendHtml         = 0.
 
-        self.textScrollbar = self.ui.plainTextEdit_Text.verticalScrollBar()
-        self.ui.plainTextEdit_Text.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOn
-        )
-        self.textScrollbar.setSingleStep(1)                          # Highest resolution
-
-        # Efficient text storage
-        self.lineBuffer_text = deque(maxlen=MAX_TEXTBROWSER_LENGTH)       # Circular buffer
-
-
-        # Log display window 
-        self.ui.plainTextEdit_Log.setReadOnly(True)   # Prevent user edits
-        self.ui.plainTextEdit_Log.setWordWrapMode(0)  # No wrapping for better performance
-
-        self.logScrollbar = self.ui.plainTextEdit_Log.verticalScrollBar()
-        self.ui.plainTextEdit_Log.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOn
-        )
-        self.logScrollbar.setSingleStep(1)                          # Highest resolution
-
-        # Efficient text storage
-        self.lineBuffer_log = deque(maxlen=MAX_TEXTBROWSER_LENGTH)       # Circular buffer
-
-
-        # Limit the amount of text retained in the  text display window
-        self.textTrimTimer = QTimer(self)
-        self.textTrimTimer.timeout.connect(self.bleTextDisplay_trim)
-        self.textTrimTimer.start(10000)  # Trigger every 10 seconds, this halts the display for a fraction of second, so dont do it often
-
-        # Limit the amount of text retained in the log display window
-        #   execute a text trim function every minute
-        self.logTrimTimer = QTimer(self)
-        self.logTrimTimer.timeout.connect(self.bleLogDisplay_trim)
-        self.logTrimTimer.start(100000)  # Trigger every 10 seconds, this halts the display for a fraction of second, so dont do it often
-
-        self.handle_log(logging.INFO,"QSerialUI initialized.")
-
-    ########################################################################################
-    # Helper functions
-    ########################################################################################
-
-    def handle_log(self, level, message):
-        if level == logging.INFO:
-            self.logger.info(message)
-        elif level == logging.WARNING:
-            self.logger.warning(message)
-        elif level == logging.ERROR:
-            self.logger.error(message)
-        elif level == logging.DEBUG:
-            self.logger.debug(message)
-        elif level == logging.CRITICAL:
-            self.logger.critical(message)
+        # Delegate encoding if parent has one
+        if parent and hasattr(parent, "encoding"):
+            self.encoding = parent.encoding
         else:
-            self.logger.log(level, message)
-        self.on_receivedLog(message, add_newline=True)
+            self.encoding = "utf-8"
 
-    def _safe_decode(self, byte_data, encoding="utf-8"):
-        """
-        Safely decodes a byte array to a string, replacing invalid characters.
-        """
-        try:
-            return byte_data.decode(encoding)
-        except UnicodeDecodeError as e:
-            return byte_data.decode(encoding, errors="replace").replace("\ufffd", "¿")
-        except Exception as e:
-            return ""  # Return empty string if decoding completely fails
+        # Check if we have a valid User Interface
+        if ui is None:
+            self.logger.log(logging.ERROR,
+                f"[{self.instance_name[:15]:<15}]: need to have access to User Interface"
+            )
+            raise ValueError("User Interface (ui) is required but was not provided.")
+        self.ui = ui
 
-    ########################################################################################
-    # Deal with Connections
-    ########################################################################################
+        self.display = True                                                    # display incoming data
+        self.ui.checkBox_DisplayBLE.setUpdatesEnabled(False)
+        self.ui.checkBox_DisplayBLE.setChecked(self.display)
+        self.ui.checkBox_DisplayBLE.setUpdatesEnabled(True)
 
-    def _safely_cleanconnect(signal, slot, previous_slot: None):
-        try:
-            if previous_slot is None:
-                signal.disconnect()
-            else:
-                signal.disconnect(previous_slot)
-        except TypeError:
-            pass
-        try:
-            signal.connect(slot)
-        except TypeError:
-            pass
+        self.text_widget = self.ui.plainTextEdit_Text                          # Text widget for displaying received data
+        self.text_scroll_bar = self.text_widget.verticalScrollBar()            # Scroll bar for the text widget
 
-    def _safely_connect(signal, slot):
-        try:
-            signal.connect(slot)
-        except TypeError:
-            pass
+        self.html_tracker = IncompleteHTMLTracker()                            # Initialize the HTML tracker  
 
-    def _safely_disconnect(signal, slot):
-        try:
-            signal.disconnect(slot)
-        except TypeError:
-            pass
+        if USE_BLUETOOTHCTL:
+            self.hasBluetoothctl = (platform.system() == "Linux" )
+        else:
+            self.hasBluetoothctl = False
 
-    ########################################################################################
+        # ----------------------------------------
+        # Bleak Serial Worker & Thread
+        # ----------------------------------------
+
+        # Bleak Thread using custom AsyncThread
+        self.bleakThread = AsyncThread()                                       # create QThread object
+
+        # Create the bleak worker
+        self.bleakWorker = BleakWorker()                                       # create BLE worker object
+        self.bleakWorker.moveToThread(self.bleakThread)
+        # Make sure loop exits before scheduling coroutines
+        self.bleakThread.ready.connect(                 lambda loop: (self.bleakWorker.set_loop(loop), self.scanDevicesRequest.emit()))
+        self.bleakWorker.finished.connect(              lambda: self.bleakThread.stop())
+        self.bleakWorker.finished.connect(              lambda: self.bleakThread.wait())
+        self.mtocRequest.connect(                       lambda: self.bleakWorker.request_mtoc()) # connect mtoc request to worker
+
+        # Signals from QBLE (UI) -> Bleak Worker
+        self.changeLineTerminationRequest.connect(      lambda eol: self.bleakWorker.change_LineTermination(eol)) # connect changing line termination
+        self.scanDevicesRequest.connect(                lambda: self.bleakWorker.start_scan())
+        self.sendFileRequest.connect(                   lambda filePath: self.bleakWorker.send_file(filePath)) # request to send file
+        self.sendTextRequest.connect(                   lambda text: self.bleakWorker.send_bytes(text)) # request to transmit text to TX
+        self.sendLineRequest.connect(                   lambda line: self.bleakWorker.send_line(line)) # request to transmit one line of text to TX
+        self.sendLinesRequest.connect(                  lambda lines: self.bleakWorker.send_lines(lines)) # request to transmit lines of text to TX
+        # Signals to run bleak commands
+        self.connectDeviceRequest.connect(              lambda device, timeout, reconnect: self.bleakWorker.connect_device(device, timeout, reconnect))
+        self.disconnectDeviceRequest.connect(           lambda: self.bleakWorker.disconnect_device())
+        self.startTransceiverRequest.connect(           lambda: self.bleakWorker.start_transceiver())
+        self.stopTransceiverRequest.connect(            lambda: self.bleakWorker.stop_transceiver())
+        self.startThroughputRequest.connect(            lambda: self.bleakWorker.start_throughput())
+        self.stopThroughputRequest.connect(             lambda: self.bleakWorker.stop_throughput())
+        self.finishWorkerRequest.connect(               lambda: self.bleakWorker.clean_up())
+
+        # Signals from BLEAK Worker to UI
+        self.bleakWorker.throughputReady.connect(       self.on_throughputReady, type=ConnectionType.QueuedConnection) # connect display throughput status
+        self.bleakWorker.deviceListReady.connect(       self.on_deviceListReady, type=ConnectionType.QueuedConnection) # connect new port list to its ready signal
+        self.bleakWorker.connectingSuccess.connect(     self.on_connectingSuccess, type=ConnectionType.QueuedConnection) # connect connecting status to BLE UI
+        self.bleakWorker.disconnectingSuccess.connect(  self.on_disconnectingSuccess, type=ConnectionType.QueuedConnection) # connect disconnecting status to BLE UI
+        self.bleakWorker.workerStateChanged.connect(    self.on_workerStateChanged, type=ConnectionType.QueuedConnection) # mirror serial worker state to serial UI
+        self.bleakWorker.logSignal.connect(             self.on_logSignal)     # connect log messages to BLE UI
+        self.bleakWorker.eolChanged.connect(            self.on_eolChanged, type=ConnectionType.QueuedConnection)
+        # Connected elsewhere
+        # self.bleakWorker.receivedLines
+        # self.bleakWorker.receivedData
+
+        # Connections made, now start
+        self.bleakThread.start()
+
+        # ----------------------------------------
+        # Bluetoothctl Worker & Thread
+        # ----------------------------------------
+
+        # BLE Thread using custom AsyncThread
+        self.bluetoothctlThread = QThread()                                    # create QThread object
+    
+        # Create the BLE worker
+        self.bluetoothctlWorker = BluetoothctlWorker()                         # create BLE worker object
+        self.bluetoothctlWorker.moveToThread(           self.bluetoothctlThread)
+        # propagate capability flag
+        self.bluetoothctlWorker.hasBluetoothctl = self.hasBluetoothctl
+
+        # ----------------------------------------
+        # Signals
+        # ----------------------------------------
+
+        # Connect Bluetoothctl worker / thread finished
+        self.bluetoothctlWorker.finished.connect(       self.bluetoothctlThread.quit) # if worker emits finished quite worker thread
+        self.bluetoothctlWorker.finished.connect(       self.bluetoothctlWorker.deleteLater) # delete worker at some time
+        self.bluetoothctlWorker.destroyed.connect(      lambda: setattr(self, "bluetoothctlWorker", None))    
+        self.bluetoothctlThread.finished.connect(       self.bluetoothctlThread.deleteLater) # delete thread at some time
+        self.bluetoothctlThread.destroyed.connect(      lambda: setattr(self, "bluetoothctlThread", None)) 
+        # There is no start method in the bluetoothctlWorker
+        # self.bluetoothctlThread.started.connect(        self.bluetoothctlWorker.start, type = ConnectionType.QueuedConnection)
+
+        # QBLE (UI) -> Bluetoothctl Worker
+        self.pairDeviceRequest.connect(                 self.bluetoothctlWorker.on_pairDeviceRequest, type=ConnectionType.QueuedConnection)
+        self.removeDeviceRequest.connect(               self.bluetoothctlWorker.on_removeDeviceRequest, type=ConnectionType.QueuedConnection)
+        self.trustDeviceRequest.connect(                self.bluetoothctlWorker.on_trustDeviceRequest, type=ConnectionType.QueuedConnection)
+        self.distrustDeviceRequest.connect(             self.bluetoothctlWorker.on_distrustDeviceRequest, type=ConnectionType.QueuedConnection)
+        self.bleStatusRequest.connect(                  self.bluetoothctlWorker.on_bleStatusRequest, type=ConnectionType.QueuedConnection)
+        # allow global shutdown to stop bluetoothctl too
+        self.finishWorkerRequest.connect(               self.bluetoothctlWorker.on_finishWorkerRequest)
+
+        # Bluetoothctl Worker -> QBLE (UI)
+        self.bluetoothctlWorker.statusReady.connect(    self.on_statusReady, type=ConnectionType.QueuedConnection) # connect status to BLE UI
+        self.bluetoothctlWorker.pairingSuccess.connect( self.on_pairingSuccess, type=ConnectionType.QueuedConnection) # connect pairing status to BLE UI
+        self.bluetoothctlWorker.trustSuccess.connect(   self.on_trustSuccess, type=ConnectionType.QueuedConnection) # connect trust status to BLE UI
+        self.bluetoothctlWorker.distrustSuccess.connect(self.on_distrustSuccess, type=ConnectionType.QueuedConnection) # connect distrust status to BLE UI
+        self.bluetoothctlWorker.removalSuccess.connect( self.on_removalSuccess, type=ConnectionType.QueuedConnection) # connect removal status to BLE UI
+        self.bluetoothctlWorker.logSignal.connect(      self.on_logSignal, type=ConnectionType.QueuedConnection)
+
+        # Bluetoothctl Connections and Start
+        # ----------------------------------------
+        self.bluetoothctlThread.start()                                        # start thread
+        self.logger.log(logging.INFO,
+            f"[{self.instance_name[:15]:<15}]: Bluetoothctl Worker started."
+        )
+        
+        self.logger.log(logging.INFO, 
+            f"[{self.instance_name[:15]:<15}]: QBLESerial initialized."
+        )
+
+    # ==========================================================================
+    # Slots Received Requests
+    # ==========================================================================
+
+    @pyqtSlot()
+    def on_mtocRequest(self) -> None:
+        """Emit the mtoc signal with a function name and time in a single log call."""
+
+        log_message = textwrap.dedent(f"""
+            BLE Profiling
+            =============================================================
+            on_deviceListReady      took {self.mtoc_on_deviceListReady*1000:.2f} ms.
+            on_throughputReady      took {self.mtoc_on_throughputReady*1000:.2f} ms.
+            on_statusReady          took {self.mtoc_on_statusReady*1000:.2f} ms.
+
+            on_receivedData         took {self.mtoc_on_receivedData*1000:.2f} ms.
+            on_receivedLines        took {self.mtoc_on_receivedLines*1000:.2f} ms.
+            on_receivedHTML         took {self.mtoc_on_receivedHTML*1000:.2f} ms.
+
+            appendTextLines         took {self.mtoc_appendTextLines*1000:.2f} ms.
+            appendText              took {self.mtoc_appendText*1000:.2f} ms.
+            appendHtml              took {self.mtoc_appendHtml*1000:.2f} ms.
+        """)
+        self.logSignal.emit(-1, log_message)
+
+        self.mtoc_on_deviceListReady = 0.
+        self.mtoc_on_throughputReady = 0.
+        self.mtoc_on_statusReady     = 0.
+        self.mtoc_on_receivedData    = 0. 
+        self.mtoc_on_receivedLines   = 0. 
+        self.mtoc_on_receivedHTML    = 0. 
+        self.mtoc_appendTextLines    = 0.
+        self.mtoc_appendText         = 0.
+        self.mtoc_appendHtml         = 0.
+
+        # Emit the mtoc request to the ble worker
+        self.mtocRequest.emit()
+
+    # ==========================================================================
     # Slots
-    ########################################################################################
+    # ==========================================================================
+
+    # General
 
     @pyqtSlot(int,str)
-    def on_logSignal(self, int, str):
-        """pickup log messages, not used as no conenction with separate thread"""
-        self.handle_log(int, str)
+    def on_logSignal(self, level:int, message:str):
+        """pickup log messages, not used as no connection with separate thread"""
+        self.logSignal.emit(level, message)
+
+    # BLEAK
 
     @pyqtSlot()
-    def on_carriageReturnPressed(self):
-        """
-        Transmitting text from UI to serial TX line
-        """
-        text = self.ui.lineEdit_Text.text()                                # obtain text from send input window
-        if not text:
-            self.ui.statusBar().showMessage("No text to send.", 2000)
-            return
-        
-        self.displayingRunning.emit(True)            
-        self.ui.pushButton_StartStop.setText("Stop")
-
-        self.bleSendHistory.append(text)                             # keep history of previously sent commands
-        self.bleSendHistoryIndx = len(self.bleSendHistory)           # reset history pointer
-        
-        try:
-            text_bytearray = text.encode(self.encoding) + self.textLineTerminator # add line termination
-        except UnicodeEncodeError:
-            text_bytearray = text.encode("utf-8", errors="replace") + self.textLineTerminator
-            self.handle_log(logging.WARNING, f"[{self.thread_id}]: Encoding error, using UTF-8 fallback.")
-        except Exception as e:
-            self.handle_log(logging.ERROR, f"[{self.thread_id}]: Encoding error: {e}")
-            return
-        
-        self.sendTextRequest.emit(text_bytearray)                                # send text to serial TX line
-        self.ui.lineEdit_Text.clear()
-        self.ui.statusBar().showMessage("Text sent.", 2000)
-
-    @pyqtSlot()
-    def on_upArrowPressed(self):
-        """
-        Handle special keys on lineEdit: UpArrow
-        """
-        if not self.bleSendHistory:  # Check if history is empty
-            self.ui.lineEdit_Text.setText("")
-            self.ui.statusBar().showMessage("No commands in history.", 2000)
-            return
-
-        if self.bleSendHistoryIndx > 0:
-            self.bleSendHistoryIndx -= 1
-        else:
-            self.bleSendHistoryIndx = 0  # Stop at oldest command
-
-        self.ui.lineEdit_Text.setText(self.bleSendHistory[self.bleSendHistoryIndx])
-        self.ui.statusBar().showMessage("Command retrieved from history.", 2000)
-        
-    @pyqtSlot()
-    def on_downArrowPressed(self):
-        """
-        Handle special keys on lineEdit: DownArrow
-        """
-        if not self.serialSendHistory:
-            self.ui.lineEdit_Text.setText("")
-            self.ui.statusBar().showMessage("No commands in history.", 2000)
-            return
-    
-        if self.serialSendHistoryIndx < len(self.serialSendHistory) - 1:
-            self.serialSendHistoryIndx += 1
-            self.ui.lineEdit_Text.setText(self.serialSendHistory[self.serialSendHistoryIndx])
-        else:
-            self.serialSendHistoryIndx = len(self.serialSendHistory)  # Move past last entry
-            self.ui.lineEdit_Text.clear()
-            self.ui.statusBar().showMessage("Ready for new command.", 2000)
-
-    @pyqtSlot()
-    def on_pushButton_SendFile(self):
-        """Request to send a file over BLE."""
-        stdFileName = ( QStandardPaths.writableLocation(
-            QStandardPaths.StandardLocation.DocumentsLocation) + "/upload.txt" 
-        )
-        fname, _ = QFileDialog.getOpenFileName(
-            self.ui, "Open", stdFileName, "Text files (*.txt)"
-        )
-        if fname:
-            self.sendFileRequest.emit(fname)
-        self.handle_log(logging.INFO, 'Text file send request completed.')            
-
-    @pyqtSlot()
-    def on_pushButton_Clear(self):
-        """
-        Clearing text display window
-        """
-        self.ui.plainTextEdit_Text.clear()
-        self.ui.plainTextEdit_Log.clear()
-        self.lineBuffer_text.clear()
-        self.lineBuffer_log.clear()
-        self.handle_log(logging.INFO, f"[{self.instance_name}] Text and Log display cleared.")
-        self.ui.statusBar().showMessage("Text Display Cleared.", 2000)
-
-    @pyqtSlot()
-    def on_pushButton_StartStop(self):
-        """
-        Start BLE receiver
-        This does not start or stop Transceiver, it just connects, disconnects signals
-        """
-
-        if self.ui.pushButton_StartStop.text() == "Start":
-            # Start text display
-            self.ui.pushButton_StartStop.setText("Stop")
-            self.displayingRunning.emit(True)
-
-            self.logger.log(
-                logging.DEBUG,
-                f"[{self.thread_id}]: turning text display on."
-            )
-            self.ui.statusBar().showMessage("Text Display Starting", 2000)
-
-        else:
-            # STOP text display
-            self.ui.pushButton_StartStop.setText("Start")
-            self.displayingRunning.emit(False)
-            
-            self.logger.log(
-                logging.DEBUG, 
-                f"[{self.thread_id}]: turning text display off."
-            )
-            self.ui.statusBar().showMessage('Text Display Stopping.', 2000)            
-
-    @pyqtSlot()
-    def on_pushButton_Save(self):
-        """
-        Saving text from display window into text file
-        """
-        stdFileName = (
-            QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation)
-            + "/QBLE.txt"
-        )
-
-        fname, _ = QFileDialog.getSaveFileName(
-            self.ui, "Save as", stdFileName, "Text files (*.txt)"
-        )
-
-        if fname:
-            if not fname.endswith(".txt"):
-                fname += ".txt"
-
-            with open(fname, "w") as f:
-                f.write(self.ui.plainTextEdit_Text.toPlainText())
-
-        self.handle_log(logging.INFO,"Text saved.")
-
-    @pyqtSlot()
-    def on_pushButton_Scan(self):
+    def on_pushButton_BLEScan(self):
         """
         Update BLE device list
         """
         self.scanDevicesRequest.emit()
-        self.ui.pushButton_Scan.setEnabled(False)
-        self.ui.pushButton_Connect.setEnabled(False)
-        self.handle_log(logging.INFO, f"[{self.instance_name}] BLE device list update requested.")
+        self.ui.pushButton_BLEScan.setEnabled(False)
+        self.ui.pushButton_BLEConnect.setEnabled(False)
+        self.logSignal.emit(logging.INFO, 
+            f"[{self.instance_name[:15]:<15}]: BLE device scan requested."
+        )
+        self.ui.statusBar().showMessage('BLE device scan requested.', 2000)            
 
     @pyqtSlot()
-    def on_pushButton_Connect(self):
+    def on_pushButton_BLEConnect(self):
         """
         Handle connect/disconnect requests.
         """
-        if self.ui.pushButton_Connect.text() == "Connect":
+        if self.ui.pushButton_BLEConnect.text() == "Connect":
 
             if self.device:
                 self.connectDeviceRequest.emit(self.device, 10, False)
-                self.handle_log(logging.INFO, f"[{self.instance_name}] Attempting to connect to device.")
-            else:
-                self.handle_log(logging.WARNING, f"[{self.instance_name}] No device selected for connection.")
+                self.logSignal.emit(logging.INFO, 
+                    f"[{self.instance_name[:15]:<15}]: Attempting to connect to device."
+                )
+                self.ui.statusBar().showMessage('BLE connection requested.', 2000)
 
-        elif self.ui.pushButton_Connect.text() == "Disconnect":
+            else:
+                self.logSignal.emit(logging.WARNING, 
+                    f"[{self.instance_name[:15]:<15}]: No device selected for connection."
+                )
+
+        elif self.ui.pushButton_BLEConnect.text() == "Disconnect":
 
             if self.device:
                 self.disconnectDeviceRequest.emit()
-                self.handle_log(logging.INFO, f"[{self.instance_name}] Attempting to disconnect from device.")
+                self.logSignal.emit(logging.INFO, 
+                    f"[{self.instance_name[:15]:<15}]: Attempting to disconnect from device."
+                )
+                self.ui.statusBar().showMessage('BLE disconnection requested.', 2000)
             else:
-                self.handle_log(logging.WARNING, f"[{self.instance_name}] No device selected for disconnection.")
+                self.logSignal.emit(logging.WARNING, 
+                    f"[{self.instance_name[:15]:<15}]: No device selected for disconnection."
+                )
 
         else:
-            self.handle_log(logging.ERROR, f"[{self.instance_name}] User interface Connect button is labeled incorrectly.")
-
-    @pyqtSlot()
-    def on_pushButton_Pair(self):
-        """Trigger pairing with a device when the pair button is clicked."""
-        
-        if self.ui.pushButton_Pair.text() == "Pair":
-        
-            if self.device is not None:
-                self.pairDeviceRequest.emit(self.device.address, self.BLEPIN)
-                self.handle_log(logging.INFO, f"[{self.instance_name}] Paired with {self.TARGET_DEVICE_NAME}")
-                self.ui.pushButton_Pair.setText("Remove")
-                self._safely_disconnect(self.ui.pushButton_Pair.clicked, self.worker.on_pairDeviceRequest)
-                self._safely_connect(self.ui.pushButton_Pair.clicked, self.worker.on_removeDeviceRequest)
-            else:
-                self.handle_log(logging.WARNING, f"[{self.instance_name}] No device set to pair")
-
-        elif self.ui.pushButton_Pair.text() == "Remove":
-
-            if self.device is not None:
-                self.removeDeviceRequest.emit(self.device.address)
-                self.handle_log(logging.INFO, f"[{self.instance_name}] {self.TARGET_DEVICE_NAME} removed")
-                self.ui.pushButton_Pair.setText("Pair")
-                self._safely_disconnect(self.ui.pushButton_Pair.clicked, self.worker.on_removeDeviceRequest)
-                self._safely_connect(self.ui.pushButton_Pair.clicked, self.worker.on_pairDeviceRequest)
-            else:
-                self.handle_log(logging.WARNING, f"[{self.instance_name}] No device set to pair")
-
-        else:
-            self.handle_log(logging.ERROR, f"[{self.instance_name}] User interface Pair button is labeled incorrectly.")
-
-    @pyqtSlot()
-    def on_pushButton_Trust(self):
-        """Trigger trusting with a device when the trust button is clicked."""
-        
-        if self.ui.pushButton_Trust.text() == "Trust":
-        
-            if self.device is not None:
-                self.trustDeviceRequest.emit(self.device.address)
-                self.handle_log(logging.INFO, f"[{self.instance_name}] Trusted {self.TARGET_DEVICE_NAME}")
-                self.ui.pushButton_Trust.setText("Distrust")
-                self._safely_disconnect(self.ui.pushButton_Trust.clicked, self.worker.on_trustDeviceRequest)
-                self._safely_connect(self.ui.pushButton_Trust.clicked, self.worker.on_distrustDeviceRequest)
-            else:
-                self.handle_log(logging.WARNING, f"[{self.instance_name}] No device set to trust")
-
-        elif self.ui.pushButton_Trust.text() == "Distrust":
-
-            if self.device is not None:
-                self.distrustDeviceRequest.emit(self.device.address)
-                self.handle_log(logging.INFO, f"[{self.instance_name}] {self.TARGET_DEVICE_NAME} distrusted")
-                self.ui.pushButton_Trust.setText("Trust")    
-                self._safely_disconnect(self.ui.pushButton_Trust.clicked, self.worker.on_distrustDeviceRequest)
-                self._safely_connect(self.ui.pushButton_Trust.clicked, self.worker.on_trustDeviceRequest)
-            else:
-                self.handle_log(logging.WARNING, f"[{self.instance_name}] No device set to trust")
-
-        else:
-            self.handle_log(logging.ERROR, f"[{self.instance_name}] User interface Trust button is labeled incorrectly.")
-
-    @pyqtSlot()
-    def on_pushButton_Status(self):
-        if self.device is not None:
-            self.bleStatusRequest.emit(self.device.address)
+            self.logSignal.emit(logging.ERROR, 
+                    f"[{self.instance_name[:15]:<15}]: User interface Connect button is labeled incorrectly."
+            )
 
     @pyqtSlot()
     def on_comboBoxDropDown_BLEDevices(self): 
@@ -569,58 +478,139 @@ class QBLESerialUI(QObject):
 
         # disconnect current device
         self.disconnectDeviceRequest.emit()
+        if self.device:
+            self.logSignal.emit(logging.INFO, f"[{self.instance_name[:15]:<15}]: BLE devices disconnect requested {getattr(self.device, 'name', '')}")
+        else:
+            self.logSignal.emit(logging.INFO, f"[{self.instance_name[:15]:<15}]: BLE devices disconnect requested")
+        self.ui.statusBar().showMessage('BLE device disconnect requested.', 2000)
 
         # prepare UI for new selection
         index=self.ui.comboBoxDropDown_Device.currentIndex()
         if index >= 0:
-            self.device = self.ui.comboBoxDropDown_Device.itemData(index) # BLE device from BLEAK scanner
-            self.handle_log(logging.INFO, f"[{self.instance_name}] Selected device: {self.device.name}, Address: {self.device.address}")
-            self.ui.pushButton_Connect.setEnabled(True) # will want to connect
-            if self.hasBluetoothctl: self.ui.pushButton_Pair.setEnabled(True) # uses bluetoothctl
-            if self.hasBluetoothctl: self.ui.pushButton_Trust.setEnabled(True) # uses bluetoothctl
-            if self.hasBluetoothctl: self.ui.pushButton_Status.setEnabled(True) # uses bluetoothctl
-            self.ui.pushButton_SendFile.setEnabled(False) # its not yet connected
-            self.ui.pushButton_Pair.setText("Pair")
-            self.ui.pushButton_Connect.setText("Connect")
-            self.ui.pushButton_Trust.setText("Trust")
+            self.device = self.ui.comboBoxDropDown_Device.itemData(index)      # BLE device from BLEAK scanner
+            self.logSignal.emit(logging.INFO, 
+                f"[{self.instance_name[:15]:<15}]: Selected device: {self.device.name}, Address: {self.device.address}"
+            )
+            self.ui.pushButton_BLEConnect.setEnabled(True)                     # will want to connect
+            if self.hasBluetoothctl: 
+                self.ui.pushButton_BLEPair.setEnabled(True)                    # uses bluetoothctl
+                self.ui.pushButton_BLETrust.setEnabled(True)                   # uses bluetoothctl
+                self.ui.pushButton_BLEStatus.setEnabled(True)                  # uses bluetoothctl
+            self.ui.pushButton_SendFile.setEnabled(False)                      # its not yet connected
+            self.ui.pushButton_BLEPair.setText("Pair")
+            self.ui.pushButton_BLEConnect.setText("Connect")
+            self.ui.pushButton_BLETrust.setText("Trust")
+            self.ui.statusBar().showMessage(f'BLE device {self.device.name} selected.', 2000)
         else:
-            self.handle_log(logging.WARNING, f"[{self.instance_name}] No devices found")
-            self.ui.pushButton_Connect.setEnabled(False)
-            if self.hasBluetoothctl: self.ui.pushButton_Pair.setEnabled(False)
-            if self.hasBluetoothctl: self.ui.pushButton_Trust.setEnabled(False)
-            if self.hasBluetoothctl: self.ui.pushButton_Status.setEnabled(False)
+            self.logSignal.emit(logging.WARNING, 
+                f"[{self.instance_name[:15]:<15}]: No devices found"
+            )
+            self.ui.pushButton_BLEConnect.setEnabled(False)
+            if self.hasBluetoothctl: 
+                self.ui.pushButton_BLEPair.setEnabled(False)
+                self.ui.pushButton_BLETrust.setEnabled(False)
+                self.ui.pushButton_BLEStatus.setEnabled(False)
             self.ui.pushButton_SendFile.setEnabled(False)
-            self.ui.pushButton_Scan.setEnabled(True)
+            self.ui.pushButton_BLEScan.setEnabled(True)
 
     @pyqtSlot()
     def on_comboBoxDropDown_LineTermination(self):
         """
         User selected a different line termination from drop down menu
         """
-        _tmp = self.ui.comboBoxDropDown_LineTermination.currentText()
-        if   _tmp == "newline (\\n)":           self.textLineTerminator = b"\n"
-        elif _tmp == "return (\\r)":            self.textLineTerminator = b"\r"
-        elif _tmp == "newline return (\\n\\r)": self.textLineTerminator = b"\n\r"
-        elif _tmp == "none":                    self.textLineTerminator = b""
-        else:                                   self.textLineTerminator = b"\r\n"
+        label = self.ui.comboBoxDropDown_LineTermination.currentText()
+        term  = EOL_DICT.get(label, EOL_DEFAULT_BYTES)
+        self.textLineTerminator = term
 
-        # ask line termination to be changed
-        self.changeLineTerminationRequest.emit(self.textLineTerminator)        
-        self.handle_log(logging.INFO, f"[{self.instance_name}] line termination {repr(self.textLineTerminator)}")
+        # Notify the rest of the app
+        self.changeLineTerminationRequest.emit(term)
+
+        # Log both the friendly label and the raw bytes for clarity
+        hr = EOL_DICT_INV.get(term, repr(term))
+        self.logSignal.emit(
+            logging.INFO,
+            f"[{self.instance_name[:15]:<15}]: line termination -> {hr} ({repr(term)})"
+        )
+
+        self.ui.statusBar().showMessage("Line termination changed.", 2000)
+
+    # BluetoothCtl
 
     @pyqtSlot()
-    def on_comboBoxDropDown_DataSeparator(self):
-        """
-        User selected a different data separator from drop down menu
-        """
-        _idx = self.ui.comboBoxDropDown_DataSeparator.currentIndex()
-        if   _idx == 0: self.dataSeparator = 0
-        elif _idx == 1: self.dataSeparator = 1
-        elif _idx == 2: self.dataSeparator = 2
-        elif _idx == 3: self.dataSeparator = 3
-        else:           self.dataSeparator = 0
+    def on_pushButton_BLEPair(self):
+        """User clicked Pair / Remove."""
+        if not self.device:
+            self.logSignal.emit(logging.WARNING,
+                f"[{self.instance_name[:15]:<15}]: No device set to pair/remove"
+            )
+            return
 
-        self.handle_log(logging.INFO, f"[{self.instance_name}] data separator {repr(self.dataSeparator)}")
+        mac = getattr(self.device, "address", None)
+        if not mac:
+            self.logSignal.emit(logging.WARNING,
+                f"[{self.instance_name[:15]:<15}]: Device has no address"
+            )
+            return
+
+        paired = self.device_info.get("paired", False)
+        # Disable until result arrives
+        self.ui.pushButton_BLEPair.setEnabled(False)
+
+        if not paired:
+            # Request pairing
+            self.pairDeviceRequest.emit(mac, BLEPIN)
+            self.logSignal.emit(logging.INFO,
+                f"[{self.instance_name[:15]:<15}]: Pair request sent for {self.device.name}"
+            )
+            self.ui.statusBar().showMessage("BLE pairing requested.", 2000)
+        else:
+            # Request removal
+            self.removeDeviceRequest.emit(mac)
+            self.logSignal.emit(logging.INFO,
+                f"[{self.instance_name[:15]:<15}]: Remove (unpair) request sent for {self.device.name}"
+            )
+            self.ui.statusBar().showMessage("BLE removal requested.", 2000)
+
+    @pyqtSlot()
+    def on_pushButton_BLETrust(self):
+        """User clicked Trust / Distrust."""
+        if not self.device:
+            self.logSignal.emit(logging.WARNING,
+                f"[{self.instance_name[:15]:<15}]: No device set to trust/distrust"
+            )
+            return
+
+        mac = getattr(self.device, "address", None)
+        if not mac:
+            self.logSignal.emit(logging.WARNING,
+                f"[{self.instance_name[:15]:<15}]: Device has no address"
+            )
+            return
+
+        trusted = self.device_info.get("trusted", False)
+        self.ui.pushButton_BLETrust.setEnabled(False)
+
+        if not trusted:
+            self.trustDeviceRequest.emit(mac)
+            self.logSignal.emit(logging.INFO,
+                f"[{self.instance_name[:15]:<15}]: Trust request sent for {self.device.name}"
+            )
+            self.ui.statusBar().showMessage("BLE trust requested.", 2000)
+        else:
+            self.distrustDeviceRequest.emit(mac)
+            self.logSignal.emit(logging.INFO,
+                f"[{self.instance_name[:15]:<15}]: Distrust request sent for {self.device.name}"
+            )
+            self.ui.statusBar().showMessage("BLE distrust requested.", 2000)
+
+    @pyqtSlot()
+    def on_pushButton_BLEStatus(self):
+        if self.device is not None:
+            self.bleStatusRequest.emit(self.device.address)
+            self.logSignal.emit(logging.INFO, 
+                f"[{self.instance_name[:15]:<15}]: BLE devices status requested {self.device.name}"
+            )
+            self.ui.statusBar().showMessage('BLE device status requested.', 2000)
 
     @pyqtSlot(dict)
     def on_statusReady(self, status):
@@ -637,29 +627,44 @@ class QBLESerialUI(QObject):
             "rssi":      None
         }
         """
+
+        if PROFILEME: 
+            tic = time.perf_counter()
+
         self.device_info = status
 
-        if (self.device_info["mac"] is not None) and (self.device_info["mac"] != ""): 
-            if self.device_info["paired"]:
-                self.ui.pushButton_Pair.setEnabled(True)
-                self.ui.pushButton_Pair.setText("Remove")
-            else:
-                self.ui.pushButton_Pair.setEnabled(True)
-                self.ui.pushButton_Pair.setText("Pair")
+        if (self.device_info["mac"] is not None) and (self.device_info["mac"] != "") and self.hasBluetoothctl: 
+            self.ui.pushButton_BLEPair.setEnabled(True)
+            self.ui.pushButton_BLETrust.setEnabled(True)
+            self.ui.pushButton_BLEPair.setText("Remove" if self.device_info["paired"] else "Pair")
+            self.ui.pushButton_BLETrust.setText("Distrust" if self.device_info["trusted"] else "Trust")
+        else:
+            self.ui.pushButton_BLEPair.setEnabled(False)
+            self.ui.pushButton_BLETrust.setEnabled(False)
 
-            if self.device_info["trusted"]:
-                self.ui.pushButton_Trust.setEnabled(True)
-                self.ui.pushButton_Trust.setText("Distrust")
-            else:
-                self.ui.pushButton_Trust.setEnabled(True)
-                self.ui.pushButton_Trust.setText("Trust")
+        self.logSignal.emit(logging.INFO, 
+            f"[{self.instance_name[:15]:<15}]: Device status: {status}"
+        )
 
-        self.handle_log(logging.INFO, f"[{self.instance_name}] Device status: {status}")
+        self.ui.statusBar().showMessage("BLE status updated", 2000)
+
+        if PROFILEME: 
+            toc = time.perf_counter()
+            self.mtoc_on_statusReady = max((toc - tic), self.mtoc_on_statusReady)
 
     @pyqtSlot(list)
     def on_deviceListReady(self, devices:list):
         """pickup new list of devices"""
-        self.ui.pushButton_Scan.setEnabled(True) # re-enable device scan, was turned of during scanning
+
+        if PROFILEME: 
+            tic = time.perf_counter()
+
+        self.logSignal.emit(
+            logging.DEBUG,
+            f"[{self.instance_name[:15]:<15}]: Device list received."
+        )
+
+        self.ui.pushButton_BLEScan.setEnabled(True)                            # re-enable device scan, was turned of during scanning
 
         # save current selected device 
         currentIndex   = self.ui.comboBoxDropDown_Device.currentIndex()
@@ -671,526 +676,1805 @@ class QBLESerialUI(QObject):
             self.ui.comboBoxDropDown_Device.addItem(f"{device.name} ({device.address})", device)
         
         # search for previous device and select it
+        index_to_select = -1
         if selectedDevice is not None:
             for index in range(self.ui.comboBoxDropDown_Device.count()):
                 if self.ui.comboBoxDropDown_Device.itemData(index) == selectedDevice:
-                    self.ui.comboBoxDropDown_Device.setCurrentIndex(index)
+                    index_to_select = index
                     break
 
+        if index_to_select == -1 and self.ui.comboBoxDropDown_Device.count() > 0:
+            index_to_select = 0
+
+        if index_to_select != -1:
+            self.ui.comboBoxDropDown_Device.setCurrentIndex(index_to_select)
+            # ensure internal state reflects selection even if signals were blocked
+            self.device = self.ui.comboBoxDropDown_Device.itemData(index_to_select)
+
         self.ui.comboBoxDropDown_Device.blockSignals(False)
+
         if len(devices) > 0:
-            self.ui.pushButton_Connect.setEnabled(True)
-        self.handle_log(logging.INFO, f"[{self.instance_name}] Device list updated.")   
+            self.ui.pushButton_BLEConnect.setEnabled(True)
+
+        self.logSignal.emit(logging.INFO, 
+            f"[{self.instance_name[:15]:<15}]: Device list updated."
+        )
+
+        self.ui.statusBar().showMessage("BLE device list updated", 2000)
+
+        if PROFILEME: 
+            toc = time.perf_counter()
+            self.mtoc_on_deviceListReady = max((toc - tic), self.mtoc_on_deviceListReady ) # End performance tracking
 
 
     @pyqtSlot(bytes)
-    def on_receivedData(self, byte_array: bytes):
-        """
-        Receives a raw byte array from the serial port, decodes it, stores it in a line-based buffer,
-        and updates the text display efficiently.
-        """
-        self.handle_log(logging.DEBUG, f"[{self.thread_id}]: text received.")
+    def on_eolChanged(self, eol: bytes) -> None:
+        """Worker auto-detected EOL; sync UI and internal state."""
+        self.textLineTerminator = eol
+        label = EOL_DICT_INV.get(eol, repr(eol))
+        try:
+            idx = self.ui.comboBoxDropDown_LineTermination.findText(label)
+            self.ui.comboBoxDropDown_LineTermination.blockSignals(True)
+            if idx > -1:
+                self.ui.comboBoxDropDown_LineTermination.setCurrentIndex(idx)
+        except Exception as e:
+            self.logSignal.emit(logging.ERROR, f"[{self.instance_name[:15]:<15}]: EOL UI update error: {e}")
+        finally:
+            self.ui.comboBoxDropDown_LineTermination.blockSignals(False)
+        self.logSignal.emit(logging.INFO,
+            f"[{self.instance_name[:15]:<15}]: Auto‑detected line termination -> {label} ({repr(eol)})."
+        )
+        self.ui.statusBar().showMessage("BLE line termination updated.", 2000)
 
-        # 1. Decode byte array
-        text = self._safe_decode(byte_array, self.encoding)
-        
+    # ==========================================================================
+    # Slots for Data Received
+    # ==========================================================================
+
+    @pyqtSlot(bytearray)
+    @profile
+    def on_receivedData(self, byte_array: bytearray):
+        """
+        Receives a raw byte array from the ble device, 
+        stores it in the byte array buffer,
+        saves it to file if recording is enabled,
+        """
+
+        if PROFILEME: 
+            tic = time.perf_counter()
+
         if DEBUGSERIAL:
-            self.handle_log(logging.DEBUG, f"[{self.thread_id}]: {text}")
-
-        # 2. Record text to a file if recording is enabled
-        if self.record:
-            try:
-                self.recordingFile.write(byte_array)
-            except Exception as e:
-                self.logger.log(logging.ERROR, f"[{self.thread_id}]: Could not write to file {self.recordingFileName}. Error: {e}")
-                self.record = False
-                self.ui.radioButton_SerialRecord.setChecked(self.record)
-
-        # 3. Append new text to the display and buffer
-        if text:
-            scrollbar = self.textScrollbar
-            at_bottom = scrollbar.value() >= scrollbar.maximum() - 20
-
-            # Append text to display
-            self.ui.plainTextEdit_Text.appendPlainText(text)
-
-            # 4. Store lines in the `deque`
-            new_lines = text.split("\n")
-            self.lineBuffer_text.extend(new_lines)  # Automatically trims excess lines
-
-            # 5. Maintain scroll position if at the bottom
-            if at_bottom:
-                scrollbar = self.textScrollbar
-                scrollbar.setValue(scrollbar.maximum())
-
-        # results.append({
-        #     "datatype": data_type,
-        #     "name": self.name.get(data_type, f"Unknown_{data_type}"),
-        #     "data": numbers,
-        #     "timestamp": time.time(),  # Add a timestamp
-        # })
-        #
-        # numbers can be list of floats for ArduinoTextStreamProcessor
-        # numbers can be byte, int8, unit8, int16, uint16, int32, uint32, float, double, list of strings, numpy arrays, for BinaryStreamProcessor
-
-        # for result in results:
-        #     data_type = result.get("datatype", "Unknown")
-        #     name      = result.get("name", "Unknown Name")
-        #     data      = result.get("data", "No Data")
-        #     timestamp = result.get("timestamp", "No Timestamp")
-
-        #     self.handle_log(
-        #         logging.DEBUG,
-        #         f"Result Processed - Type: {data_type}, Name: {name}, "
-        #         f"Data: {data}, "
-        #         f"Timestamp: {timestamp}"
-        #     )
-
-    @pyqtSlot()
-    def on_SerialRecord(self):
-        self.record = self.ui.radioButton_SerialRecord.isChecked()
-        if self.record:
-    
-            if self.recordingFileName == "":
-                stdFileName = (
-                    QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation)
-                    + "/Qble.txt"
-                ) 
-            else:
-                stdFileName = self.recordingFileName
-    
-            self.recordingFileName, _ = QFileDialog.getOpenFileName(
-                self.ui, "Open", stdFileName, "Text files (*.txt)"
+            self.logSignal.emit(logging.DEBUG, 
+                f"[{self.instance_name[:15]:<15}]: Text received."
             )
 
-            if not self.recordingFileName:
-                self.record = False
-                self.ui.radioButton_SerialRecord.setChecked(self.record)
-            else:
-                file_path = Path(self.recordingFileName)
+        if byte_array:
+            self.byteArrayBuffer.extend(byte_array)
+            if not self.byteArrayBufferTimer.isActive():
+                self.byteArrayBufferTimer.start()
 
-                if file_path.exists():  # Check if file already exists
-                    msg_box = QMessageBox()
-                    msg_box.setIcon(QMessageBox.Warning)
-                    msg_box.setWindowTitle("File Exists")
-                    msg_box.setText(f"The file '{file_path.name}' already exists. What would you like to do?")
-                    msg_box.addButton("Overwrite", QMessageBox.YesRole)
-                    msg_box.addButton("Append", QMessageBox.NoRole)
-
-                    choice = msg_box.exec_()
-
-                    if choice == 0:  # Overwrite
-                        mode = "wb"
-                    elif choice == 1:  # Append
-                        mode = "ab"
-                    else: 
-                        self.logger.log(logging.INFO, f"[{self.thread_id}]: Overwrite choice aborted.")  
-                        self.record = False
-                        self.ui.radioButton_SerialRecord.setChecked(self.record)
-                        return
-                else:
-                    mode = "wb"  # Default to write mode if file doesn't exist
-
+            if self.record and self.recordingFile:
                 try:
-                    self.recordingFile = open(file_path, mode)
-                    self.logger.log(logging.INFO, f"[{self.thread_id}]: Recording to file {file_path.name} in mode {mode}.")
+                    self.recordingFile.write(byte_array)
                 except Exception as e:
-                    self.logger.log(logging.ERROR, f"[{self.thread_id}]: Could not open file {file_path.name} in mode {mode}.")
+                    self.logSignal.emit(logging.ERROR,
+                        f"[{self.instance_name[:15]:<15}]: Could not write to file {self.recordingFileName}. Error: {e}"
+                    )                    
                     self.record = False
-                    self.ui.radioButton_SerialRecord.setChecked(self.record)
-        else:
-            if self.recordingFile:
+                    self.ui.checkBox_ReceiverRecord.setChecked(self.record)
+                    self.recordingFile = None
+                    self.recordingFileName = ""
+
+        if PROFILEME :
+            toc = time.perf_counter()
+            self.mtoc_on_receivedData = max((toc - tic), self.mtoc_on_receivedData) # End performance tracking
+
+    @pyqtSlot()
+    @profile
+    def flushByteArrayBuffer(self) -> None:
+        """
+        Takes content of the byte array buffer and displays it efficiently
+        If user has scrolled away from bottom of display, update will stop
+        """
+
+        if self.display:
+
+            if PROFILEME:
+                tic = time.perf_counter()
+
+            buf = self.byteArrayBuffer
+            if not buf:
+                self.byteArrayBufferTimer.stop()
+                return
+
+            at_bottom = self.text_scroll_bar.value() >= (self.text_scroll_bar.maximum() - self.text_scroll_bar.pageStep())
+            if not at_bottom:
+                # Cap raw backlog to avoid unbounded growth while scrolled up
+                if len(self.byteArrayBuffer) > MAX_BACKLOG_BYTES:
+                    self.byteArrayBuffer[:] = self.byteArrayBuffer[-MAX_BACKLOG_BYTES:]
+                return
+
+            arr = np.frombuffer(buf, dtype=np.uint8)
+            newline_positions = np.where(arr == 0x0A)[0]                       # 0x0A = '\n'
+
+            ends_with_nl = (buf[-1] == 0x0A)
+            if ends_with_nl:
+                total_lines = int(newline_positions.size)
+            else:
+                total_lines = int(newline_positions.size) + 1
+
+            if total_lines == 0:
+                return
+
+            self.text_widget.setUpdatesEnabled(False)
+
+            try: 
+
+                # if more lines available then there are lines in terminal history,
+                # do a full redraw with the latest lines that fit in the terminal,
+                # otherwise append text to terminal history and let widget auto trim
+
+                if total_lines > self.maxlines:
+                    # more lines than we can show, trim
+
+                    # Find cut position *after* the newline that precedes the last L lines.
+                    # If buffer ends with '\n': cut after newline_positions[-L-1]
+                    # Else (unterminated last line): cut after newline_positions[-L]
+
+                    # index of the newline just *before* the last L lines
+                    if ends_with_nl:
+                        idx = total_lines - self.maxlines - 1
+                    else:
+                        idx = total_lines - self.maxlines
+                    start = int(newline_positions[idx]) + 1 if idx >= 0 else 0
+
+                    # Decode only what we will display
+                    text = buf[start:].decode(self.encoding, errors="replace")
+                    # Full redraw
+                    self.text_widget.setPlainText(text)
+
+                else:
+                    # fast append, no trimming needed
+
+                    # Decode byte array
+                    text = buf.decode(self.encoding, errors="replace")
+                    # Append text
+                    self.text_widget.moveCursor(CursorEnd)
+                    self.text_widget.insertPlainText(text)
+
+                # Autoscroll to bottom
+                self.text_scroll_bar.setValue(self.text_scroll_bar.maximum())  # Scroll to bottom for autoscroll
+            finally:
                 try:
-                    self.recordingFile.close()
-                    self.logger.log(logging.INFO, f"[{self.thread_id}]: Recording to file {self.recordingFile.name} stopped.")
-                except Exception as e:
-                    self.logger.log(logging.ERROR, f"[{self.thread_id}]: Could not close file {self.recordingFile.name}.")
-                self.recordingFile = None
+                    del arr
+                except NameError:
+                    pass
+                self.text_widget.setUpdatesEnabled(True)
+
+                if PROFILEME:
+                    toc = time.perf_counter()
+                    self.mtoc_appendText = max(toc - tic, self.mtoc_appendText)
+
+        # No display but still need to clear buffer
+        self.byteArrayBuffer.clear()
 
     @pyqtSlot(list)
+    @profile
     def on_receivedLines(self, lines: list):
         """
-        Receives lines of text from the serial port, stores them in a circular buffer,
-        and updates the text display efficiently.
+        Receives lines of text from the ble port, 
+        Stores them in the lines buffer,
+        Saves them to file if recording is enabled,
         """
-        self.logger.log(logging.DEBUG, f"[{self.thread_id}]: text lines received.")
 
-        # 1. Record lines to file if recording is enabled
-        if self.record:
-            try:
-                self.recordingFile.writelines(lines)
-            except Exception as e:
-                self.logger.log(logging.ERROR, f"[{self.thread_id}]: Could not write to file {self.recordingFileName}. Error: {e}")
-                self.record = False
-                self.ui.radioButton_SerialRecord.setChecked(self.record)
-
-        # 2. Decode all lines efficiently
-        decoded_lines = [self._safe_decode(line, self.encoding) for line in lines]
+        if PROFILEME: 
+            tic = time.perf_counter()
 
         if DEBUGSERIAL:
-            for decoded_line in decoded_lines:
-                self.logger.log(logging.DEBUG, f"[{self.thread_id}]: {decoded_line}")
+            self.logSignal.emit(logging.DEBUG, 
+                f"[{self.instance_name[:15]:<15}]: Text lines received."
+            )
 
-        # 3. Append to `deque` (automatically trims when max length is exceeded)
-        self.lineBuffer_text.extend(decoded_lines)
+        if lines:
 
-        # 4. Append text to display
-        if decoded_lines:
-            text = "\n".join(decoded_lines)
+            self.linesBuffer.extend(lines)
+            if not self.linesBufferTimer.isActive():
+                self.linesBufferTimer.start()
 
-            # Check if user has scrolled to the bottom
-            scrollbar = self.textScrollbar
-            at_bottom = scrollbar.value() >= scrollbar.maximum() - 20
+            if self.record and self.recordingFile:
+                try:
+                    # combine the lines to single bytearray with eol added
+                    _tmp = self.textLineTerminator.join(lines) + self.textLineTerminator
+                    self.recordingFile.write(_tmp)
+                except Exception as e:
+                    self.logSignal.emit(logging.ERROR, f"[{self.instance_name[:15]:<15}]: Could not write to file {self.recordingFileName}. Error: {e}")
+                    self.record = False
+                    self.ui.checkBox_ReceiverRecord.setChecked(self.record)
+                    self.recordingFile = None
+                    self.recordingFileName = ""
 
-            self.ui.plainTextEdit_Text.appendPlainText(text)
+        if PROFILEME:
+            toc = time.perf_counter()
+            self.mtoc_on_receivedLines = max((toc - tic), self.mtoc_on_receivedLines) # End performance tracking
 
-            # If the user was at the bottom, keep scrolling
-            if at_bottom:
-                scrollbar = self.textScrollbar
-                scrollbar.setValue(scrollbar.maximum())
+    @pyqtSlot()
+    @profile
+    def flushLinesBuffer(self) -> None:
+        """
+        Takes the content of the line buffer and displays it efficiently in the terminal
+        This does not preserve the cursor position.
+        """
+          
+        if self.linesBuffer:
+
+            if self.display:
+                if PROFILEME: 
+                    tic = time.perf_counter()                                  # Start performance tracking
+
+                at_bottom = self.text_scroll_bar.value() >= (self.text_scroll_bar.maximum() - self.text_scroll_bar.pageStep())
+
+                if not at_bottom:
+                    if len(self.linesBuffer) > self.maxlines:
+                        # too many lines to show, keep only the most recent lines (in-place)
+                        self.linesBuffer[:] = self.linesBuffer[-self.maxlines:]
+                    return
+
+                # Build display text efficiently: join bytes, decode once, add trailing newline
+
+                nLines_incoming = len(self.linesBuffer)
+                if nLines_incoming > self.maxlines:
+                    # more lines than we can show, only keep the last maxlines
+                    lines_toShow = self.linesBuffer[-self.maxlines:]
+                    useReplace = True
+                else:
+                    # all lines fit in terminal
+                    lines_toShow = self.linesBuffer[:]
+                    useReplace = False
+                # clear buffer after snapshot
+                self.linesBuffer.clear()
+
+                if lines_toShow:
+
+                    self.text_widget.setUpdatesEnabled(False)
+
+                    # Join bytes → one decode; add trailing newline to avoid gluing batches
+                    display_text = (b'\n'.join(lines_toShow) + b'\n').decode(self.encoding, errors="replace")
+
+                    # If more lines than history capacity, redraw; else append
+                    if useReplace:
+                        # full redraw
+                        self.text_widget.setPlainText(display_text)
+                    else:
+                        # fast append
+                        self.text_widget.moveCursor(CursorEnd)
+                        self.text_widget.insertPlainText(display_text)
+
+                    self.text_scroll_bar.setValue(self.text_scroll_bar.maximum()) # Scroll to bottom for autoscroll
+                    self.text_widget.setUpdatesEnabled(True)
+
+                if PROFILEME: 
+                    toc = time.perf_counter()                                  # End performance tracking
+                    self.mtoc_appendTextLines = max((toc - tic),self.mtoc_appendTextLines ) # End performance tracking
+
+            # No display but still need to clear buffer
+            self.linesBuffer.clear()
+
+        else:
+            self.linesBufferTimer.stop()            
+
+    @pyqtSlot(str)
+    @profile
+    def on_receivedHTML(self, html: str) -> None:
+        """
+        Received html text from the ble input handler
+        Stores it in the html buffer
+        Saves it to file if recording is enabled,
+        """
+
+        if PROFILEME or DEBUGSERIAL: 
+            tic = time.perf_counter()
+
+        if DEBUGSERIAL:
+            self.logSignal.emit(logging.DEBUG, f"[{self.instance_name[:15]:<15}]: HTML received.")
+
+        if html:
+            self.htmlBuffer += html
+            if not self.htmlBufferTimer.isActive():
+                self.htmlBufferTimer.start()
+
+            if self.record and self.recordingFile:
+                try:
+                    self.recordingFile.write(html)
+                except Exception as e:
+                    self.logSignal.emit(
+                        logging.ERROR,
+                        f"[{self.instance_name[:15]:<15}]: Could not write to file {self.recordingFileName}. Error: {e}"
+                    )
+                    self.record = False
+                    self.ui.checkBox_ReceiverRecord.setChecked(self.record)
+                    self.recordingFile = None
+                    self.recordingFileName = ""
+
+        if PROFILEME:
+            toc = time.perf_counter()
+            self.mtoc_on_receivedHTML = max((toc - tic), self.mtoc_on_receivedHTML) # End performance tracking
+
+    @pyqtSlot()
+    @profile
+    def flushHTMLBuffer(self) -> None:
+        """
+        Takes the content of the html buffer and displays it efficiently in the terminal
+
+        HTML can only be appended to regular text widgets, not the plain text widget and that is slower.
+        So I will need to create alternative rich text widget if HTML display is needed.
+        """
+          
+        if self.htmlBuffer:
+
+
+            self.logSignal.emit(logging.WARNING, 
+                f"[{self.instance_name[:15]:<15}]: Appending HTML to rich text widget not implemented."
+            )
+            return
+
+            if self.display:
+                if PROFILEME: 
+                    tic = time.perf_counter()                                  # Start performance tracking
+
+                at_bottom = self.rich_text_scroll_bar.value() >= (self.rich_text_scroll_bar.maximum() - self.rich_text_scroll_bar.pageStep())
+
+                if not at_bottom:
+                    return
+                
+                # Process HTML & detect incomplete tags
+                valid_html_part, self.htmlBuffer = self.html_tracker.detect_incomplete_html(self.htmlBuffer)
+
+                if valid_html_part:
+                    # Append new HTML to the display
+                    self.rich_text_widget.setUpdatesEnabled(False)
+                    self.rich_text_widget.moveCursor(QTextCursor.MoveOperation.End)
+                    self.rich_text_widget.insertHtml(valid_html_part)          # works on QTextEdit
+                    self.rich_text_scroll_bar.setValue(self.rich_text_scroll_bar.maximum()) # Scroll to bottom for autoscroll
+                    self.rich_text_widget.setUpdatesEnabled(True)
+
+                if PROFILEME: 
+                    toc = time.perf_counter()                                  # End performance tracking
+                    self.mtoc_appendHTML = max((toc - tic),self.mtoc_appendHTML ) # End performance tracking
+            
+            # Did not display but still need to clear buffer
+            self.htmlBuffer = ""
+
+        else:
+            pass
+            # Not yet implemented
+            # self.htmlBufferTimer.stop()
+
+    @pyqtSlot(bool)
+    def on_workerStateChanged(self, running: bool) -> None:
+        """
+        BLE worker was started or stopped
+        """
+        self.logSignal.emit(logging.INFO,
+            f"[{self.instance_name[:15]:<15}]: BLEAK worker is {'on' if running else 'off'}."
+        )
+        self.receiverIsRunning = running
+        if running:
+            self.ui.statusBar().showMessage("BLE Worker started", 2000)
+        else:
+            self.ui.statusBar().showMessage("BLEAK Worker stopped", 2000)
 
     @pyqtSlot(float,float)
+    @profile
     def on_throughputReady(self, numReceived:int, numSent:int):
-        """pickup throughput data from BLE transceiver"""
+        """
+        Report throughput data from BLEAK transceiver
+        """
+
+        tic = time.perf_counter()
+        deltaTime = tic - self.lastNumComputed
+        self.lastNumComputed = tic
 
         rx = numReceived - self.lastNumReceived
         tx = numSent - self.lastNumSent
-        if rx >=0: self.rx = rx
-        if tx >=0: self.tx = tx
-        # # poor man's low pass
-        # self.rx = 0.5 * self.rx + 0.5 * rx
-        # self.tx = 0.5 * self.tx + 0.5 * tx
-        self.ui.label_throughput.setText(
-            "RX:{:<5.1f} TX:{:<5.1f} kB/s".format(self.rx / 1024, self.tx / 1024)
-        )
+
         self.lastNumReceived = numReceived
         self.lastNumSent     = numSent
+
+        # calculate throughput
+        # deltaTime is in milli seconds -> *1000
+        # numReceived and numSent are in kilo bytes -> /1024
+        if rx >=0: 
+            self.rx = rx / deltaTime
+        if tx >=0: 
+            self.tx = tx / deltaTime
+
+        self.throughputUpdate.emit(float(self.rx), float(self.tx), "ble")
+
+        if PROFILEME: 
+            toc = time.perf_counter()
+            self.mtoc_on_throughputReady = max((toc - tic), self.mtoc_on_throughputReady) # End performance tracking
+
+    # BLEAK SUCCESS
+    # ----------------------------------------
 
     @pyqtSlot(bool)
     def on_connectingSuccess(self, success):
         """pickup wether device connection was successful"""
         self.device_info["connected"] = success
 
+        # Inform main to (un)wire send targets for BLE
+        self.txrxReadyChanged.emit(bool(success))
+
         if success:
             self.ui.pushButton_SendFile.setEnabled(True)
-            self.ui.pushButton_Connect.setEnabled(True)
-            self.ui.pushButton_Connect.setText("Disconnect")
-            
+            self.ui.lineEdit_Text.setEnabled(True)
+            self.ui.pushButton_BLEConnect.setEnabled(True)
+            self.ui.pushButton_BLEConnect.setText("Disconnect")
+
         else:
             self.ui.pushButton_SendFile.setEnabled(False)
-            self.ui.pushButton_Connect.setEnabled(True)
-            self.ui.pushButton_Connect.setText("Connect")
+            self.ui.lineEdit_Text.setEnabled(False)
+            self.ui.pushButton_BLEConnect.setEnabled(True)
+            self.ui.pushButton_BLEConnect.setText("Connect")
 
-        self.handle_log(logging.INFO, f"[{self.instance_name}] Device {self.device.name} connection: {'successful' if success else 'failed'}")
+        # self.receiverIsRunning  = success
 
+        self.logSignal.emit(logging.INFO, 
+            f"[{self.instance_name[:15]:<15}]: Device {self.device.name} connection: {'successful' if success else 'failed'}"
+        )
 
-    @pyqtSlot()
+        self.ui.statusBar().showMessage(f'BLE device connection: {"successful" if success else "failed"}', 2000)
+
+    @pyqtSlot(bool)
     def on_disconnectingSuccess(self, success):
         """pickup wether device disconnection was successful"""
         self.device_info["connected"] = not(success)
 
-        if success: # disconnecting
-            self.ui.pushButton_SendFile.setEnabled(False)
-            self.ui.pushButton_Connect.setEnabled(True)
-            self.ui.pushButton_Connect.setText("Connect")
-        else: # disconnecting failed
-            self.ui.pushButton_Connect.setEnabled(True)
-            self.ui.pushButton_Connect.setText("Disconnect")
+        # Inform main to (un)wire send targets for BLE
+        self.txrxReadyChanged.emit(not success)
 
-        self.handle_log(logging.INFO, f"[{self.instance_name}] Device {self.device.name} disconnection: {'successful' if success else 'failed'}")
+        self.ui.pushButton_SendFile.setEnabled(False)
+        self.ui.lineEdit_Text.setEnabled(False)
+        self.ui.pushButton_BLEConnect.setEnabled(True)
+        self.ui.pushButton_BLEConnect.setText("Connect")
+
+        self.logSignal.emit(logging.INFO, 
+            f"[{self.instance_name[:15]:<15}]: Device {self.device.name} disconnection: {'successful' if success else 'failed'}"
+        )
+
+        self.receiverIsRunning  = False
+
+        self.ui.statusBar().showMessage('BLE device  disconnected.', 2000)
+
+    # Bluetoothctl SUCCESS
+    # ----------------------------------------
 
     @pyqtSlot(bool)
     def on_pairingSuccess(self, success):
         """pickup wether device pairing was successful"""
         self.device_info["paired"] = success
-        if success:
-            self.ui.pushButton_Pair.setEnabled(True)
-            self.ui.pushButton_Pair.setText("Remove")
-        else:
-            self.ui.pushButton_Pair.setEnabled(True)
-            self.ui.pushButton_Pair.setText("Pair")
+        self.ui.pushButton_BLEPair.setEnabled(True)
+        self.ui.pushButton_BLEPair.setText("Remove" if success else "Pair")
+        self.logSignal.emit(logging.INFO,
+            f"[{self.instance_name[:15]:<15}]: Device {self.device.name} pairing: {'successful' if success else 'failed'}"
+        )
+        self.ui.statusBar().showMessage('BLE device paired.' if success else 'BLE pairing failed.', 2000)
 
-        self.handle_log(logging.INFO, f"[{self.instance_name}] Device {self.device.name} pairing: {'successful' if success else 'failed'}")
 
     @pyqtSlot(bool)
     def on_removalSuccess(self, success):
         """pickup wether device removal was successful"""
-        self.device_info["paired"] = not(success)
-
-        if success: # removing
-            self.ui.pushButton_Pair.setEnabled(True)
-            self.ui.pushButton_Pair.setText("Pair")
-        else: # removing failed
-            self.ui.pushButton_Pair.setEnabled(True)
-            self.ui.pushButton_Pair.setText("Remove")
-
-        self.handle_log(logging.INFO, f"[{self.instance_name}] Device {self.device.name} removal: {'successful' if success else 'failed'}")
+        # success True => now unpaired
+        self.device_info["paired"] = not success
+        self.ui.pushButton_BLEPair.setEnabled(True)
+        self.ui.pushButton_BLEPair.setText("Pair" if success else "Remove")
+        self.logSignal.emit(logging.INFO,
+            f"[{self.instance_name[:15]:<15}]: Device {self.device.name} removal: {'successful' if success else 'failed'}"
+        )
+        self.ui.statusBar().showMessage('BLE device removed.' if success else 'BLE removal failed.', 2000)
 
     @pyqtSlot(bool)
     def on_trustSuccess(self, success):
         """pickup wether device pairing was successful"""
         self.device_info["trusted"] = success
-        if success:
-            self.ui.pushButton_Trust.setEnabled(True)
-            self.ui.pushButton_Trust.setText("Distrust")
-        else:
-            self.ui.pushButton_Trust.setEnabled(True)
-            self.ui.pushButton_Trust.setText("Trust")
-
-        self.handle_log(logging.INFO, f"[{self.instance_name}] Device {self.device.name} trusting: {'successful' if success else 'failed'}")
+        self.ui.pushButton_BLETrust.setEnabled(True)
+        self.ui.pushButton_BLETrust.setText("Distrust" if success else "Trust")
+        self.logSignal.emit(logging.INFO,
+            f"[{self.instance_name[:15]:<15}]: Device {self.device.name} trusting: {'successful' if success else 'failed'}"
+        )
+        self.ui.statusBar().showMessage('BLE device trusted.' if success else 'BLE trust failed.', 2000)
 
     @pyqtSlot(bool)
     def on_distrustSuccess(self, success):
-        """pickup wether device removal was successful"""
-        self.device_info["trusted"] = not(success)
+        # success True => now untrusted
+        self.device_info["trusted"] = not success
+        self.ui.pushButton_BLETrust.setEnabled(True)
+        self.ui.pushButton_BLETrust.setText("Trust" if success else "Distrust")
+        self.logSignal.emit(logging.INFO,
+            f"[{self.instance_name[:15]:<15}]: Device {self.device.name} distrusting: {'successful' if success else 'failed'}"
+        )
+        self.ui.statusBar().showMessage('BLE device distrusted.' if success else 'BLE distrust failed.', 2000)
 
-        if success: # removing
-            self.ui.pushButton_Trust.setEnabled(True)
-            self.ui.pushButton_Trust.setText("Trust")
-        else: # removing failed
-            self.ui.pushButton_Trust.setEnabled(True)
-            self.ui.pushButton_Trust.setText("Distrust")
+    # ==========================================================================
+    # UI wants to receive data or cleanup
+    # ==========================================================================
 
-        self.handle_log(logging.INFO, f"[{self.instance_name}] Device {self.device.name} distrusting: {'successful' if success else 'failed'}")
-
-
-    @pyqtSlot()
-    def bleTextDisplay_trim(self):
-        """
-        Reduce the amount of text kept in the text display window
-        Attempt to keep the scrollbar location
-        """
-
-        tic = time.perf_counter()
-
-        # 0 Do we need to trim?
-        textDisplayLineCount = self.ui.plainTextEdit_Text.document().blockCount() # 70 micros
- 
-        if textDisplayLineCount > self.textBrowserLength:
-
-            old_textDisplayLineCount = textDisplayLineCount
-            scrollbar = self.textScrollbar  # Avoid redundant calls
-
-            #  1 Where is the current scrollbar? (scrollbar value is pixel based)
-            old_scrollbarMax = scrollbar.maximum()
-            old_scrollbarValue = scrollbar.value()
-
-            old_proportion = (old_scrollbarValue / old_scrollbarMax) if old_scrollbarMax > 0 else 1.0            
-            old_linePosition = round(old_proportion * old_textDisplayLineCount)
-
-            # 2 Replace text with the line buffer
-            # lines_inTextBuffer  = len(self.lineBuffer_text)
-            text = "\n".join(self.lineBuffer_text)
-            self.ui.plainTextEdit_Text.setPlainText(text)
-            new_textDisplayLineCount = self.ui.plainTextEdit_Text.document().blockCount()
-            # new_textDisplayLineCount = lines_inTextBuffer + 1
-
-            # 3 Update the scrollbar position
-            new_scrollbarMax = self.textScrollbar.maximum()            
-            if new_textDisplayLineCount > 0:
-                new_linePosition = max(0, (old_linePosition - (old_textDisplayLineCount - new_textDisplayLineCount)))
-                new_proportion = new_linePosition / new_textDisplayLineCount
-                new_scrollbarValue = round(new_proportion * new_scrollbarMax)
-            else:
-                new_scrollbarValue = 0
-
-            # 4 Ensure that text is scrolling when we set cursor towards the end
-
-            if new_scrollbarValue >= new_scrollbarMax - 20:
-                self.textScrollbar.setValue(new_scrollbarMax)  # Scroll to the bottom
-            else:
-                self.textScrollbar.setValue(new_scrollbarValue)
-
-            toc = time.perf_counter()
-            self.handle_log(
-                logging.INFO,
-                f"[{self.thread_id}]: trimmed text display in {(toc-tic)*1000:.2f} ms."
+    def connect_receivedLines(self, on_receivedLines: pyqtSlot) -> None:
+        if not connect(self.bleakWorker.receivedLines, on_receivedLines):
+            self.logSignal.emit(logging.INFO,
+                f"[{self.instance_name[:15]:<15}]: Received lines signal could not be connected."
             )
 
-        self.ui.statusBar().showMessage('Trimmed Text Display Window', 2000)
-
-
-    @pyqtSlot()
-    def bleLogDisplay_trim(self):
-        """
-        Reduce the amount of text kept in the log display window
-        Attempt to keep the scrollbar location
-        """
-
-        tic = time.perf_counter()
-
-        # 0 Do we need to trim?
-        logDisplayLineCount = self.ui.plainTextEdit_Log.document().blockCount() # 70 micros
- 
-        if logDisplayLineCount > self.textBrowserLength:
-
-            old_logDisplayLineCount = logDisplayLineCount
-            scrollbar = self.logScrollbar  # Avoid redundant calls
-
-            #  1 Where is the current scrollbar? (scrollbar value is pixel based)
-            old_scrollbarMax = scrollbar.maximum()
-            old_scrollbarValue = scrollbar.value()
-
-            old_proportion = (old_scrollbarValue / old_scrollbarMax) if old_scrollbarMax > 0 else 1.0            
-            old_linePosition = round(old_proportion * old_logDisplayLineCount)
-
-            # 2 Replace text with the line buffer
-            text = "\n".join(self.lineBuffer_log)
-            self.ui.plainTextEdit_Log.setPlainText(text)
-            new_logDisplayLineCount = self.ui.plainTextEdit_Log.document().blockCount()
-
-            # 3 Update the scrollbar position
-            new_scrollbarMax = self.textScrollbar.maximum()            
-            if new_logDisplayLineCount > 0:
-                new_linePosition = max(0, (old_linePosition - (old_logDisplayLineCount - new_textDisplayLineCount)))
-                new_proportion = new_linePosition / new_logDisplayLineCount
-                new_scrollbarValue = round(new_proportion * new_scrollbarMax)
-            else:
-                new_scrollbarValue = 0
-
-            # 4 Ensure that text is scrolling when we set cursor towards the end
-            if new_scrollbarValue >= new_scrollbarMax - 20:
-                self.logScrollbar.setValue(new_scrollbarMax)  # Scroll to the bottom
-            else:
-                self.logScrollbar.setValue(new_scrollbarValue)
-
-            toc = time.perf_counter()
-            self.handle_log(
-                logging.INFO,
-                f"[{self.thread_id}]: trimmed log display in {(toc-tic)*1000:.2f} ms."
+    def connect_receivedData(self, on_receivedData: pyqtSlot) -> None:
+        if not connect(self.bleakWorker.receivedData, on_receivedData):
+            self.logSignal.emit(logging.INFO,
+                f"[{self.instance_name[:15]:<15}]: Received data signal could not be connected."
             )
 
-        self.ui.statusBar().showMessage('Trimmed Log Display Window', 2000)
+    def disconnect_receivedLines(self, on_receivedLines: pyqtSlot) -> None:
+        if not disconnect(self.bleakWorker.receivedLines, on_receivedLines):
+            self.logSignal.emit(logging.INFO,
+                f"[{self.instance_name[:15]:<15}]: Received lines signal could not be disconnected."
+            )
+
+    def disconnect_receivedData(self, on_receivedData: pyqtSlot) -> None:
+        if not disconnect(self.bleakWorker.receivedData, on_receivedData):
+            self.logSignal.emit(logging.INFO,
+                f"[{self.instance_name[:15]:<15}]: Received data signal could not be disconnected."
+            )
 
     def cleanup(self):
         """
-        Perform cleanup tasks for QBLESerialUI, such as stopping timers, disconnecting signals,
-        and ensuring proper worker shutdown.
+        Perform cleanup tasks for QBLESerial, such as 
+          stopping timers, 
+          disconnecting signals,
+          and ensuring proper worker shutdown.
         """
-        self.logger.info("Performing QBLESerialUI cleanup...")
+
+        self.logSignal.emit(logging.INFO, 
+            f"[{self.instance_name[:15]:<15}]: Cleaning up BLEAK & bluetoothctl workers."
+        )
+        self.ui.statusBar().showMessage('Cleaning up BLEAK and bluetoothctl workers.', 2000)
 
         if hasattr(self.recordingFile, "close"):
             try:
                 self.recordingFile.close()
-            except:
-                self.handle_log(
-                    logging.ERROR, 
-                    f"[{self.thread_id}]: Could not close file {self.recordingFileName}."
+            except Exception as e:
+                self.logSignal.emit(logging.ERROR, 
+                    f"[{self.instance_name[:15]:<15}]: Could not close file {self.recordingFileName}: {e}"
                 )
 
-        # Stop timers
-        if self.textTrimTimer.isActive():
-            self.textTrimTimer.stop()
-        if self.logTrimTimer.isActive():
-            self.logTrimTimer.stop()
+        # Stop timers if they are still active
+        if self.byteArrayBufferTimer.isActive():
+            self.byteArrayBufferTimer.stop()
+        if self.linesBufferTimer.isActive():
+            self.linesBufferTimer.stop()
+        # Not implemented yet
+        # if self.htmlBufferTimer.isActive():
+        #     self.htmlBufferTimer.stop()
 
-        self.textTrimTimer.timeout.disconnect()
-        self.logTrimTimer.timeout.disconnect()
+        # Gather workers/threads
+        bleakWorker = getattr(self, "bleakWorker", None)
+        bleakThread = getattr(self, "bleakThread", None)
+        btWorker    = getattr(self, "bluetoothctlWorker", None)
+        btThread    = getattr(self, "bluetoothctlThread", None)
 
-        self.handle_log(
-            logging.INFO, 
-            f"[{self.thread_id}]: cleaned up."
+        # Request both workers to finish (single signal wired to both)
+        self.finishWorkerRequest.emit()
+
+        if bleakWorker:
+            ok, args, reason = wait_for_signal(
+                bleakWorker.finished,
+                timeout_ms=1000,
+                sender=bleakWorker
+            )
+            if not ok and reason != "destroyed":
+                self.logSignal.emit(logging.ERROR,
+                    f"[{self.instance_name[:15]:<15}]: BLEAK Worker finish timed out because of {reason}.")
+            else:
+                self.logSignal.emit(logging.DEBUG,
+                    f"[{self.instance_name[:15]:<15}]: BLEAK Worker finished: {args}."
+                )
+        else:
+            self.logSignal.emit(logging.WARNING,
+                f"[{self.instance_name[:15]:<15}]: BLEAK worker not initialized."
+            )
+
+        if bleakThread:
+            # AsyncThread: prefer stop() before forcing
+            try:
+                bleakThread.stop()
+            except Exception:
+                pass
+            if not bleakThread.wait(1000):
+                self.logSignal.emit(logging.WARNING,
+                    f"[{self.instance_name[:15]:<15}]: BLEAK Thread graceful stop timed out after 3000 ms; forcing quit.")
+                bleakThread.quit() 
+                if not bleakThread.wait(1000):
+                    self.logSignal.emit(logging.ERROR,
+                        f"[{self.instance_name[:15]:<15}]: BLEAK Thread won’t quit; terminating as last resort.")
+                    try:
+                        bleakThread.terminate()
+                        bleakThread.wait(500)
+                    except Exception:
+                        pass
+
+        # Wait for bluetoothctl worker (if present and thread running)
+        if btThread and qobject_alive(btThread) and btThread.isRunning():
+            if btWorker and qobject_alive(btWorker):
+                ok, args, reason = wait_for_signal(
+                    btWorker.finished,
+                    timeout_ms=2000,
+                    sender=btWorker,
+                )
+                if not ok and reason != "destroyed":
+                    self.logSignal.emit(logging.ERROR,
+                        f"[{self.instance_name[:15]:<15}]: Bluetoothctl Worker finish timed out because of {reason}.")
+                else:
+                    self.logSignal.emit(logging.DEBUG,
+                        f"[{self.instance_name[:15]:<15}]: Bluetoothctl Worker finished: {args}."
+                    )
+        else:
+            self.logSignal.emit(logging.INFO,
+                f"[{self.instance_name[:15]:<15}]: Bluetoothctl worker already stopped or not initialized."
+            )
+
+        # Bring bluetoothctl thread down
+        if btThread and qobject_alive(btThread):
+            if not btThread.wait(1000):
+                self.logSignal.emit(logging.WARNING,
+                    f"[{self.instance_name[:15]:<15}]: Bluetoothctl Thread graceful stop timed out; forcing quit.")
+                btThread.quit()
+                if not btThread.wait(1000):
+                    self.logSignal.emit(logging.ERROR,
+                        f"[{self.instance_name[:15]:<15}]: Bluetoothctl Thread won’t quit; terminating as last resort.")
+                    try:
+                        btThread.terminate()
+                        btThread.wait(500)
+                    except Exception:
+                        pass
+
+        self.logSignal.emit(logging.INFO, 
+            f"[{self.instance_name[:15]:<15}]: Cleaned up."
         )
 
+############################################################################################################################################
+#
+# Bleak Worker
+#
+# start and stop worker
+# send text, line, lines, file
+# scan for devices
+# change device
+# connect and disconnect device
+# change line termination
+# calculate throughput 
+#
+# The worker uses a separate async thread handling BLE serial input and output
+# These routines have no access to the user interface,
+# Communication occurs through signals
+#
+# This is the Model of the Model - View - Controller (MVC) architecture.
+#
+############################################################################################################################################
 
-##########################################################################################################################################        
-##########################################################################################################################################        
+class AsyncThread(QThread):
+    """
+    Async Thread for BLEAK Operations
+    This replaces QThread:
+    We can not run BLEAK inside a QT Thread as async only works in main thread
+    """
+
+    ready = pyqtSignal(object)                                                 # emits the loop once setup
+    
+    def __init__(self):
+        super().__init__()
+        self._loop = None                                                      # ensure attribute exists before run()
+
+    def run(self):
+        # Create and install an asyncio loop in *this* thread
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self._loop = loop
+        self.ready.emit(loop)
+        # Run forever
+        try:
+            loop.run_forever()
+        finally:
+            loop.close()
+
+    def stop(self):
+        if self._loop is not None:
+            self._loop.call_soon_threadsafe(self._loop.stop)
+
+    @property
+    def loop(self):
+        return getattr(self, "_loop", None)
+
+
+class BleakWorker(QObject):
+    """
+    Bleak Worker
+        start_transceiver()                    connect to BLE notifications
+        stop_transceiver()                      disconnect from BLE notifications
+        request_mtoc()
+        start_throughput()
+        stop_throughput()
+        change_LineTermination()                EOL character
+        clean_up()                              stop transceiver, throughput, disconnect device
+        start_scan()
+        select_device()                         select device by MAC and update self.device
+        connect_device()                        connect to selected BLEDevice
+        disconnect_device()                     disconnect from BLEDevice
+        send_bytes()
+        send_line()
+        send_lines()
+        send_file(Path)
+
+    Callbacks:
+        _handle_data(sender, data)                      handle incoming data from BLE device
+        _setup_throughput()
+        _throughput_loop()                      Emit every second throughput data
+        _startTransceiver()
+        _stopTransceiver()
+        _scanDevices()
+        _connectDevice()
+            _handle_disconnect()
+            _handle_reconnection()
+        _disconnectDevice()
+        _sendText
+        _sendLine
+        _sendLines
+        _sendFile
+
+    Utility Functions:
+        set_loop(loop)                         set asyncio loop for this worker
+        schedule(coro)                         schedule a coroutine to run in the worker's loop
+    """
+
+    logSignal            = pyqtSignal(int, str)  
+    deviceListReady      = pyqtSignal(list)
+    connectingSuccess    = pyqtSignal(bool)
+    disconnectingSuccess = pyqtSignal(bool)
+    receivedLines        = pyqtSignal(list)
+    receivedData         = pyqtSignal(bytearray)
+    throughputReady      = pyqtSignal(float, float)                            # RX, TX throughput in
+    workerStateChanged   = pyqtSignal(bool)
+    eolChanged           = pyqtSignal(bytes)                                   # notify UI when eol changed
+    finished             = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super(BleakWorker, self).__init__(parent)
+
+        self.thread_id = int(QThread.currentThreadId()) if QThread.currentThreadId() else -1
+        self.instance_name = self.objectName() if self.objectName() else self.__class__.__name__
+
+        self.loop = None
+        self._throughput_task = None
+
+        self.eol =  EOL_DEFAULT_BYTES
+        self.client = None
+        self.device = None
+        self.device_backup = None
+        self.services = None
+        self.bytes_received = 0
+        self.bytes_sent = 0
+        self.bufferIn = bytearray()
+
+        self.timeout = 0
+        self.reconnect = False
+        self.awaitingReconnection  = False
+
+        self.NSUdevices = []
+        self.mtu = 23
+        self.BLEpayloadSize = 20
+
+        self.receiverIsRunning = False
+
+        self.mtoc_on_sendText = 0.
+        self.mtoc_on_sendLine = 0.
+        self.mtoc_on_sendLines = 0.
+        self.mtoc_on_sendFile = 0.
+        self.mtoc_readlines = 0.
+        self.mtoc_read = 0.
+        self.mtoc_on_scanDevices = 0.
+        self.mtoc_on_connectDevice = 0.
+        self.mtoc_on_disconnectDevice = 0.
+
+        # EOL autodetection (mirror Serial worker defaults)
+        self.dataReady_calls = 0
+        self.eolWindow_start = 0.0
+        self.dataReady_calls_threshold   = MAX_DATAREADYCALLS
+        self.eolDetection_timeThreshold  = MAX_EOL_DETECTION_TIME
+        self.eolFallback_timeout         = MAX_EOL_FALLBACK_TIMEOUT
+        self.bufferIn_max = 65536                                              # cap buffer growth
+
+    # ==========================================================================
+    # Functions, Async Functions, Callbacks
+    # ==========================================================================
+
+    def set_loop(self, loop):
+        self.loop = loop
+        try:
+            self.thread_id = int(QThread.currentThreadId())
+        except Exception:
+            import threading
+            self.thread_id = threading.get_ident()
+
+    def schedule(self, coro) -> asyncio.Future:
+        if not self.loop:
+            raise RuntimeError("Can not schedule async task, bleak loop not set yet")
+
+        # determine label for logging
+        label = None
+        if inspect.iscoroutine(coro):
+            try:
+                label = coro.cr_code.co_name
+            except Exception:
+                label = getattr(coro, "__name__", "coroutine")
+        else:
+            label = getattr(coro, "__name__", type(coro).__name__)
+        if not label:
+            label = "coroutine"
+        
+        fut = asyncio.run_coroutine_threadsafe(coro, self.loop)
+        setattr(fut, "_task_label", label)
+
+        def _log_ex(f):
+            label = getattr(f, "_task_label", "coroutine")
+            
+            if f.cancelled():
+                self.logSignal.emit(logging.WARNING,
+                    f"[{self.instance_name[:15]:<15}]: {label} async task cancelled.")
+                return
+            
+            try:
+                f.result()
+            except Exception as e:
+                etype = type(e).__name__
+                emsg  = str(e).strip()
+                if not emsg:
+                    # Some exceptions have empty __str__; use repr
+                    emsg = repr(e)
+                self.logSignal.emit(logging.ERROR,
+                    f"[{self.instance_name[:15]:<15}]: {label} async task error: {etype}: {emsg}")
+        
+        fut.add_done_callback(_log_ex)
+        return fut
+
+    @profile
+    def _handle_data(self, *args: Any) -> None:
+        """
+        Handle incoming data from BLE device.
+
+        This is analog to "on_dataReady" from serial input handler.
+
+        data is of type byte_array
+        """
+
+        if PROFILEME:
+            tic = time.perf_counter()
+
+        if len(args) >= 2:
+            # sender = args[0]
+            data = args[1]
+        else:
+            data= args[0]
+
+        if not data:
+            return
+
+        self.bytes_received += len(data)
+
+        self.logSignal.emit(logging.DEBUG,
+            f"[{self.instance_name[:15]:<15}]: Data received callback with {self.bytes_received} bytes."
+        )
+
+        if self.eol:
+
+            # EOL-based reading -> processing line by line 
+            #------------------------------------------------------------------------
+
+            self.bufferIn.extend(data)
+
+            # Cap buffer size to prevent unbounded growth
+            if len(self.bufferIn) > self.bufferIn_max:
+                self.bufferIn[:] = self.bufferIn[-self.bufferIn_max:]
+
+            now = time.perf_counter()
+            lines = None
+
+            if self.eol in self.bufferIn:
+                # Seen current delimiter → reset detection window
+                self.dataReady_calls = 0
+                self.eolWindow_start = 0.0
+                lines = self.bufferIn.split(self.eol)
+
+            else:
+                # EOL auto-detect if EOL not observed for a while
+
+                self.dataReady_calls += 1
+                if self.eolWindow_start == 0.0:
+                    self.eolWindow_start = now
+                elapsed = now - self.eolWindow_start
+
+                if (self.dataReady_calls >= self.dataReady_calls_threshold
+                    and elapsed >= self.eolDetection_timeThreshold):
+
+                    # Do we have any eol in the buffer?
+                    buf = self.bufferIn
+                    if b"\r\n" in buf:
+                        best_cand = b"\r\n"
+                    else:
+                        if b"\n" in buf:
+                            if b"\n\r" in buf:
+                                best_cand = b"\n\r"
+                            else:
+                                best_cand = b"\n"
+                        elif b"\r" in buf:
+                            best_cand = b"\r"
+                        else:
+                            best_cand = None
+
+                    if best_cand and best_cand != self.eol:
+                        # Switch to detected delimiter
+                        self.eol = best_cand
+                        self.dataReady_calls = 0
+                        self.eolWindow_start = 0.0
+                        self.logSignal.emit(logging.INFO,
+                            f"[{self.instance_name[:15]:<15}]: Auto‑detected line termination -> {repr(self.eol)}."
+                        )
+                        # notify UI of change
+                        self.eolChanged.emit(self.eol)
+                        # parse immediately using new delimiter
+                        lines = self.bufferIn.split(self.eol)
+
+                    elif elapsed >= self.eolFallback_timeout:
+                        # Switch to raw after prolonged absence of any delimiter
+                        self.eol = b""
+                        self.dataReady_calls = 0
+                        self.eolWindow_start = 0.0
+                        self.logSignal.emit(logging.INFO,
+                            f"[{self.instance_name[:15]:<15}]: No delimiter {self.eolFallback_timeout:.1f}s → switching to raw."
+                        )
+                        # notify UI of the change
+                        self.eolChanged.emit(self.eol)
+                        # emit buffered bytes once and clear
+                        if self.bufferIn:
+                            self.receivedData.emit(self.bufferIn)
+                            self.bufferIn.clear()
+                        if PROFILEME:
+                            toc = time.perf_counter()
+                            self.mtoc_read = max((toc - tic), self.mtoc_read)
+                        return
+
+            if lines is not None:
+                if lines:
+                    tail = lines[-1]
+                    lines.pop()
+                    if tail:
+                        self.bufferIn[:] = tail
+                    else:
+                        self.bufferIn.clear()
+
+                    if lines:
+                        self.receivedLines.emit(lines)
+
+                if PROFILEME:
+                    toc = time.perf_counter()
+                    self.mtoc_readlines = max((toc - tic), self.mtoc_readlines)
+
+                if DEBUGSERIAL:
+                    self.logSignal.emit(logging.DEBUG,
+                        f"[{self.instance_name[:15]:<15}]: Rx {len(data)} bytes from {len(lines)} lines."
+                    )
+            else:
+                if PROFILEME:
+                    toc = time.perf_counter()
+                    self.mtoc_readlines = max((toc - tic), self.mtoc_readlines)
+
+        else:
+
+            # Raw byte reading
+            # ----------------------------------------
+            self.receivedData.emit(data)
+
+            if PROFILEME:
+                toc = time.perf_counter()
+                self.mtoc_read = max((toc - tic), self.mtoc_read)
+
+            if DEBUGSERIAL:
+                total_bytes = len(data)
+                self.logSignal.emit(
+                    logging.DEBUG,
+                    f"[{self.instance_name[:15]:<15}]: Rx {total_bytes} bytes."
+                )
+
+    def request_mtoc(self):
+        """Emit the mtoc signal with a function name and time in a single log call."""
+        log_message = textwrap.dedent(f"""
+            BLE Worker Profiling
+            =============================================================
+            BLE Send Text   took {self.mtoc_on_sendText*1000:.2f} ms.
+            BLE Send Line   took {self.mtoc_on_sendLine*1000:.2f} ms.
+            BLE Send Lines  took {self.mtoc_on_sendLines*1000:.2f} ms.
+            BLE Send File   took {self.mtoc_on_sendFile*1000:.2f} ms.
+            BLE Readlines   took {self.mtoc_readlines*1000:.2f} ms.
+            BLE Read        took {self.mtoc_read*1000:.2f} ms.
+
+            Bytes received       {self.bytes_received}.
+            Bytes sent           {self.bytes_sent}.
+
+            BLE Scan        took {self.mtoc_on_scanDevices*1000:.2f} ms.
+            BLE Connect     took {self.mtoc_on_connectDevice*1000:.2f} ms.
+            BLE Disconnect  took {self.mtoc_on_disconnectDevice*1000:.2f} ms.
+        """)
+        self.logSignal.emit(-1, log_message)
+        self.mtoc_on_sendText = 0.
+        self.mtoc_on_sendLine = 0.
+        self.mtoc_on_sendLines = 0.
+        self.mtoc_on_sendFile = 0.
+        self.mtoc_readlines = 0.
+        self.mtoc_read = 0.
+        self.mtoc_on_scanDevices = 0.
+        self.mtoc_on_connectDevice = 0.
+        self.mtoc_on_disconnectDevice = 0.
+
+    def start_throughput(self):
+        """Schedule Throughput"""
+        self.schedule(self._setup_throughput())
+
+    async def _setup_throughput(self):
+        """Start periodic tasks using asyncio without Timer"""
+        if self._throughput_task and not self._throughput_task.done():
+            return
+        self._throughput_task = self.loop.create_task(self._throughput_loop(), name="throughput")
+        self._throughput_task.add_done_callback(lambda t: setattr(self, "_throughput_task", None))
+        self.logSignal.emit(logging.INFO, 
+            f"[{self.instance_name[:15]:<15}]: Throughput timer is set up.")
+
+    async def _throughput_loop(self):
+        """Publish the throughput metrics."""
+        try:
+            while True:
+                self.throughputReady.emit(self.bytes_received, self.bytes_sent)
+                await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            raise
+
+    def stop_throughput(self):
+        task = self._throughput_task
+        if not task:
+            return
+
+        self.loop.call_soon_threadsafe(task.cancel)
+
+        def _wait_for_cancel(t):
+            async def _await():
+                try:
+                    await t
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    self.logSignal.emit(logging.ERROR, 
+                        f"[{self.instance_name[:15]:<15}]: Throughput task error: {e}"
+                    )
+            return _await()
+
+        asyncio.run_coroutine_threadsafe(_wait_for_cancel(task), self.loop)
+
+        self.throughputReady.emit(0, 0)
+        self._throughput_task = None
+        self.logSignal.emit(logging.INFO, 
+            f"[{self.instance_name[:15]:<15}]: Throughput timer stopped."
+        )
+
+    def start_transceiver(self):
+        if self.receiverIsRunning:
+            self.logSignal.emit(logging.ERROR,
+                f"[{self.instance_name[:15]:<15}]: Transceiver is already running."
+            )
+            return
+
+        if not (self.client and self.client.is_connected):
+            self.logSignal.emit(logging.ERROR,
+                f"[{self.instance_name[:15]:<15}]: No BLE client or BLE client not connected."
+            )
+            return
+
+        fut = self.schedule(self._startTransceiver())
+        def _done(f):
+            exc = f.exception()
+            if exc:
+                self.logSignal.emit(logging.ERROR, 
+                    f"[{self.instance_name[:15]:<15}]: Transceiver not started: {exc}"
+                )
+            else:
+                self.receiverIsRunning = True
+                self.workerStateChanged.emit(True)
+                self.logSignal.emit(logging.INFO, 
+                    f"[{self.instance_name[:15]:<15}]: Transceiver started, subscribed to notifications."
+                )
+        fut.add_done_callback(_done)
+
+    async def _startTransceiver(self):
+        await self.client.start_notify(self.char_tx, self._handle_data)
+
+    def stop_transceiver(self):
+        if not self.receiverIsRunning:
+            self.logSignal.emit(logging.WARNING,
+                f"[{self.instance_name[:15]:<15}]: Transceiver is already stopped."
+            )
+            return
+
+        fut = self.schedule(self._stopTransceiver())
+        def _done(f):
+            exc = f.exception()
+            if exc:
+                self.logSignal.emit(logging.ERROR, 
+                    f"[{self.instance_name[:15]:<15}]: Transceiver stop failed: {exc}"
+                )
+            else:
+                self.receiverIsRunning = False
+                self.workerStateChanged.emit(False)
+                self.logSignal.emit(logging.WARNING,
+                    f"[{self.instance_name[:15]:<15}]: BLEAK client unsubscribed from notifications.")
+        fut.add_done_callback(_done)
+                
+    async def _stopTransceiver(self):
+        await self.client.stop_notify(self.char_tx)
+
+    def clean_up(self):
+        """Handle Cleanup of the worker."""
+
+        self.stop_throughput()
+        self.stop_transceiver()
+
+        # Disconnect BLE client if connected
+        if self.client and self.client.is_connected:
+            already_disconnecting = bool(getattr(self, "disconnecting", False))
+            fut = None
+            if not already_disconnecting:
+                fut = self.schedule(self._disconnectDevice())
+            ok, _, reason = wait_for_signal(self.disconnectingSuccess, timeout_ms=3000, sender=self)
+            if not ok and reason != "destroyed":
+                self.logSignal.emit(logging.WARNING,
+                    f"[{self.instance_name[:15]:<15}]: Disconnect timed out ({reason})."
+                )
+                # Best effort: cancel the task if we started one
+                if fut is not None:
+                    try:
+                        fut.cancel()
+                    except Exception:
+                        pass
+            # Drain the future to surface any exception and avoid pending-task warnings
+            if fut is not None:
+                try:
+                    fut.result(timeout=0.1)
+                    self.logSignal.emit(logging.INFO,
+                        f"[{self.instance_name[:15]:<15}]: Disconnected BLE client.")
+                except Exception as e:
+                    self.logSignal.emit(logging.DEBUG,
+                        f"[{self.instance_name[:15]:<15}]: Disconnect future result: {e}")
+
+        # Reset worker state
+        self.device = None
+        self.bytes_received = 0
+        self.bytes_sent = 0
+        self.bufferIn.clear()
+
+        self.logSignal.emit(logging.INFO, 
+            f"[{self.instance_name[:15]:<15}]: BLEAK Serial Worker cleanup completed."
+        )
+
+        # Emit finished signal
+        self.finished.emit()
+
+    def change_LineTermination(self, lineTermination: bytes):
+        """
+        Set the new line termination sequence.
+        """
+        if lineTermination is None:
+            self.logSignal.emit(logging.WARNING, 
+                f"[{self.instance_name[:15]:<15}]: Line termination not changed, line termination string not provided."
+            )
+        else:
+            self.eol = lineTermination
+            self.dataReady_calls = 0
+            self.eolWindow_start = 0.0
+            self.logSignal.emit(logging.INFO, 
+                f"[{self.instance_name[:15]:<15}]: Changed line termination to {repr(self.eol)}."
+    )
+
+    # BLEAK Device Scan
+    # ----------------------------------------
+
+    def start_scan(self):
+        self.schedule(self._scanDevices())
+
+    async def _scanDevices(self):
+        """Scan for BLE devices offering the Nordic UART Service."""
+
+        if PROFILEME: 
+            tic = time.perf_counter()
+
+        try:
+            self.logSignal.emit(logging.INFO, 
+                f"[{self.instance_name[:15]:<15}]: Scanning for BLE devices."
+            )
+            devices = await BleakScanner.discover(timeout=5, return_adv=True)
+        except Exception as e:
+            self.logSignal.emit(logging.ERROR, 
+                f"[{self.instance_name[:15]:<15}]: Error scanning for devices: {e}"
+            )
+            return
+        
+        if not devices:
+            self.logSignal.emit(logging.INFO, 
+                f"[{self.instance_name[:15]:<15}]: No devices found."
+            )
+        
+        self.NSUdevices = []
+        for device, adv in devices.values():
+            self.logSignal.emit(logging.INFO, 
+                f"[{self.instance_name[:15]:<15}]: Found device: {device.name} ({device.address}) RSSI: {adv.rssi} dBm"
+            )
+            suids = adv.service_uuids or ()
+            for service_uuid in suids:
+                # self.logSignal.emit(logging.INFO, 
+                #     f"[{self.instance_name[:15]:<15}]: Found service UUID: {service_uuid}"
+                # )
+                if service_uuid.lower() == SERVICE_UUID.lower():
+                    self.NSUdevices.append(device)
+
+        if not self.NSUdevices:
+            self.logSignal.emit(logging.INFO, 
+                f"[{self.instance_name[:15]:<15}]: Scan complete. No matching devices found."
+            )
+        else:
+            self.logSignal.emit(logging.INFO, 
+                f"[{self.instance_name[:15]:<15}]: Scan complete."
+            )
+        self.deviceListReady.emit(self.NSUdevices)
+
+        if PROFILEME:
+            toc = time.perf_counter()
+            self.mtoc_on_scanDevices = max((toc - tic), self.mtoc_on_scanDevices) # End performance tracking
+
+    # BLEAK Device Connect
+    # ----------------------------------------
+
+    # def select_device(self, mac: str):
+    #     """Select a device from the scanned devices by MAC."""
+    #     for dev in self.NSUdevices:
+    #         if dev.address == mac:
+    #             self.device = dev
+    #             self.logSignal.emit(logging.INFO, 
+    #                 f"[{self.instance_name[:15]:<15}]: Device selected: {dev.name} ({dev.address})"
+    #             )
+    #             return
+    #     self.logSignal.emit(logging.WARNING, 
+    #         f"[{self.instance_name[:15]:<15}]: No device found with MAC {mac}"
+    #     )
+
+    def connect_device(self, device: BLEDevice, timeout: int, reconnect: bool):
+        self.schedule(self._connectDevice(device=device, timeout=float(timeout), reconnect=reconnect))
+
+    async def _rescan_for_device(self, name: str, address: str, timeout: float = 3.0):
+        """
+        Rescan briefly to refresh BlueZ device object (handles RPA changes).
+        This addresses issues when privacy settings are turned on for some devices.
+        """
+        try:
+            results = await BleakScanner.discover(timeout=timeout, return_adv=True)
+        except Exception:
+            return None
+        # Prefer address match
+        if address:
+            for dev, adv in results.values():
+                if dev.address == address:
+                    return dev
+        # Fallback name match
+        if name:
+            for dev, adv in results.values():
+                if dev.name == name:
+                    return dev
+        return None
+    
+    async def _connectDevice(self, device: BLEDevice, timeout: float, reconnect: bool):
+        """
+        handle the connection request to a BLE device.
+
+        Parameters:
+            device (BLEDevice): The device to connect to.
+            timeout (int): Connection timeout in seconds.
+            reconnect (bool): Whether to reconnect on disconnection.
+        """
+
+        if PROFILEME: 
+            tic = time.perf_counter()
+
+        self.device = device
+        self.timeout = timeout
+        self.reconnect = reconnect
+
+        self.logSignal.emit(logging.INFO, 
+            f"[{self.instance_name[:15]:<15}]: Connecting to device: {device.name} ({device.address})"
+        )
+
+        if self.device is not None:
+            self.client = BleakClient(
+                self.device, 
+                disconnected_callback=self._handle_disconnected, 
+                timeout=self.timeout
+            )
+            try:
+                await self.client.connect(timeout=self.timeout)
+                # acquire services and MTU after connection
+                self.services = getattr(self.client, "services", None)
+                if self.client._backend.__class__.__name__ == "BleakClientBlueZDBus":
+                    # try MTU negotiation if available
+                    acquire = getattr(self.client._backend, "_acquire_mtu", None)
+                    if callable(acquire):
+                        try:
+                            await acquire()
+                        except Exception:
+                            pass
+                self.mtu = getattr(self.client, "mtu_size", None)
+                if isinstance(self.mtu, int) and (self.mtu > ATT_HDR) and (self.mtu <= BLEMTUMAX):
+                    self.BLEpayloadSize = self.mtu - ATT_HDR
+                else:
+                    self.mtu = BLEMTUDEFAULT 
+                    self.BLEpayloadSize = BLEMTUDEFAULT  - ATT_HDR
+
+                service = self.services.get_service(SERVICE_UUID) if self.services else None
+                if not service:
+                    raise BleakError("Target service not found after connect")
+                self.char_tx = service.get_characteristic(TX_CHARACTERISTIC_UUID)
+                self.char_rx = service.get_characteristic(RX_CHARACTERISTIC_UUID)
+
+                self.connectingSuccess.emit(True) 
+                self.logSignal.emit(logging.INFO, 
+                    f"[{self.instance_name[:15]:<15}]: Connected to {self.device.name} "
+                    f"MTU={self.mtu}, payload={self.BLEpayloadSize}"
+                )
+
+            except BleakError as e1:
+                msg = str(e1).lower()
+                if "not found" in msg and "device" in msg:
+                    # Retry once: Rescan to rebuild BlueZ device object
+                    self.logSignal.emit(logging.WARNING,
+                        f"[{self.instance_name[:15]:<15}]: Device path missing, rescanning for {device.name}..."
+                    )
+                    refreshed = await self._rescan_for_device(device.name, device.address, timeout=3.0)
+                    if refreshed:
+                        self.device = refreshed
+                        try:
+                            self.client = BleakClient(
+                                refreshed,
+                                disconnected_callback=self._handle_disconnected,
+                                timeout=self.timeout
+                            )
+                            await self.client.connect(timeout=self.timeout)
+                            self.services = getattr(self.client, "services", None)
+
+                            if self.client._backend.__class__.__name__ == "BleakClientBlueZDBus":
+                                acquire = getattr(self.client._backend, "_acquire_mtu", None)
+                                if callable(acquire):
+                                    try: 
+                                        await acquire()
+                                    except Exception: 
+                                        pass
+                            self.mtu = getattr(self.client, "mtu_size", None)
+                            if isinstance(self.mtu, int) and (self.mtu > ATT_HDR) and (self.mtu <= BLEMTUMAX):
+                                self.BLEpayloadSize = self.mtu - ATT_HDR
+                            else:
+                                self.mtu = BLEMTUDEFAULT
+                                self.BLEpayloadSize = BLEMTUDEFAULT - ATT_HDR
+
+                            service = self.services.get_service(SERVICE_UUID) if self.services else None
+                            if not service:
+                                raise BleakError("Target service not found after rescan connect")
+                            self.char_tx = service.get_characteristic(TX_CHARACTERISTIC_UUID)
+                            self.char_rx = service.get_characteristic(RX_CHARACTERISTIC_UUID)
+
+                            self.connectingSuccess.emit(True)
+                            self.logSignal.emit(logging.INFO,
+                                f"[{self.instance_name[:15]:<15}]: Connected after rescan MTU={self.mtu}, payload={self.BLEpayloadSize}"
+                            )
+                            return
+                        
+                        except Exception as e2:
+                            self.logSignal.emit(logging.ERROR,
+                                f"[{self.instance_name[:15]:<15}]: Rescan connect failed: {e2}"
+                            )
+                    else:
+                        self.logSignal.emit(logging.ERROR,
+                            f"[{self.instance_name[:15]:<15}]: Rescan did not find device again."
+                        )
+                else:
+                    if "authentication" in msg or "security" in msg:
+                        self.logSignal.emit(logging.ERROR,
+                            f"[{self.instance_name[:15]:<15}]: Connection needs pairing/auth ({e1})."
+                        )
+                    else:
+                        self.logSignal.emit(logging.ERROR,
+                            f"[{self.instance_name[:15]:<15}]: Connection error: {e1}"
+                        )
+                self.connectingSuccess.emit(False)
+                self.char_tx = None
+                self.char_rx = None
+                self.client = None
+                
+        else:
+            self.logSignal.emit(logging.WARNING, 
+                f"[{self.instance_name[:15]:<15}]: No device selected. Please select a device from the scan results."
+            )
+
+        if PROFILEME:
+            toc = time.perf_counter()
+            self.mtoc_on_connectDevice = max((toc - tic), self.mtoc_on_connectDevice)
+
+    def _handle_disconnected(self, client):
+        """
+        Callback when the BLE device is unexpectedly disconnected.
+        Starts a background task to handle reconnection.
+        """
+        self.logSignal.emit(logging.WARNING, 
+            f"[{self.instance_name[:15]:<15}]: Device disconnected: {self.device.name} ({self.device.address})"
+        )
+
+        # Reflect disconnected state immediately so UI switches to "Connect"
+        if self.receiverIsRunning:
+            self.receiverIsRunning = False
+            self.workerStateChanged.emit(False)
+        self.disconnectingSuccess.emit(True)                                   # UI: show Connect, disable send, etc.
+
+        if not self.reconnect:                                                 # Check if reconnection is allowed
+            self.logSignal.emit(logging.INFO, 
+                f"[{self.instance_name[:15]:<15}]: Reconnection disabled. No attempt will be made."
+            )
+            self.client = None
+            self.char_rx = None
+            self.char_tx = None
+        else:
+            # Start the reconnection in a background task
+            self.schedule(self._handle_reconnection())
+
+    async def _handle_reconnection(self):
+        """
+        Handles reconnection attempts in a non-blocking manner.
+        """
+        retry_attempts = 0
+        max_retries    = 5
+        backoff        = 1                                                     # Initial backoff in seconds
+
+        while (
+            retry_attempts < max_retries
+            and self.reconnect
+            and self.client is not None
+            and (not getattr(self.client, "is_connected", False))
+        ):
+
+            try:
+                self.logSignal.emit(logging.INFO, 
+                    f"[{self.instance_name[:15]:<15}]: Reconnection attempt {retry_attempts + 1} to {self.device.name}..."
+                )
+                await self.client.connect(timeout=10)
+
+                # When BLE device is reconnected, one needs to reacquire the services and MTU
+                self.services = self.client.services
+                if self.client._backend.__class__.__name__ == "BleakClientBlueZDBus": 
+                    await self.client._backend._acquire_mtu()
+                self.mtu = getattr(self.client, "mtu_size", None)
+                if isinstance(self.mtu, int) and (self.mtu > ATT_HDR) and (self.mtu <= BLEMTUMAX):
+                    self.BLEpayloadSize = self.mtu - ATT_HDR
+                else:
+                    self.mtu = BLEMTUNORMAL
+                    self.BLEpayloadSize = BLEMTUNORMAL - ATT_HDR
+
+                service = self.services.get_service(SERVICE_UUID)
+                self.char_tx = service.get_characteristic(TX_CHARACTERISTIC_UUID)
+                self.char_rx = service.get_characteristic(RX_CHARACTERISTIC_UUID)
+
+                # Reconnect notifications if receiver was running
+                await self.client.start_notify(self.char_tx, self._handle_data)
+                self.receiverIsRunning = True
+                self.workerStateChanged.emit(True)
+
+                self.logSignal.emit(logging.INFO, 
+                    f"[{self.instance_name[:15]:<15}]: Reconnected to {self.device.name} with MTU={self.mtu} and notifications started."
+                )
+                retry_attempts = 0                                             # Reset retry attempts on success
+                return                                                         # Exit the loop on successful reconnection
+
+            except Exception as e:
+                retry_attempts += 1
+                self.logSignal.emit(logging.WARNING, 
+                    f"[{self.instance_name[:15]:<15}]: Reconnection attempt {retry_attempts} failed: {e}"
+                )
+                await asyncio.sleep(backoff)
+                backoff *= 2                                                   # Exponential backoff
+
+                self.client = None
+                self.char_rx = None
+                self.char_tx = None
+
+        # Exit conditions
+        if retry_attempts >= max_retries:
+            self.logSignal.emit(logging.ERROR, 
+                f"[{self.instance_name[:15]:<15}]: Failed to reconnect to {self.device.name} after {max_retries} attempts."
+            )
+        elif not self.reconnect:
+            self.logSignal.emit(logging.INFO, 
+                f"[{self.instance_name[:15]:<15}]: Reconnection attempts stopped by the user."
+            )
+        elif getattr(self.client, "is_connected", False):
+            self.logSignal.emit(logging.INFO, 
+                f"[{self.instance_name[:15]:<15}]: Already connected to {self.device.name}. Exiting reconnection loop."
+            )
+
+        # Ensure UI reflects disconnected state and can try Connect again
+        if self.receiverIsRunning:
+            self.receiverIsRunning = False
+            self.workerStateChanged.emit(False)
+        self.disconnectingSuccess.emit(True)                                   # switch UI to "Connect"
+
+        # Make sure internal handles are cleared
+        self.client = None
+        self.char_rx = None
+        self.char_tx = None
+
+    # BLEAK Device Disconnect
+    # ----------------------------------------
+
+    def disconnect_device(self):
+        self.schedule(self._disconnectDevice())
+
+    async def _disconnectDevice(self):
+        """
+        Handles disconnection requests from the user.
+        Ensures clean disconnection and updates the application state.
+        """
+        if PROFILEME:
+            tic = time.perf_counter()
+
+        self.reconnect = False                                                 # Stop reconnection attempts
+
+        if not self.client or not self.client.is_connected:
+            self.logSignal.emit(logging.WARNING, 
+                f"[{self.instance_name[:15]:<15}]: No active connection to disconnect."
+            )
+            self.disconnectingSuccess.emit(False)
+            return
+
+        if getattr(self, "disconnecting", False):
+            self.logSignal.emit(logging.WARNING, 
+                f"[{self.instance_name[:15]:<15}]: Disconnection already in progress."
+            )
+            return
+
+        self.disconnecting = True                                              # Set disconnection flag
+        try:
+            await self.client.disconnect()
+            self.logSignal.emit(logging.INFO, 
+                f"[{self.instance_name[:15]:<15}]: Disconnected from device: {self.device.name} ({self.device.address})"
+            )
+            # Reset client 
+            self.client = None
+            self.device = None
+            self.services = None
+            self.char_rx = None
+            self.char_tx = None
+            # Emit success signal
+            self.disconnectingSuccess.emit(True)
+        except Exception as e:
+            self.logSignal.emit(logging.ERROR, 
+                f"[{self.instance_name[:15]:<15}]: Error during disconnection: {e}"
+            )
+            self.disconnectingSuccess.emit(False)
+        finally:
+            self.disconnecting = False                                         # Reset disconnection flag
+
+        if PROFILEME:
+            toc = time.perf_counter()
+            self.mtoc_on_disconnectDevice = max((toc - tic), self.mtoc_on_disconnectDevice)
+
+    # BLEAK send data
+    # ----------------------------------------
+    # text, line, lines, file
+
+    def send_bytes(self, byte_array: bytes):
+        self.schedule(self._sendBytes(byte_array=byte_array))
+
+    @profile
+    async def _sendBytes(self, byte_array: bytes):
+        """Send provided bytes over BLE."""
+
+        if PROFILEME: 
+            tic = time.perf_counter()
+
+        if byte_array and self.client and self.client.is_connected and self.char_rx:
+            char_rx = self.char_rx
+            payload_size = self.BLEpayloadSize
+            for i in range(0, len(byte_array), payload_size):
+                chunk = byte_array[i:i+payload_size]
+                await self.client.write_gatt_char(char_rx, chunk, response=False) # response=False for speed, returns immediately
+                self.bytes_sent += len(chunk)
+            self.logSignal.emit(logging.DEBUG, 
+                f"[{self.instance_name[:15]:<15}]: Sent: {byte_array}"
+            )
+        else:
+            self.logSignal.emit(logging.ERROR, 
+                f"[{self.instance_name[:15]:<15}]: Not connected or no data to send."
+            )
+
+        if PROFILEME: 
+            toc = time.perf_counter()
+            self.mtoc_on_sendText = max((toc - tic), self.mtoc_on_sendText)    # End performance tracking
+
+    def send_line(self, line: bytes):
+        self.schedule(self._sendLine(line))
+
+    @profile
+    async def _sendLine(self, line: bytes):
+        """Send a single line of text (with EOL) over BLE."""
+        if PROFILEME: 
+            tic = time.perf_counter()
+
+        if self.eol:
+            await self._sendBytes(line + self.eol)
+        else:
+            await self._sendBytes(line)
+
+        if PROFILEME: 
+            toc = time.perf_counter()
+            self.mtoc_on_sendLine = max((toc - tic), self.mtoc_on_sendLine)    # End performance tracking
+
+    @pyqtSlot(list)
+    def send_lines(self, lines: list):
+        self.schedule(self._sendLines(lines))
+
+    @profile
+    async def _sendLines(self, lines: list):
+        """Send multiple lines of text over BLE."""
+        if PROFILEME: 
+            tic = time.perf_counter()
+
+        for line in lines:
+            await self._sendLine(line)
+
+        if PROFILEME: 
+            toc = time.perf_counter()
+            self.mtoc_on_sendLines = max((toc - tic), self.mtoc_on_sendLines)  # End performance tracking
+
+    def send_file(self, filePath: Path):
+        self.schedule(self._sendFile(filePath))
+
+    @profile
+    async def _sendFile(self, filePath: Path):
+        """Transmit a file to the BLE device."""
+
+        if PROFILEME: 
+            tic = time.perf_counter()
+
+        if self.client and self.client.is_connected and self.char_rx:
+            if not filePath:
+                self.logSignal.emit(logging.ERROR, 'No file path provided.')
+                return
+            try:
+                data = await asyncio.to_thread(filePath.read_bytes)
+            except FileNotFoundError:
+                self.logSignal.emit(logging.ERROR, f'File "{filePath.name}" not found.')
+                return
+            except Exception as e:
+                self.logSignal.emit(logging.ERROR, f'Unexpected error opening "{filePath.name}": {e}')
+                return
+                
+            if not data:
+                self.logSignal.emit(logging.WARNING, f'[{self.instance_name[:15]}]: File "{filePath.name}" is empty.')
+                return
+
+            file_size = len(data)
+            self.logSignal.emit(logging.INFO, f'Starting transmission of "{filePath.name}" ({file_size} bytes).')
+
+            char_rx = self.char_rx
+            payload_size = self.BLEpayloadSize
+            for i in range(0, len(data), payload_size):
+                chunk = data[i:i+payload_size]
+                try:
+                    await self.client.write_gatt_char(char_rx, chunk, response=False)
+                    self.bytes_sent += len(chunk)
+                except Exception as e:
+                    self.logSignal.emit(logging.ERROR, f'Error transmitting chunk at offset {i}: {e}.')
+                    break
+
+            self.logSignal.emit(logging.INFO, f'Finished transmission of "{filePath.name}".')
+
+        else:
+            self.logSignal.emit(logging.ERROR, 
+                f"[{self.instance_name[:15]:<15}]: BLE client not available or not connected."
+            )
+
+        if PROFILEME: 
+            toc = time.perf_counter()
+            self.mtoc_on_sendFile = max((toc - tic), self.mtoc_on_sendFile)    # End performance tracking
+
+############################################################################################################################################
 #
-# Q BLE Serial
+# Bluetothctl Worker
 #
-# separate thread handling BLE serial input and output
+# status, pair, remove, trust, distrust a device
+#
 # these routines have no access to the user interface,
 # communication occurs through signals
 #
-# for BLE device write we send bytes
-# for BLE device read we receive bytes
-# conversion from text to bytes occurs in QBLESerialUI
-#
 #    This is the Model of the Model - View - Controller (MVC) architecture.
 #
-##########################################################################################################################################        
-##########################################################################################################################################        
+# start and stop worker
+# pair and remove device
+# trust and distrust device
+# status of device
+#
+############################################################################################################################################
 
-class QBLESerial(QObject):
+class BluetoothctlWorker(QObject):
     """
-    BLE Serial Worker for QT
+    Bluetoothctl Worker
 
     Worker Signals
-        receivedData(bytes)                    received text through BLE
-        receivedLines(list)                    received multiple lines from BLE
-        deviceListReady(list)                  completed a device scan
-        throughputReady(float, float)          throughput data is available (RX, TX)
         statusReady(dict)                      report BLE status
         pairingSuccess(bool)                   was pairing successful
         removalSuccess(bool)                   was removal successful
         logSignal(int, str)                    log message available
-        finished                               worker finished
-    
-    Worker Slots
-        on_scanDevicesRequest()                request scanning for devices
-        on_connectDeviceRequest(LEDevice,int,bool)) request connecting to device (device must be selected first)
-        on_disconnectDeviceRequest()           request disconnecting from device
-        on_pairDeviceRequest(str, str)         request pairing with bluetooth device mac and pin
-        on_removeDeviceRequest(str)            request removing paired bluetooth device
-        on_trustDeviceRequest(str)             request trusting a device
-        on_distrustDeviceRequest(str)          request distrust a device
-        on_sendTextRequest(bytes)              request sending raw bytes over BLE
-        on_sendLineRequest(bytes)              request sending a line of text (with EOL) over BLE
-        on_sendLinesRequest(list of bytes)     request sending multiple lines of text over BLE
-        on_sendFileRequest(str)                request sending a file over BLE
-        on_setupTransceiverRequest()           setup bluetoothctl and QTimer for throughput
-        on_setupBLEWorkerRequest()             setup Worker asyncio loop and bluetoothctl
-        on_stopTransceiverRequest()            stop bluetoothctl and QTimer
-        on_changeLineTerminationRequest(bytes) change line termination sequence
-        on_bleStatusRequest(str)               request BLE status of a device by MAC
-        on_finishWorkerRequest()               finish the worker
+        finished()                             worker finished
 
-    Additional helper method:
-        on_selectDeviceRequest(str)            select a device from scanned devices by MAC
+    Worker Slots
+        on_finishWorkerRequest()               finish the worker
+        on_bleStatusRequest(str)               request BLE status of a device by MAC
+        on_pairDeviceRequest(str, str)         pair with a selected device by MAC and PIN
+        on_removeDeviceRequest(str)            remove a paired device by MAC
+        on_trustDeviceRequest(str)             trust a selected device by MAC
+        on_distrustDeviceRequest(str)          distrust a selected device by MAC
+        on_mtocRequest()                       emit mtoc message
+
     """
 
     # Signals
-    ########################################################################################
+    # ==========================================================================
 
-    receivedData             = pyqtSignal(bytes)         # text received 
-    receivedLines            = pyqtSignal(list)          # lines of text received
-    deviceListReady          = pyqtSignal(list)          # updated list of BLE devices  
-    throughputReady          = pyqtSignal(float, float)  # RX, TX bytes per second
-    statusReady              = pyqtSignal(dict)          # BLE device status dictionary
-    connectingSuccess        = pyqtSignal(bool)          # Connecting result
-    disconnectingSuccess     = pyqtSignal(bool)          # Disconnecting result
-    pairingSuccess           = pyqtSignal(bool)          # Pairing result
-    removalSuccess           = pyqtSignal(bool)          # Removal result
-    trustSuccess             = pyqtSignal(bool)          # Trusting result
-    distrustSuccess          = pyqtSignal(bool)          # Distrusting result
-    logSignal                = pyqtSignal(int, str)      # Logging
-    setupBLEWorkerFinished   = pyqtSignal()              # Setup worker completed
-    setupTransceiverFinished = pyqtSignal()              # Transceiver setup completed
-    finished                 = pyqtSignal()              # Worker finished
-                                    # request to open file and send over serial port
-           
+    statusReady              = pyqtSignal(dict)                                # BLE device status dictionary
+    connectingSuccess        = pyqtSignal(bool)                                # Connecting result
+    disconnectingSuccess     = pyqtSignal(bool)                                # Disconnecting result
+    pairingSuccess           = pyqtSignal(bool)                                # Pairing result
+    removalSuccess           = pyqtSignal(bool)                                # Removal result
+    trustSuccess             = pyqtSignal(bool)                                # Trusting result
+    distrustSuccess          = pyqtSignal(bool)                                # Distrusting result
+    logSignal                = pyqtSignal(int, str)                            # Logging
+    finished                 = pyqtSignal()                                    # Worker finished
+
+    # Init
+    # ==========================================================================
     def __init__(self, parent=None):
 
-        super(QBLESerialUI, self).__init__(parent)
+        super(BluetoothctlWorker, self).__init__(parent)
 
-        self.thread_id = int(QThread.currentThreadId()) if QThread.currentThreadId() else "N/A"
+        self.thread_id = int(QThread.currentThreadId()) if QThread.currentThreadId() else -1
+        self.instance_name = self.objectName() if self.objectName() else self.__class__.__name__
 
-        # state variables, populated by service routines
-        self.device_backup     = None
-        self.awaitingReconnection  = False
+        # Platform capability (can be overridden by controller)
+        self.hasBluetoothctl = (platform.system() == "Linux")
 
-        self.device = None
-        self.client = None
+        # Profiling
+        self.mtoc_on_bleStatusRequest = 0.
+        self.mtoc_on_pairDeviceRequest = 0.
+        self.mtoc_on_removeDeviceRequest = 0.
+        self.mtoc_on_trustDeviceRequest = 0.
+        self.mtoc_on_distrustDeviceRequest = 0.
+
         self.bluetoothctlWrapper = None
-        self.eol = None
-        self.partial_line = b""
-        self.rx                    = 0                                                     # init throughput
-        self.tx                    = 0                                                     # init throughput 
+ 
+        self.PIN = BLEPIN                                                      # Placeholder PIN if required by pairing
 
-        self.PIN = "0000"  # Placeholder PIN if required by pairing
-        self.reconnect = False
-
-        self.NSUdevices = []
         self.device_info = {
             "mac":       None,
             "name":      None,
@@ -1200,757 +2484,556 @@ class QBLESerial(QObject):
             "rssi":      None
         }
 
-        # might be obsolete
-        self.isScrolling           = False    # keep track of text display scrolling
-
-        self.asyncEventLoop = None
-        self.asyncEventLoopThread = None
-
-        self.instance_name = self.objectName() if self.objectName() else self.__class__.__name__
-
-        self.logger = logging.getLogger("QSerUI_")
-
-    ########################################################################################
-    # Utility Functions
-    ########################################################################################
-
-    def wait_for_signal(self, signal) -> float:
-        """Utility to wait until a signal is emitted."""
-        tic = time.perf_counter()
-        loop = QEventLoop()
-        signal.connect(loop.quit)
-        loop.exec()
-        return time.perf_counter() - tic
-
-    def handle_log(self, level:int, message:str):
-        """Emit the log signal with a level and message."""
-        self.logSignal.emit(level, message)
-
-    def run_asyncEventLoop(self):
-        """Start the asyncio event loop."""
-        self.asyncEventLoop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self.asyncEventLoop)
-        try:
-            self.asyncEventLoop.run_forever()
-        except asyncio.CancelledError:
-            self.handle_log(logging.INFO, f"[{self.instance_name}] Could not start Asyncio event loop.")
-        finally:
-            self.asyncEventLoop.close()
-
-    def stop_asyncEventLoop(self):
-        """Stop the asyncio event loop and its thread."""
-        if self.asyncEventLoop and self.asyncEventLoop.is_running():
-            self.asyncEventLoop.call_soon_threadsafe(self.asyncEventLoop.stop)
-        if self.asyncEventLoopThread is not None:
-            self.asyncEventLoopThread.join(timeout=2.0)
-            self.asyncEventLoopThread = None
-
-        self.handle_log(logging.INFO, f"[{self.instance_name}] Asyncio event loop and thread stopped.")            
-
-    def schedule_async(self, coro):
-        """Post a coroutine to the asyncio event loop."""
-        if hasattr(self, "asyncEventLoop"):
-            if self.asyncEventLoop is not None:
-                if self.asyncEventLoop.is_running():
-                    future = asyncio.run_coroutine_threadsafe(coro, self.asyncEventLoop)
-                    return future
-                else:
-                    self.handle_log(logging.ERROR, "Asyncio event loop not running; cannot schedule async task.")
-            else:
-                self.handle_log(logging.ERROR, "Asyncio event loop is None; cannot schedule async task.")
-        else:
-            self.handle_log(logging.ERROR, "Asyncio event loop not available; cannot schedule async task.")
-
-    ########################################################################################
-    # Slots
-    ########################################################################################
-
-
-    # Setting up Worker in separate thread
-    ########################################################################################
+    # ==========================================================================
+    # UI Response Functions
+    # ==========================================================================
 
     @pyqtSlot()
-    def on_setupBLEWorkerRequest(self):
-
-        # Start the asyncio event loop for this worker
-        # Need to use threading, cannot use QThread
-        self.asyncEventLoopThread = threading.Thread(target=self.run_asyncEventLoop, daemon=True)
-        self.asyncEventLoopThread.start()
-        self.handle_log(logging.INFO, f"[{self.instance_name}] Asyncio event loop and thread started.")
-
-        self.setupBLEWorkerFinished.emit()
-
-    # Throughput
-    # ----------
-    @pyqtSlot()
-    def on_setupTransceiverRequest(self):
-        """
-        Setup Timers and Program Wrapper
-        """
-        
-        self.thread_id = int(QThread.currentThreadId()) if QThread.currentThreadId() else "N/A"
-
-        # Throughput tracking
-
-        self.throughputTimer = QTimer(self)
-        self.throughputTimer.setInterval(1000)
-        self.throughputTimer.timeout.connect(self.on_throughputTimer)
-
-        self.setupTransceiverFinished.emit()
-        self.handle_log(logging.INFO, f"[{self.instance_name}] Throughput timer is set up.")
-
-
-    @pyqtSlot()
-    def on_startThroughputRequest(self):
-        """
-        Stop QTimer for reading through put from PSer)
-        """
-        self.throughputTimer.start()
-        self.handle_log(
-            logging.INFO,
-            f"[{self.thread_id}]: started throughput timer."
-        )
-
-
-    @pyqtSlot()
-    def on_stopThroughputRequest(self):
-        """
-        Stop QTimer for reading throughput from PSer)
-        """
-        self.throughputTimer.stop()
-        self.handle_log(
-            logging.INFO,
-            f"[{self.thread_id}]: stopped throughput timer."
-        )
-
-    @pyqtSlot()
-    def on_throughputTimer(self):
-        """
-        Report throughput.
-        """
-        self.throughputReady.emit(self.bytes_received, self.bytes_sent)
-    
-    @pyqtSlot()
-    def on_stopTransceiverRequest(self):
-        """Stop bluetoothctl and QTimer."""
-
-        if hasattr(self, 'throughputTimer'):
-            self.throughputTimer.stop()
-            self.handle_log(logging.INFO, f"[{self.instance_name}] Throughput timer stopped.")
+    def on_mtocRequest(self):
+        """Emit the mtoc signal with a function name and time in a single log call."""
+        log_message = textwrap.dedent(f"""
+            Bluetoothctl Worker Profiling
+            =============================================================
+            BLE Status      took {self.mtoc_on_bleStatusRequest*1000:.2f} ms.
+            BLE Pair        took {self.mtoc_on_pairDeviceRequest*1000:.2f} ms.
+            BLE Remove      took {self.mtoc_on_removeDeviceRequest*1000:.2f} ms.
+            BLE Trust       took {self.mtoc_on_trustDeviceRequest*1000:.2f} ms.
+            BLE Distrust    took {self.mtoc_on_distrustDeviceRequest*1000:.2f} ms.
+        """)
+        self.logSignal.emit(-1, log_message)
+        self.mtoc_on_bleStatusRequest = 0.
+        self.mtoc_on_pairDeviceRequest = 0.
+        self.mtoc_on_removeDeviceRequest = 0.
+        self.mtoc_on_trustDeviceRequest = 0.
+        self.mtoc_on_distrustDeviceRequest = 0.
 
     @pyqtSlot()
     def on_finishWorkerRequest(self):
-        """Handle Cleanup of the worker."""
-        self.on_stopTransceiverRequest()
-
-        # Disconnect BLE client if connected
-        if self.client and self.client.is_connected:
-            try:
-                asyncio.run(self.client.disconnect())
-                self.handle_log(logging.INFO, f"[{self.instance_name}] Disconnected BLE client.")
-            except Exception as e:
-                self.handle_log(logging.ERROR, f"[{self.instance_name}] Error disconnecting BLE client: {e}")
-            finally:
-                self.client = None
-
-        # Reset worker state
-        self.device = None
-        self.bytes_received = 0
-        self.bytes_sent = 0
-        self.partial_line = b""
-
-        # Stop the asyncio event loop
-        self.stop_asyncEventLoop()
-
-        self.handle_log(logging.INFO, f"[{self.instance_name}] BLE Serial Worker cleanup completed.")
-
-        # Emit finished signal
+        """Cleanly stop bluetoothctl wrapper and signal finished."""
+        try:
+            if self.bluetoothctlWrapper:
+                self.bluetoothctlWrapper.stop()
+        except Exception:
+            pass
+        finally:
+            self.bluetoothctlWrapper = None
         self.finished.emit()
 
-    # Response Functions to User Interface Signals: Settings
-    ########################################################################################
+    # ==========================================================================
+    # UI request responses
+    # ==========================================================================
 
-    # Misc
-    # ----
-
-    @pyqtSlot(bytes)
-    def on_changeLineTerminationRequest(self, lineTermination: bytes):
-        """
-        Set the new line termination sequence.
-        """
-        if lineTermination is None:
-            self.handle_log(logging.WARNING, f"[{self.instance_name}] Line termination not changed, no line termination string provided.")
-        else:
-            self.eol = lineTermination
-            self.handle_log(logging.INFO, f"[{self.instance_name}] Changed line termination to {repr(self.eol)}.")
-
-    # BLE Device Status
-    # -----------------
+    # Bluetoothctl Device Status
+    # ----------------------------------------
 
     @pyqtSlot(str)
     def on_bleStatusRequest(self, mac: str):
-        """Request device status by MAC."""
+        """
+        Request device status by MAC.
+        """
+
+        if not self.hasBluetoothctl:
+            self.logSignal.emit(logging.ERROR,
+                f"[{self.instance_name[:15]:<15}]: Bluetoothctl not available."
+            )
+            return
+        
+        if PROFILEME: 
+            tic = time.perf_counter()
 
         if self.bluetoothctlWrapper is None:
             # Initialize BluetoothctlWrapper (assumes BluetoothctlWrapper is defined elsewhere)
             self.bluetoothctlWrapper = BluetoothctlWrapper("bluetoothctl")
-            self.bluetoothctlWrapper.log_signal.connect(self.handle_log)
+            self.bluetoothctlWrapper.log_signal.connect(self.logSignal)
             self.bluetoothctlWrapper.start()
-            time_elapsed = self.wait_for_signal(self.bluetoothctlWrapper.startup_completed_signal) * 1000
-            self.handle_log(logging.INFO, f"[{self.instance_name}] bluetoothctl wrapper started in {time_elapsed:.2f} ms.")
+            ok, args, reason = wait_for_signal(
+                self.bluetoothctlWrapper.startup_completed_signal,
+                1000,
+                sender=self.bluetoothctlWrapper,
+            )            
+            if not ok:
+                self.logSignal.emit(logging.ERROR, 
+                    f"[{self.instance_name[:15]:<15}]: Bluetoothctl wrapper startup timed out because of {reason}."
+                )
+            else:
+                self.logSignal.emit(logging.INFO, 
+                    f"[{self.instance_name[:15]:<15}]: Bluetoothctl wrapper started: {args}."
+                )
 
         if self.bluetoothctlWrapper:
             self.bluetoothctlWrapper.get_device_info(mac=mac, timeout=2000)
             self.bluetoothctlWrapper.device_info_ready_signal.connect(self._on_device_info_ready)
             self.bluetoothctlWrapper.device_info_failed_signal.connect(self._on_device_info_failed)
-            self.handle_log(logging.INFO, f"[{self.instance_name}] Bluetoothctl wrapper status requested.")
+            self.logSignal.emit(logging.INFO, 
+                f"[{self.instance_name[:15]:<15}]: Bluetoothctl wrapper status requested."
+            )
         else:
-            self.handle_log(logging.ERROR, f"[{self.instance_name}] Bluetoothctl wrapper not available for status request.")
+            self.logSignal.emit(logging.ERROR, 
+                f"[{self.instance_name[:15]:<15}]: Bluetoothctl wrapper not available for status request."
+            )
+
+        if PROFILEME:
+            toc = time.perf_counter()
+            self.mtoc_on_bleStatusRequest = max((toc - tic), self.mtoc_on_bleStatusRequest)
 
     @pyqtSlot(dict)
     def _on_device_info_ready(self, info: dict):
-        self.handle_log(logging.INFO, f"[{self.instance_name}] Device info retrieved: {info}")
+        self.logSignal.emit(logging.INFO,
+            f"[{self.instance_name[:15]:<15}]: Device info retrieved: {info}"
+        )
         self.device_info.update(info)
         self.statusReady.emit(self.device_info)
         # Disconnect signals
-        self.bluetoothctlWrapper.device_info_ready_signal.disconnect(self._on_device_info_ready)
-        self.bluetoothctlWrapper.device_info_failed_signal.disconnect(self._on_device_info_failed)
+        if not disconnect(self.bluetoothctlWrapper.device_info_ready_signal, self._on_device_info_ready):
+            self.logSignal.emit(logging.INFO,
+                f"[{self.instance_name[:15]:<15}]: Device info ready signal could not be disconnected."
+            )
+
+        if not disconnect(self.bluetoothctlWrapper.device_info_failed_signal, self._on_device_info_failed):
+            self.logSignal.emit(logging.INFO,
+                f"[{self.instance_name[:15]:<15}]: Device info failed signal could not be disconnected."
+            )
 
         # Cleanup bluetoothctl
         if self.bluetoothctlWrapper:
             self.bluetoothctlWrapper.stop()
             self.bluetoothctlWrapper = None
-            self.handle_log(logging.INFO, f"[{self.instance_name}] Bluetoothctl stopped.")
+            self.logSignal.emit(logging.INFO, 
+                f"[{self.instance_name[:15]:<15}]: Bluetoothctl stopped."
+            )
 
     @pyqtSlot(str)
     def _on_device_info_failed(self, mac: str):
-        self.handle_log(logging.ERROR, f"[{self.instance_name}] Failed to retrieve device info for MAC: {mac}")
-        self.bluetoothctlWrapper.device_info_ready_signal.disconnect(self._on_device_info_ready)
-        self.bluetoothctlWrapper.device_info_failed_signal.disconnect(self._on_device_info_failed)
+        self.logSignal.emit(logging.ERROR, 
+            f"[{self.instance_name[:15]:<15}]: Failed to retrieve device info for MAC: {mac}"
+        )
+        if not disconnect(self.bluetoothctlWrapper.device_info_ready_signal, self._on_device_info_ready):
+            self.logSignal.emit(logging.INFO,
+                f"[{self.instance_name[:15]:<15}]: Device info ready signal could not be disconnected."
+            )
+        if not disconnect(self.bluetoothctlWrapper.device_info_failed_signal, self._on_device_info_failed):
+            self.logSignal.emit(logging.INFO,
+                f"[{self.instance_name[:15]:<15}]: Device info failed signal could not be disconnected."
+            )
 
         # Cleanup bluetoothctl
         if self.bluetoothctlWrapper:
             self.bluetoothctlWrapper.stop()
             self.bluetoothctlWrapper = None
-            self.handle_log(logging.INFO, f"[{self.instance_name}] Bluetoothctl stopped.")
-
-    # BLE Device Scan
-    # ---------------
-
-    @pyqtSlot()
-    def on_scanDevicesRequest(self):
-        self.schedule_async(self._scanDevicesRequest())
-
-    async def _scanDevicesRequest(self):
-        """Scan for BLE devices offering the Nordic UART Service."""
-        try:
-            self.handle_log(logging.INFO, f"[{self.instance_name}] Scanning for BLE devices.")
-            devices = await BleakScanner.discover(timeout=5, return_adv=True)
-        except Exception as e:
-            self.handle_log(logging.ERROR, f"[{self.instance_name}] Error scanning for devices: {e}")
-            return
-        
-        if not devices:
-            self.handle_log(logging.INFO, f"[{self.instance_name}] No devices found.")
-        
-        self.NSUdevices = []
-        for device, adv in devices.values():
-            for service_uuid in adv.service_uuids:
-                if service_uuid.lower() == self.SERVICE_UUID.lower():
-                    self.NSUdevices.append(device)
-        
-        if not self.NSUdevices:
-            self.handle_log(logging.INFO, f"[{self.instance_name}] Scan complete. No matching devices found.")
-        else:        
-            self.handle_log(logging.INFO, f"[{self.instance_name}] Scan complete. Select a device from the dropdown.")
-        self.deviceListReady.emit(self.NSUdevices)
-
-    # BLE Device Connect
-    # ------------------
-
-    @pyqtSlot(str)
-    def on_selectDeviceRequest(self, mac: str):
-        """Select a device from the scanned devices by MAC."""
-        for dev in self.NSUdevices:
-            if dev.address == mac:
-                self.device = dev
-                self.handle_log(logging.INFO, f"[{self.instance_name}] Device selected: {dev.name} ({dev.address})")
-                return
-        self.handle_log(logging.WARNING, f"[{self.instance_name}] No device found with MAC {mac}")
-
-    @pyqtSlot(BLEDevice, int, bool)
-    def on_connectDeviceRequest(self, device: BLEDevice, timeout: int, reconnect: bool):
-        self.schedule_async(self._connectDeviceRequest(device=device, timeout=timeout, reconnect=reconnect))
-
-    async def _connectDeviceRequest(self, device: BLEDevice, timeout: int, reconnect: bool):
-        """
-        Slot to handle the connection request to a BLE device.
-
-        Parameters:
-            device (BLEDevice): The device to connect to.
-            timeout (int): Connection timeout in seconds.
-        """
-        self.device = device
-        self.timeout = timeout
-        self.reconnect = reconnect
-
-        self.handle_log(logging.INFO, f"[{self.instance_name}] Connecting to device: {device.name} ({device.address})")
-
-        if self.device is not None:
-            self.client = BleakClient(
-                self.device, 
-                disconnected_callback=self._on_DeviceDisconnected, 
-                timeout=self.timeout
+            self.logSignal.emit(logging.INFO, 
+                f"[{self.instance_name[:15]:<15}]: Bluetoothctl stopped."
             )
-            try:
-                await self.client.connect(timeout=timeout)
-                self.handle_log(logging.INFO, f"[{self.instance_name}] Connected to {self.device.name}")
 
-                # Initialize the device
-                await self.client.start_notify(self.TX_CHARACTERISTIC_UUID, self.handle_rx)
-                # Prepare acquiring MTU if using BlueZ backend
-                if self.client._backend.__class__.__name__ == "BleakClientBlueZDBus":
-                    await self.client._backend._acquire_mtu()
-                # Obtain MTU size
-                self.mtu = self.client.mtu_size
-                if self.mtu > 3 and self.mtu <= self.BLEMTUMAX:
-                    self.BLEpayloadSize = self.mtu - 3  # Subtract ATT header size
-                else:
-                    self.BLEpayloadSize =  self.BLEMTUNORMAL - 3                
-                self.connectingSuccess.emit(True) 
-            except BleakError as e:
-                if "not found" in str(e).lower():
-                    self.handle_log(logging.ERROR, f"[{self.instance_name}] Connection error: {e}")
-                    self.handle_log(logging.ERROR, f"[{self.instance_name}]Device is likely not paired. Please pair the device first.")
-                else:
-                    self.handle_log(logging.ERROR, f"[{self.instance_name}] Connection error: {e}")
-                self.connectingSuccess.emit(False) 
-            except Exception as e:
-                self.handle_log(logging.ERROR, f"[{self.instance_name}] Unexpected error: {e}")
-                self.connectingSuccess.emit(False) 
-        else:
-            self.handle_log(logging.WARNING, f"[{self.instance_name}] No device selected. Please select a device from the scan results.")
-
-
-    async def _on_DeviceDisconnected(self, client):
-        """
-        Callback when the BLE device is unexpectedly disconnected.
-        Starts a background task to handle reconnection.
-        """
-        self.handle_log(logging.WARNING, f"[{self.instance_name}] Device disconnected: {self.device.name} ({self.device.address})")
-
-        if not self.reconnect:  # Check if reconnection is allowed
-            self.handle_log(logging.INFO, f"[{self.instance_name}] Reconnection disabled. No attempt will be made.")
-            self.client = None
-        else:
-            # Start the reconnection in a background task
-            self.schedule_async(self._handle_reconnection())
-
-    async def _handle_reconnection(self):
-        """
-        Handles reconnection attempts in a non-blocking manner.
-        """
-        retry_attempts = 0
-        max_retries = 5
-        backoff = 1  # Initial backoff in seconds
-
-        while retry_attempts < max_retries and self.reconnect and not self.client.is_connected:
-            try:
-                self.handle_log(logging.INFO, f"[{self.instance_name}] Reconnection attempt {retry_attempts + 1} to {self.device.name}...")
-                await self.client.connect(timeout=10)
-                self.handle_log(logging.INFO, f"[{self.instance_name}] Reconnected to {self.device.name} ({self.device.address})")
-
-                # Reinitialize the device (if necessary)
-                await self.client.start_notify(self.TX_CHARACTERISTIC_UUID, self.handle_rx)
-
-                retry_attempts = 0  # Reset retry attempts on success
-                return  # Exit the loop on successful reconnection
-            except Exception as e:
-                retry_attempts += 1
-                self.handle_log(logging.WARNING, f"[{self.instance_name}] Reconnection attempt {retry_attempts} failed: {e}")
-                await asyncio.sleep(backoff)
-                backoff *= 2  # Exponential backoff
-
-        # Exit conditions
-        if retry_attempts >= max_retries:
-            self.handle_log(logging.ERROR, f"[{self.instance_name}] Failed to reconnect to {self.device.name} after {max_retries} attempts.")
-        elif not self.reconnect:
-            self.handle_log(logging.INFO, f"[{self.instance_name}] Reconnection attempts stopped by the user.")
-        elif self.client.is_connected:
-            self.handle_log(logging.INFO, f"[{self.instance_name}] Already connected to {self.device.name}. Exiting reconnection loop.")
-
-    # BLE Device Disconnect
-    # ---------------------
-
-    @pyqtSlot()
-    def on_disconnectDeviceRequest(self):
-        self.schedule_async(self._disconnectDeviceRequest())
-
-    async def _disconnectDeviceRequest(self):
-        """
-        Handles disconnection requests from the user.
-        Ensures clean disconnection and updates the application state.
-        """
-        self.reconnect = False  # Stop reconnection attempts
-
-        if not self.client or not self.client.is_connected:
-            self.handle_log(logging.WARNING, f"[{self.instance_name}] No active connection to disconnect.")
-            self.disconnectingSuccess.emit(False)
-            return
-
-        if getattr(self, "disconnecting", False):
-            self.handle_log(logging.WARNING, f"[{self.instance_name}] Disconnection already in progress.")
-            return
-
-        self.disconnecting = True  # Set disconnection flag
-        try:
-            await self.client.disconnect()
-            self.handle_log(logging.INFO, f"[{self.instance_name}] Disconnected from device: {self.device.name} ({self.device.address})")
-            # Reset client 
-            self.client = None
-            self.device = None
-            # Emit success signal
-            self.disconnectingSuccess.emit(True)
-        except Exception as e:
-            self.handle_log(logging.ERROR, f"[{self.instance_name}] Error during disconnection: {e}")
-            self.disconnectingSuccess.emit(False)
-        finally:
-            self.disconnecting = False  # Reset disconnection flag
-
-    # BLE Device Pair
-    # ---------------
+    # Bluetoothctl Pair Device
+    # ----------------------------------------
 
     @pyqtSlot(str,str)
     def on_pairDeviceRequest(self, mac: str, pin: str):
         """Pair with the currently selected device."""
 
+        if not self.hasBluetoothctl:
+            self.logSignal.emit(logging.ERROR,
+                f"[{self.instance_name[:15]:<15}]: Bluetoothctl not available."
+            )
+            return
+
+        if PROFILEME:
+            tic = time.perf_counter()
+
         if self.bluetoothctlWrapper is None:
-            # Initialize BluetoothctlWrapper (assumes BluetoothctlWrapper is defined elsewhere)
+            # Initialize BluetoothctlWrapper
             self.bluetoothctlWrapper = BluetoothctlWrapper("bluetoothctl")
-            self.bluetoothctlWrapper.log_signal.connect(self.handle_log)
+            self.bluetoothctlWrapper.log_signal.connect(self.logSignal)
             self.bluetoothctlWrapper.start()
-            time_elapsed = self.wait_for_signal(self.bluetoothctlWrapper.startup_completed_signal) * 1000
-            self.handle_log(logging.INFO, f"[{self.instance_name}] bluetoothctl wrapper started in {time_elapsed:.2f} ms.")
+            ok, args, reason = wait_for_signal(
+                self.bluetoothctlWrapper.startup_completed_signal, 
+                timeout_ms=1000,
+                sender=self.bluetoothctlWrapper
+            )
+            if not ok:
+                self.logSignal.emit(logging.ERROR, 
+                    f"[{self.instance_name[:15]:<15}]: Bluetoothctl wrapper startup timed out because of {reason}."
+                )
+            else:
+                self.logSignal.emit(logging.INFO, 
+                    f"[{self.instance_name[:15]:<15}]: Bluetoothctl wrapper started: {args}."
+                )
 
         if mac is not None and self.bluetoothctlWrapper:
             self.bluetoothctlWrapper.device_pair_succeeded_signal.connect(self._on_pairing_successful)
             self.bluetoothctlWrapper.device_pair_failed_signal.connect(self._on_pairing_failed)
             self.bluetoothctlWrapper.pair(mac=mac, pin=pin, timeout=5000, scantime=1000)
         else:
-            self.handle_log(logging.ERROR, f"[{self.instance_name}] No device selected or BluetoothctlWrapper not available.")
+            self.logSignal.emit(logging.ERROR, 
+                f"[{self.instance_name[:15]:<15}]: No device selected or BluetoothctlWrapper not available."
+            )
+
+        if PROFILEME:
+            toc = time.perf_counter()
+            self.mtoc_on_pairDeviceRequest = max((toc - tic), self.mtoc_on_pairDeviceRequest)
 
     def _on_pairing_successful(self, mac: str):
         self.pairingSuccess.emit(True)
-        try:
-            self.bluetoothctlWrapper.device_pair_succeeded_signal.disconnect(self._on_pairing_successful)
-            self.bluetoothctlWrapper.device_pair_failed_signal.disconnect(self._on_pairing_failed)
-        except:
-            pass
-        self.handle_log(logging.INFO, f"[{self.instance_name}] Paired with {self.device.name if self.device else mac}")
+        self.logSignal.emit(logging.INFO, 
+            f"[{self.instance_name[:15]:<15}]: Paired with {mac}"
+        )
+        if not disconnect(self.bluetoothctlWrapper.device_pair_succeeded_signal, self._on_pairing_successful):
+            self.logSignal.emit(logging.ERROR, 
+                f"[{self.instance_name[:15]:<15}]: Failed to disconnect device_pair_succeeded_signal"
+            )
+        if not disconnect(self.bluetoothctlWrapper.device_pair_failed_signal, self._on_pairing_failed):
+            self.logSignal.emit(logging.ERROR, 
+                f"[{self.instance_name[:15]:<15}]: Failed to disconnect device_pair_failed_signal"
+            )
 
         # Cleanup bluetoothctl
         if self.bluetoothctlWrapper:
             self.bluetoothctlWrapper.stop()
             self.bluetoothctlWrapper = None
-            self.handle_log(logging.INFO, f"[{self.instance_name}] Bluetoothctl stopped.")
+            self.logSignal.emit(logging.INFO, 
+                f"[{self.instance_name[:15]:<15}]: Bluetoothctl stopped."
+            )
 
     def _on_pairing_failed(self, mac: str):
         self.pairingSuccess.emit(False)
-        try:
-            self.bluetoothctlWrapper.device_pair_succeeded_signal.disconnect(self._on_pairing_successful)
-            self.bluetoothctlWrapper.device_pair_failed_signal.disconnect(self._on_pairing_failed)
-        except:
-            pass
-        self.handle_log(logging.ERROR, f"[{self.instance_name}] Pairing with {self.device.name if self.device else mac} unsuccessful")
+        self.logSignal.emit(logging.ERROR, 
+            f"[{self.instance_name[:15]:<15}]: Pairing with {mac} unsuccessful"
+        )
+        if not disconnect(self.bluetoothctlWrapper.device_pair_succeeded_signal, self._on_pairing_successful):
+            self.logSignal.emit(logging.ERROR, 
+                f"[{self.instance_name[:15]:<15}]: Failed to disconnect device_pair_succeeded_signal"
+            )
+
+        if not disconnect(self.bluetoothctlWrapper.device_pair_failed_signal, self._on_pairing_failed):
+            self.logSignal.emit(logging.ERROR, 
+                f"[{self.instance_name[:15]:<15}]: Failed to disconnect device_pair_failed_signal"
+            )
 
         # Cleanup bluetoothctl
         if self.bluetoothctlWrapper:
             self.bluetoothctlWrapper.stop()
             self.bluetoothctlWrapper = None
-            self.handle_log(logging.INFO, f"[{self.instance_name}] Bluetoothctl stopped.")
+            self.logSignal.emit(logging.INFO, 
+                f"[{self.instance_name[:15]:<15}]: Bluetoothctl stopped."
+            )
 
-    # BLE Device Remove
-    # -----------------
+    # Bluetoothctl Remove Device
+    # ----------------------------------------
 
     @pyqtSlot(str)
     def on_removeDeviceRequest(self, mac: str):
         """Remove the currently selected device from known devices."""
 
+        if not self.hasBluetoothctl:
+            self.logSignal.emit(logging.ERROR,
+                f"[{self.instance_name[:15]:<15}]: Bluetoothctl not available."
+            )
+            return
+
+        if PROFILEME:
+            tic = time.perf_counter()
+
         if self.bluetoothctlWrapper is None:
             # Initialize BluetoothctlWrapper (assumes BluetoothctlWrapper is defined elsewhere)
             self.bluetoothctlWrapper = BluetoothctlWrapper("bluetoothctl")
-            self.bluetoothctlWrapper.log_signal.connect(self.handle_log)
+            self.bluetoothctlWrapper.log_signal.connect(self.logSignal)
             self.bluetoothctlWrapper.start()
-            time_elapsed = self.wait_for_signal(self.bluetoothctlWrapper.startup_completed_signal) * 1000
-            self.handle_log(logging.INFO, f"[{self.instance_name}] bluetoothctl wrapper started in {time_elapsed:.2f} ms.")
+            ok, args, reason = wait_for_signal(
+                self.bluetoothctlWrapper.startup_completed_signal, 
+                timeout_ms=1000,
+                sender=self.bluetoothctlWrapper
+            )
+            if not ok:
+                self.logSignal.emit(logging.ERROR, 
+                    f"[{self.instance_name[:15]:<15}]: Bluetoothctl wrapper startup timed out because of {reason}."
+                )
+            else:
+                self.logSignal.emit(logging.INFO, 
+                    f"[{self.instance_name[:15]:<15}]: Bluetoothctl wrapper started: {args}."
+                )
 
         if mac is not None:
-            if self.device:
-                # disconnect from device before we remove it from the system
-                if mac == self.device.address:
-                    self.on_disconnectDeviceRequest()
-            # remove device from the system
             if self.bluetoothctlWrapper:
-                self.bluetoothctlWrapper.device_remove_succeeded_signal.connect(self._on_removing_successful)
-                self.bluetoothctlWrapper.device_remove_failed_signal.connect(self._on_removing_failed)
+                if not connect(self.bluetoothctlWrapper.device_remove_succeeded_signal, self._on_removing_successful):
+                    self.logSignal.emit(logging.ERROR, 
+                        f"[{self.instance_name[:15]:<15}]: Failed to connect device_remove_succeeded_signal"
+                    )
+                if not connect(self.bluetoothctlWrapper.device_remove_failed_signal, self._on_removing_failed):
+                    self.logSignal.emit(logging.ERROR, 
+                        f"[{self.instance_name[:15]:<15}]: Failed to connect device_remove_failed_signal"
+                    )
                 self.bluetoothctlWrapper.remove(mac=mac, timeout=5000)
-                self.handle_log(logging.WARNING, f"[{self.instance_name}] BluetoothctlWrapper initiated device {mac} removal.")
+                self.logSignal.emit(logging.WARNING, 
+                    f"[{self.instance_name[:15]:<15}]: BluetoothctlWrapper initiated device {mac} removal."
+                )
             else:
-                self.handle_log(logging.WARNING, f"[{self.instance_name}] BluetoothctlWrapper not available.")
+                self.logSignal.emit(logging.WARNING, 
+                    f"[{self.instance_name[:15]:<15}]: BluetoothctlWrapper not available."
+                )
         else:
-            self.handle_log(logging.WARNING, f"[{self.instance_name}] No device selected or BluetoothctlWrapper not available.")
+            self.logSignal.emit(logging.WARNING, 
+                f"[{self.instance_name[:15]:<15}]: No device selected or BluetoothctlWrapper not available."
+            )
+
+        if PROFILEME:
+            toc = time.perf_counter()
+            self.mtoc_on_removeDeviceRequest = max((toc - tic), self.mtoc_on_removeDeviceRequest)
 
     def _on_removing_successful(self, mac: str):
         self.removalSuccess.emit(True)
-        try:
-            self.bluetoothctlWrapper.device_remove_succeeded_signal.disconnect(self._on_removing_successful)
-            self.bluetoothctlWrapper.device_remove_failed_signal.disconnect(self._on_removing_failed)
-        except:
-            pass
-        self.handle_log(logging.INFO, f"[{self.instance_name}] Device {self.device.name if self.device else mac} removed")
+        self.logSignal.emit(logging.INFO, 
+            f"[{self.instance_name[:15]:<15}]: Device {mac} removed"
+        )
+        if not disconnect(self.bluetoothctlWrapper.device_remove_succeeded_signal, self._on_removing_successful):
+            self.logSignal.emit(logging.ERROR, 
+                f"[{self.instance_name[:15]:<15}]: Failed to disconnect device_remove_succeeded_signal"
+            )
+        if not disconnect(self.bluetoothctlWrapper.device_remove_failed_signal, self._on_removing_failed):
+            self.logSignal.emit(logging.ERROR, 
+                f"[{self.instance_name[:15]:<15}]: Failed to disconnect device_remove_failed_signal"
+            )
         self.device = None
 
         # Cleanup bluetoothctl
         if self.bluetoothctlWrapper:
             self.bluetoothctlWrapper.stop()
             self.bluetoothctlWrapper = None
-            self.handle_log(logging.INFO, f"[{self.instance_name}] Bluetoothctl stopped.")
+            self.logSignal.emit(logging.INFO, 
+                f"[{self.instance_name[:15]:<15}]: Bluetoothctl stopped."
+            )
 
     def _on_removing_failed(self, mac: str):
         self.removalSuccess.emit(False)
-        try:
-            self.bluetoothctlWrapper.device_remove_succeeded_signal.disconnect(self._on_removing_successful)
-            self.bluetoothctlWrapper.device_remove_failed_signal.disconnect(self._on_removing_failed)
-        except:
-            pass
-        self.handle_log(logging.ERROR, f"[{self.instance_name}] Device {self.device.name if self.device else mac} removal unsuccessful")
-
+        self.logSignal.emit(logging.ERROR, 
+            f"[{self.instance_name[:15]:<15}]: Device {mac} removal unsuccessful"
+        )
+        if not disconnect(self.bluetoothctlWrapper.device_remove_succeeded_signal, self._on_removing_successful):
+            self.logSignal.emit(logging.ERROR, 
+                f"[{self.instance_name[:15]:<15}]: Failed to disconnect device_remove_succeeded_signal"
+            )
+        if not disconnect(self.bluetoothctlWrapper.device_remove_failed_signal, self._on_removing_failed):
+            self.logSignal.emit(logging.ERROR, 
+                f"[{self.instance_name[:15]:<15}]: Failed to disconnect device_remove_failed_signal"
+            )
         # Cleanup bluetoothctl
         if self.bluetoothctlWrapper:
             self.bluetoothctlWrapper.stop()
             self.bluetoothctlWrapper = None
-            self.handle_log(logging.INFO, f"[{self.instance_name}] Bluetoothctl stopped.")
+            self.logSignal.emit(logging.INFO, 
+                f"[{self.instance_name[:15]:<15}]: Bluetoothctl stopped."
+            )
 
-    # BLE Trust Device
-    # ----------------
+    # Bluetoothctl Trust Device
+    # ----------------------------------------
 
     @pyqtSlot(str)
     def on_trustDeviceRequest(self, mac: str):
         """Trust the currently selected device."""
+
+        if not self.hasBluetoothctl:
+            self.logSignal.emit(logging.ERROR,
+                f"[{self.instance_name[:15]:<15}]: Bluetoothctl not available."
+            )
+            return
+
+        if PROFILEME:
+            tic = time.perf_counter()
+
         if self.bluetoothctlWrapper is None:
             # Initialize BluetoothctlWrapper (assumes BluetoothctlWrapper is defined elsewhere)
             self.bluetoothctlWrapper = BluetoothctlWrapper("bluetoothctl")
-            self.bluetoothctlWrapper.log_signal.connect(self.handle_log)
+            self.bluetoothctlWrapper.log_signal.connect(self.logSignal)
             self.bluetoothctlWrapper.start()
-            time_elapsed = self.wait_for_signal(self.bluetoothctlWrapper.startup_completed_signal) * 1000
-            self.handle_log(logging.INFO, f"[{self.instance_name}] bluetoothctl wrapper started in {time_elapsed:.2f} ms.")
+            ok, args, reason = wait_for_signal(
+                self.bluetoothctlWrapper.startup_completed_signal,
+                timeout_ms=1000,
+                sender=self.bluetoothctlWrapper
+            )
+            if not ok:
+                self.logSignal.emit(logging.ERROR, 
+                    f"[{self.instance_name[:15]:<15}]: Bluetoothctl wrapper startup timed out because of {reason}."
+                )
+            else:
+                self.logSignal.emit(logging.INFO, 
+                    f"[{self.instance_name[:15]:<15}]: Bluetoothctl wrapper started: {args}."
+                )
 
         if mac is not None and self.bluetoothctlWrapper:
-            self.bluetoothctlWrapper.device_trust_succeeded_signal.connect(self._on_trust_successful)
-            self.bluetoothctlWrapper.device_trust_failed_signal.connect(self._on_trust_failed)
+            if not connect(self.bluetoothctlWrapper.device_trust_succeeded_signal, self._on_trust_successful):
+                self.logSignal.emit(logging.ERROR, 
+                    f"[{self.instance_name[:15]:<15}]: Failed to connect device_trust_succeeded_signal"
+                )
+            if not connect(self.bluetoothctlWrapper.device_trust_failed_signal, self._on_trust_failed):
+                self.logSignal.emit(logging.ERROR, 
+                    f"[{self.instance_name[:15]:<15}]: Failed to connect device_trust_failed_signal"
+                )
             self.bluetoothctlWrapper.trust(mac=mac, timeout=2000)
         else:
-            self.handle_log(logging.ERROR, f"[{self.instance_name}] No device selected or BluetoothctlWrapper not available.")
+            self.logSignal.emit(logging.ERROR, 
+                f"[{self.instance_name[:15]:<15}]: No device selected or BluetoothctlWrapper not available."
+            )
+
+        if PROFILEME:
+            toc = time.perf_counter()
+            self.mtoc_on_trustDeviceRequest = max((toc - tic), self.mtoc_on_trustDeviceRequest)
 
     def _on_trust_successful(self, mac: str):
         self.trustSuccess.emit(True)
-        try:
-            self.bluetoothctlWrapper.device_trust_succeeded_signal.disconnect(self._on_trust_successful)
-            self.bluetoothctlWrapper.device_trust_failed_signal.disconnect(self._on_trust_failed)
-        except:
-            pass
-        self.handle_log(logging.INFO, f"[{self.instance_name}] Trusted {self.device.name if self.device else mac}")
+        self.logSignal.emit(logging.INFO, 
+            f"[{self.instance_name[:15]:<15}]: Trusted {mac}"
+        )
+        if not disconnect(self.bluetoothctlWrapper.device_trust_succeeded_signal, self._on_trust_successful):
+            self.logSignal.emit(logging.ERROR, 
+                f"[{self.instance_name[:15]:<15}]: Failed to disconnect device_trust_succeeded_signal"
+            )
+        if not disconnect(self.bluetoothctlWrapper.device_trust_failed_signal, self._on_trust_failed):
+            self.logSignal.emit(logging.ERROR, 
+                f"[{self.instance_name[:15]:<15}]: Failed to disconnect device_trust_failed_signal"
+            )
 
         # Cleanup bluetoothctl
         if self.bluetoothctlWrapper:
             self.bluetoothctlWrapper.stop()
             self.bluetoothctlWrapper = None
-            self.handle_log(logging.INFO, f"[{self.instance_name}] Bluetoothctl stopped.")
+            self.logSignal.emit(logging.INFO, 
+                f"[{self.instance_name[:15]:<15}]: Bluetoothctl stopped."
+            )
 
     def _on_trust_failed(self, mac: str):
         self.trustSuccess.emit(False)
-        try:
-            self.bluetoothctlWrapper.device_trust_succeeded_signal.disconnect(self._on_trust_successful)
-            self.bluetoothctlWrapper.device_trust_failed_signal.disconnect(self._on_trust_failed)
-        except:
-            pass
-        self.handle_log(logging.ERROR, f"[{self.instance_name}] Pairing with {self.device.name if self.device else mac} unsuccessful")
+        self.logSignal.emit(logging.ERROR, 
+            f"[{self.instance_name[:15]:<15}]: Pairing with {mac} unsuccessful"
+        )
+        if not disconnect(self.bluetoothctlWrapper.device_trust_succeeded_signal, self._on_trust_successful):
+            self.logSignal.emit(logging.ERROR, 
+                f"[{self.instance_name[:15]:<15}]: Failed to disconnect device_trust_succeeded_signal"
+            )
+        if not disconnect(self.bluetoothctlWrapper.device_trust_failed_signal, self._on_trust_failed):
+            self.logSignal.emit(logging.ERROR, 
+                f"[{self.instance_name[:15]:<15}]: Failed to disconnect device_trust_failed_signal"
+            )
 
         # Cleanup bluetoothctl
         if self.bluetoothctlWrapper:
             self.bluetoothctlWrapper.stop()
             self.bluetoothctlWrapper = None
-            self.handle_log(logging.INFO, f"[{self.instance_name}] Bluetoothctl stopped.")
+            self.logSignal.emit(logging.INFO, 
+                f"[{self.instance_name[:15]:<15}]: Bluetoothctl stopped."
+            )
 
-    # BLE Distrust Device
-    # -------------------
+    # Bluetoothctl Distrust Device
+    # ----------------------------------------
 
     @pyqtSlot(str)
     def on_distrustDeviceRequest(self, mac: str):
         """Remove the currently selected device from known devices."""
+
+        if not self.hasBluetoothctl:
+            self.logSignal.emit(logging.ERROR,
+                f"[{self.instance_name[:15]:<15}]: Bluetoothctl not available."
+            )
+            return
+
+        if PROFILEME:
+            tic = time.perf_counter()
+
         if self.bluetoothctlWrapper is None:
             # Initialize BluetoothctlWrapper (assumes BluetoothctlWrapper is defined elsewhere)
             self.bluetoothctlWrapper = BluetoothctlWrapper("bluetoothctl")
-            self.bluetoothctlWrapper.log_signal.connect(self.handle_log)
+            self.bluetoothctlWrapper.log_signal.connect(self.logSignal)
             self.bluetoothctlWrapper.start()
-            time_elapsed = self.wait_for_signal(self.bluetoothctlWrapper.startup_completed_signal) * 1000
-            self.handle_log(logging.INFO, f"[{self.instance_name}] bluetoothctl wrapper started in {time_elapsed:.2f} ms.")
-            
+            ok, args, reason = wait_for_signal(
+                self.bluetoothctlWrapper.startup_completed_signal,
+                timeout_ms=1000,
+                sender=self.bluetoothctlWrapper,
+            )
+            if not ok:
+                self.logSignal.emit(logging.ERROR, 
+                    f"[{self.instance_name[:15]:<15}]: Bluetoothctl wrapper startup timed out because of {reason}."
+                )
+            else:
+                self.logSignal.emit(logging.INFO, 
+                    f"[{self.instance_name[:15]:<15}]: Bluetoothctl wrapper started: {args}."
+                )
+
         if mac is not None:
             if self.bluetoothctlWrapper:
-                self.bluetoothctlWrapper.device_distrust_succeeded_signal.connect(self._on_distrust_successful)
-                self.bluetoothctlWrapper.device_distrust_failed_signal.connect(self._on_distrust_failed)
+                if not connect(self.bluetoothctlWrapper.device_distrust_succeeded_signal, self._on_distrust_successful):
+                    self.logSignal.emit(logging.ERROR, 
+                        f"[{self.instance_name[:15]:<15}]: Failed to connect device_distrust_succeeded_signal"
+                    )
+                if not connect(self.bluetoothctlWrapper.device_distrust_failed_signal, self._on_distrust_failed):
+                    self.logSignal.emit(logging.ERROR, 
+                        f"[{self.instance_name[:15]:<15}]: Failed to connect device_distrust_failed_signal"
+                    )
                 self.bluetoothctlWrapper.distrust(mac=mac, timeout=2000)
-                self.handle_log(logging.WARNING, f"[{self.instance_name}] BluetoothctlWrapper initiated device {mac} distrust.")
+                self.logSignal.emit(logging.WARNING, 
+                    f"[{self.instance_name[:15]:<15}]: BluetoothctlWrapper initiated device {mac} distrust."
+                )
             else:
-                self.handle_log(logging.WARNING, f"[{self.instance_name}] BluetoothctlWrapper not available.")
+                self.logSignal.emit(logging.WARNING, 
+                    f"[{self.instance_name[:15]:<15}]: BluetoothctlWrapper not available."
+                )
         else:
-            self.handle_log(logging.WARNING, f"[{self.instance_name}] No device selected or BluetoothctlWrapper not available.")
+            self.logSignal.emit(logging.WARNING, 
+                f"[{self.instance_name[:15]:<15}]: No device selected or BluetoothctlWrapper not available."
+            )
+
+        if PROFILEME:
+            toc = time.perf_counter()
+            self.mtoc_on_distrustDeviceRequest = max((toc - tic), self.mtoc_on_distrustDeviceRequest)
 
     def _on_distrust_successful(self, mac: str):
         self.distrustSuccess.emit(True)
-        try:
-            self.bluetoothctlWrapper.device_distrust_succeeded_signal.disconnect(self._on_distrust_successful)
-            self.bluetoothctlWrapper.device_distrust_failed_signal.disconnect(self._on_distrust_failed)
-        except:
-            pass
-        self.handle_log(logging.INFO, f"[{self.instance_name}] Device {self.device.name if self.device else mac} distrusted")
+
+        self.logSignal.emit(logging.INFO, 
+            f"[{self.instance_name[:15]:<15}]: Device {mac} distrusted"
+        )
+
+        if not disconnect(self.bluetoothctlWrapper.device_distrust_succeeded_signal, self._on_distrust_successful):
+            self.logSignal.emit(logging.INFO, 
+                f"[{self.instance_name[:15]:<15}]: Device distrust success signal could not be disconnected."
+            )
+
+        if disconnect(self.bluetoothctlWrapper.device_distrust_failed_signal, self._on_distrust_failed):
+            self.logSignal.emit(logging.INFO, 
+                f"[{self.instance_name[:15]:<15}]: Device distrust failed signal could not be disconnected"
+            )
 
         # Cleanup bluetoothctl
         if self.bluetoothctlWrapper:
             self.bluetoothctlWrapper.stop()
             self.bluetoothctlWrapper = None
-            self.handle_log(logging.INFO, f"[{self.instance_name}] Bluetoothctl stopped.")
+            self.logSignal.emit(logging.INFO, 
+                f"[{self.instance_name[:15]:<15}]: Bluetoothctl stopped."
+            )
 
     def _on_distrust_failed(self, mac: str):
         self.distrustSuccess.emit(False)
-        try:
-            self.bluetoothctlWrapper.device_distrust_succeeded_signal.disconnect(self._on_distrust_successful)
-            self.bluetoothctlWrapper.device_distrust_failed_signal.disconnect(self._on_distrust_failed)
-        except:
-            pass
-        self.handle_log(logging.ERROR, f"[{self.instance_name}] Device {self.device.name if self.device else mac} distrusted unsuccessful")
+        self.logSignal.emit(logging.ERROR, 
+            f"[{self.instance_name[:15]:<15}]: Device {mac} distrusted unsuccessful"
+        )
+        if not disconnect(self.bluetoothctlWrapper.device_distrust_succeeded_signal, self._on_distrust_successful):
+            self.logSignal.emit(logging.INFO,
+                f"[{self.instance_name[:15]:<15}]: Device distrust success signal could not be disconnected."
+            )
+
+        if not disconnect(self.bluetoothctlWrapper.device_distrust_failed_signal, self._on_distrust_failed):
+            self.logSignal.emit(logging.INFO,
+                f"[{self.instance_name[:15]:<15}]: Device distrust failed signal could not be disconnected."
+            )
 
         # Cleanup bluetoothctl
         if self.bluetoothctlWrapper:
             self.bluetoothctlWrapper.stop()
             self.bluetoothctlWrapper = None
-            self.handle_log(logging.INFO, f"[{self.instance_name}] Bluetoothctl stopped.")
+            self.logSignal.emit(logging.INFO, 
+                f"[{self.instance_name[:15]:<15}]: Bluetoothctl stopped."
+            )
 
-    # Response Functions for Sending & Receiving (Transceiver)
-    ########################################################################################
-
-    # Send Text
-    # ---------
-
-    @pyqtSlot(bytes)
-    def on_sendTextRequest(self, text: bytes):
-        self.schedule_async(self._sendTextRequest(text=text))
-
-    async def _sendTextRequest(self, text: bytes):
-        """Send provided text over BLE."""
-        if text and self.client and self.client.is_connected:
-            for i in range(0, len(text), self.BLEpayloadSize):
-                chunk = text[i:i+self.BLEpayloadSize]
-                await self.client.write_gatt_char(self.RX_CHARACTERISTIC_UUID, chunk, response=False)
-                self.bytes_sent += len(chunk)
-            self.handle_log(logging.INFO, f"[{self.instance_name}] Sent: {text}")
-        else:
-            self.handle_log(logging.ERROR, f"[{self.instance_name}] Not connected or no data to send.")
-
-    # Send Line/s
-    # -----------
-    @pyqtSlot(bytes)
-    def on_sendLineRequest(self, line: bytes):
-        self.schedule_async( self._sendLineRequest(line))
-
-    async def _sendLineRequest(self, line: bytes):
-        """Send a single line of text (with EOL) over BLE."""
-        if self.eol:
-            await self._sendTextRequest(line + self.eol)
-        else:
-            await self._sendTextRequest(line)
-
-    @pyqtSlot(list)
-    def on_sendLinesRequest(self, lines: list):
-        self.schedule_async(self._sendLinesRequest(lines))
-
-    async def on_sendLinesRequest(self, lines: list):
-        """Send multiple lines of text over BLE."""
-        for line in lines:
-            await self._sendLineRequest(line)
-
-    # Send File
-    # ---------
-    @pyqtSlot(str)
-    def on_sendFileRequest(self, fname: str):
-        self.schedule_async(self._sendFileRequest(fname))
-
-    async def _sendFileRequest(self, fname: str):
-        """Transmit a file to the BLE device."""
-        if self.client and self.client.is_connected:
-            if fname:
-                try:
-                    with open(fname, "rb") as f:
-                        data = f.read()
-                        if not data:
-                            self.handle_log(logging.WARNING, f'File "{fname}" is empty.')
-                            return
-                        file_size = len(data)
-                        self.handle_log(logging.INFO, f'Starting transmission of "{fname}" ({file_size} bytes).')
-
-                        for i in range(0, len(data), self.BLEpayloadSize):
-                            chunk = data[i:i+self.BLEpayloadSize]
-                            try:
-                                await self.client.write_gatt_char(
-                                    self.RX_CHARACTERISTIC_UUID, 
-                                    chunk, 
-                                    response=False
-                                )
-                                self.bytes_sent += len(chunk)
-                            except Exception as e:
-                                self.handle_log(logging.ERROR, f'Error transmitting chunk at offset {i}: {e}.')
-                                break
-
-                        self.handle_log(logging.INFO, f'Finished transmission of "{fname}".')
-
-                except FileNotFoundError:
-                    self.handle_log(logging.ERROR, f'File "{fname}" not found.')
-                except Exception as e:
-                    self.handle_log(logging.ERROR, f'Unexpected error transmitting "{fname}": {e}')
-            else:
-                self.handle_log(logging.WARNING, f"[{self.instance_name}] No file name provided.")
-        else:
-            self.handle_log(logging.ERROR, f"[{self.instance_name}] BLE client not available or not connected.")
-
-    # Receive Text
-    # ------------    
-    def handle_rx(self, sender, data: bytes):
-        """Handle incoming data from BLE device."""
-        if not data:
-            return
-
-        self.bytes_received += len(data)
-
-        if self.eol:
-            # EOL-based parsing
-            if self.partial_line:
-                data = self.partial_line + data
-                self.partial_line = b""
-
-            lines = data.split(self.eol)
-            if not data.endswith(self.eol):
-                self.partial_line = lines.pop()
-
-            if lines:
-                self.receivedLines.emit(lines)
-        else:
-            self.receivedData.emit(data)
-
-
-#####################################################################################
+############################################################################################################################################
 # Testing
-#####################################################################################
+############################################################################################################################################
 
 if __name__ == "__main__":
     # not implemented

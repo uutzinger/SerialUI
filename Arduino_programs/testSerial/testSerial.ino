@@ -1,68 +1,123 @@
 /*
+*****************************************************************************************************************
+  Main File: testSerial.ino
 
-  Main File
-
-  This file handles the timing and main loop for data generation. It calls the appropriate data generation function based on the scenario.
+  This program handles the timing and main loop for data generation. 
+  It calls the appropriate data generation function based on the scenario.
   It also accepts commands over serial to change the interval, scenario, or pause the data generation.
 
-  Serial Commands:
+  Commands:
 
     interval <value>: Sets the data generation interval to the specified value in micro seconds.
     frequency <value> sets the frequency of the sine, saw tooth or squarewave in Hz
     scenario <value>: Changes the scenario to the specified value (1 to 5).
-    pause: Pauses the data generation.
-    resume: Resumes the data generation if it was paused.
 
+    pause:            Pauses the data generation.
+    resume:           Resumes the data generation if it was paused.
+
+  ********************************************************************************************************************
 */
 
+#define VERSION_STRING "Serial Tester 1.0.5"
+
 #include <cmath>
-#include <RingBuffer.h>
+#include "RingBuffer.h"
 
 // Serial Settings
-#define BAUDRATE              1000000 // 1 MBaud
+inline constexpr unsigned long BAUDRATE             = 2'000'000UL;
 
 // Measurement
-#define BUFFERSIZE              2048  // Buffer to hold data, should be a few times larger than FRAME_SIZE
-#define FRAME_SIZE               128  // Max size in bytes to send at once.
-#define TABLESIZE                 64  // Number of samples in one full cycle for sine, sawtooth etc
+inline constexpr size_t        FRAME_SIZE           = 256;  // Max size in bytes to send at once. ESP 256, Teensy 64 ..
+inline constexpr size_t        BUFFERSIZE           = 4096; // Buffer to hold data, should be a few times larger than FRAME_SIZE
+inline constexpr size_t        TABLESIZE            = 512;  // Number of samples in one full cycle for sine, sawtooth etc, must be power of 2
+inline constexpr size_t        highWaterMark        = BUFFERSIZE*3/4; // When to throttle data generation
+inline constexpr size_t        lowWaterMark         = 2*FRAME_SIZE;   // When to resume data generation
 
-int           scenario = 20; // Default scenario 
-                            // 1 Agriculture,   2 Satelite, 3 Environmental,
-                            // 4  Medical,      5 Power,    6 Stereo Sinewave, 
-                            // 7 Mono Sinewave, 8 Mono Sinewave Header, 
-                            // 9 Mono Sawtooth, 10 64 Chars", 20 USB Speed Tester
+// Add platform-specific defaults for fast modes
+#if defined(ESP32)
+  constexpr unsigned long SPEEDTEST_DEFAULT_INTERVAL_US = 20;  // stable on ESP32
+#else
+  constexpr unsigned long SPEEDTEST_DEFAULT_INTERVAL_US = 0;   // Teensy: run tight loop
+#endif
 
-// Configuration (adjustable frequencyuencies and amplitudes)
-float frequency   = 100.0;   // Frequency (Hz)
-float amplitude   = 1024;    // Amplitude for Channel 1
-int16_t signalTable[TABLESIZE];
-static float  loc = 0;
-size_t ret;
-
-RingBuffer<char, BUFFERSIZE> dataBuffer;
+// ===== Data generation globals =====
+int                           scenario = 6;
+float                         frequency = 100.0;   // Frequency (Hz)
+float                         amplitude = 1024;     // Amplitude
+int                           samplerate = 5000;   // Samples per second
+int16_t                       signalTable[TABLESIZE];
+bool                          genPermit = true; // true if data generation is allowed
+constexpr uint32_t            sendInterval = 100; // results in up to FRAME_SIZE * 8 / sendinterval * 1_000_000 Mbit/sec [40 Mbits/s]
 
 /*------------------------------------------------------------------------ 
 General
 --------------------------------------------------------------------------
 */
 
-unsigned long currentTime;
-unsigned long interval = 10000;             // Default interval at which to generate data in micro seconds
-int           samplerate = 5000;            // Samples per second
 bool          paused = true;                // Flag to pause the data generation
 String        receivedCommand = "";
 char          data[1024];                   // Serial data buffer
+const int     ledPin = LED_BUILTIN; 
+int           ledState = LOW; 
+unsigned long currentTime;
+unsigned long interval = 10000;             // Default interval at which to generate data in micro seconds
 unsigned long lastDataGenerationTime  = 0;     // Last time data was produced
+unsigned long blinkInterval =  1000;
+unsigned long lastBlink;
+static bool   userSetInterval = false;
+static bool   fastMode = false;              // true if scenario 11 or 20 (run as fast as possible)
+
+// Add timing constraints and helpers (place near other globals)
+constexpr int            MIN_SAMPLERATE_HZ = 1;
+constexpr int            MAX_SAMPLERATE_HZ = 200000;      // 200kHz, limit for Stereo on Teensy is like 80ksps
+constexpr unsigned long  MIN_INTERVAL_US   = 100;         // 0.1 ms minimum frame period
+constexpr unsigned long  MAX_INTERVAL_US   = 500000;      // 500 ms maximum frame period
+
 
 /*------------------------------------------------------------------------ 
-USB SPeed Tester
+USB Speed Tester
 --------------------------------------------------------------------------
 */
 
 unsigned long lastUSBTime  = 0;     // Last time data was produced
+unsigned long lastSend = 0;
 unsigned long lastCounts = 10000000; 
 unsigned long currentCounts = 10000000;     // Number of lines sent
 unsigned long countsPerSecond = 0;
+
+/*------------------------------------------------------------------------ 
+Scenarios
+--------------------------------------------------------------------------
+*/
+
+// Fixed-point phase config
+constexpr uint32_t ilog2_u32(uint32_t v) {
+  uint32_t n = 0;
+  while (v > 1) { v >>= 1; ++n; }
+  return n;
+}
+
+constexpr uint32_t  INT_BITS = ilog2_u32((uint32_t)TABLESIZE);  // e.g. 9 for 512
+constexpr uint32_t  FRAC     = 32u - INT_BITS;                  // e.g. 23 for 512
+constexpr uint64_t  PHASE_MOD  = (uint64_t)TABLESIZE << FRAC;
+constexpr uint64_t  PHASE_MASK = PHASE_MOD - 1ull;
+
+static inline uint32_t phase_inc_from_hz(float hz, int sr) {
+  if (hz <= 0.0f || sr <= 0) return 0u;
+  return (uint32_t)((((uint64_t)TABLESIZE << FRAC) * (double)hz) / (double)sr);
+}
+static inline uint32_t advance_phase(uint32_t p, uint32_t inc) {
+  return (p + inc) & (uint32_t)PHASE_MASK;
+}
+static inline int table_index(uint32_t p) {
+  return (int)((p >> FRAC) & (TABLESIZE - 1));
+}
+
+static uint32_t     phase = 0;
+float               stereo_drift_hz = 0.2f;               // adjust for faster/slower relative phase sweep
+static uint32_t     stereo_offset_fp = 0;       // fixed‑point phase offset accumulator (8.24)
+
+RingBuffer<char, BUFFERSIZE> dataBuffer;
 
 // =============================================================================================
 // SETUP
@@ -70,32 +125,65 @@ unsigned long countsPerSecond = 0;
 
 void setup()
 {
+  pinMode(ledPin, OUTPUT);
+
   Serial.begin(BAUDRATE);
-  while (!Serial) { delay(5); }
+
+  currentTime = millis();
+  while (!Serial && ( (millis() - currentTime) < 10000 )) { delay(5); }
+  Serial.println("==================================================================");
+  Serial.println(VERSION_STRING);
+  Serial.println("==================================================================");
+
+  #if defined(ESP32)
+    // Initialize PSRAM (optional check)
+    if (psramInit()) {
+      Serial.println("PSRAM initialized successfully.");
+      Serial.printf("Total PSRAM: %d bytes\r\n", ESP.getPsramSize());
+      Serial.printf("Free PSRAM: %d bytes\r\n", ESP.getFreePsram());
+    } else {
+      Serial.println("PSRAM initialization failed. Ensure PSRAM is enabled in the board configuration.");
+    }
+  #endif
+
+  if ((TABLESIZE & (TABLESIZE - 1)) != 0) {
+    Serial.println("TABLESIZE must be a power of 2");
+    while (true) delay(1000);
+  }
+  if (TABLESIZE < 8 || TABLESIZE > 16384) {
+    Serial.println("TABLESIZE out of expected range");
+    while (true) delay(1000);
+  }
+
 
   Serial.println("=================================");
   Serial.println("Commands are:");
   Serial.println("pause");
   Serial.println("resume");
-  Serial.println("interval >=1 micro seconds");
-  Serial.println("samplerate");
-  Serial.println("scenario ");
-  Serial.println("   1 Agriculture, 2 Satelite, 3 Environmental, 4 Medical, 5 Power");
-  Serial.println("   6 Stereo Sinewave, 7 Mono Sinewave, 8 Mono Sinewave Header, 9 Mono Sawtooth, 10 Squarewave");
-  Serial.println("  11 64 Chars, 12 USB Tester");
+  Serial.println("interval <micro sec> >=0");
+  Serial.println("samplerate <Hz>");
+  Serial.println("scenario <number>: ");
+  Serial.println("   1 Agriculture,     2 Satellite,           3 Environmental, ");
+  Serial.println("   4 Medical,         5 Power                6 Stereo Sinewave, ");
+  Serial.println("   7 Mono Sinewave,   8 Moo Sinewave Header, 9 Mono Sawtooth, ");
+  Serial.println("   10 Squarewave     11 64 Chars,            20 USB Speed Tester");
   // Prints current settings
   Serial.println("=================================");
   Serial.println("Current Settings:");
-  Serial.println("Interval:   " + String(interval) + " microseconds");
-  Serial.println("Samplerate: " + String(samplerate) + " Hz");
-  Serial.println("Scenario:   " + String(scenario));
-  Serial.println("Frequency:  " + String(frequency));
-  Serial.println("Paused:     " + String(paused ? "Yes" : "No"));
+  Serial.printf("Interval:   %d microseconds\r\n", interval);
+  Serial.printf("Samplerate: %d Hz\r\n", samplerate);
+  Serial.printf("Scenario:   %d\r\n", scenario);
+  Serial.printf("Frequency:  %f\r\n", frequency);
+  Serial.printf("Paused:     %s\r\n", paused ? "Yes" : "No");
 
+  randomSeed(analogRead(0));
   updateSignalTable(scenario);
 
   lastDataGenerationTime = micros();
   lastUSBTime = micros();
+  lastBlink = micros();
+  lastSend = micros();
+
 }
 
 // =============================================================================================
@@ -116,12 +204,16 @@ void loop()
 
   // Create Data
   // -----------------------------------------------------------------------
-  if (!paused)
+  if (!paused && genPermit)
   {
     if (currentTime - lastDataGenerationTime > interval)
     {
       lastDataGenerationTime = currentTime;
-      ret = generateData();
+      size_t ret = generateData();
+      size_t avail = dataBuffer.available();
+      if (avail >= highWaterMark) {
+          genPermit = false;
+      }
       if (ret == 0) {
         Serial.println("Ring buffer overflow");
       }
@@ -130,32 +222,66 @@ void loop()
 
   // Send Data
   // ------------------------------------------------------------------------
-  while (dataBuffer.available() > 0) {
-      size_t bytesRead = dataBuffer.pop(data, FRAME_SIZE);
+  size_t avail = dataBuffer.available();
+  if (avail > 0) {
+    // have something to send
+
+    // bytes we are willing to send this pass (hysteresis: keep up to lowWaterMark queued)
+    size_t sendBytes = (avail > lowWaterMark) ? (avail - lowWaterMark) : avail;
+    // Always send at least one frame if anything is present
+    if (sendBytes == 0) sendBytes = (avail < FRAME_SIZE) ? avail : FRAME_SIZE;
+
+    while (sendBytes > 0) {
+      size_t chunkReq  = sendBytes > FRAME_SIZE ? FRAME_SIZE : sendBytes;
+      size_t bytesRead = dataBuffer.pop(data, chunkReq);
+      if (bytesRead == 0) break;              // nothing left
       Serial.write(data, bytesRead);
+      sendBytes -= bytesRead;
+    }
+
+    // start generating data if we are below waterMark
+    if (dataBuffer.available() <= lowWaterMark) {
+        genPermit = true;
+    }
   }
-}
+
+  if ((currentTime - lastBlink) >= blinkInterval) {
+    lastBlink = currentTime;
+    if (ledState == LOW) {
+      ledState = HIGH;
+      blinkInterval = 200000; 
+    } else {
+      ledState = LOW;
+      blinkInterval = 800000;
+    }
+
+    // set the LED with the ledState of the variable:
+    digitalWrite(ledPin, ledState);  
+  } // end blink
+
+} // end main
 
 // =============================================================================================
-// Support Functsion
+// Support Functions
 // =============================================================================================
 
-/* 
-----------------------------------------------------------
- User Input
-----------------------------------------------------------
-*/
+// ----------------------------------------------------------
+//  User Input
+// ----------------------------------------------------------
+
 void handleSerialCommands()
 {
   String command = Serial.readStringUntil('\n');
   command.trim(); // Remove any leading/trailing whitespace
 
-  if (command.startsWith("interval"))
+  if (command.startsWith("interval "))
   {
-    int newInterval = command.substring(8).toInt();
-    if (newInterval > 0)
+    long newInterval = command.substring(9).toInt();
+    if (newInterval >= 0)
     {
-      interval = newInterval;
+      interval = (unsigned long)newInterval;
+      userSetInterval = true;
+      sanitizeTiming();
       Serial.println("Interval set to " + String(interval) + " micro seconds");
       dataBuffer.clear();
       updateSignalTable(scenario);
@@ -165,29 +291,32 @@ void handleSerialCommands()
       Serial.println("Invalid interval value.");
     }
   }
-  else if (command.startsWith("samplerate"))
+  else if (command.startsWith("samplerate "))
   {
-    int newSamplerate = command.substring(10).toInt();
+    int newSamplerate = command.substring(11).toInt();
     if (newSamplerate > 0)
     {
       samplerate = newSamplerate;
+      sanitizeTiming();
       Serial.println("Samplerate set to " + String(samplerate) + " Hz");
-      if ((samplerate > 10000) && (interval > 5000)) {
-        interval = 1000;
-        Serial.println("Interval set to " + String(interval) + " micro seconds");
-      }
     }
     else
     {
       Serial.println("Invalid samplerate value.");
     }
   }
-  else if (command.startsWith("scenario"))
+  else if (command.startsWith("scenario "))
   {
-    int newScenario = command.substring(8).toInt();
+    int newScenario = command.substring(9).toInt();
     if (newScenario >= 1 && newScenario <= 100)
     {
       scenario = newScenario;
+      fastMode = (scenario == 11 || scenario == 20);
+      if (fastMode && !userSetInterval) {
+        interval = SPEEDTEST_DEFAULT_INTERVAL_US;
+        Serial.println("Interval auto-set for fast mode: " + String(interval) + " microseconds");
+      }
+      sanitizeTiming();
       updateSignalTable(scenario);
       dataBuffer.clear();
       Serial.println("Scenario set to " + String(scenario));
@@ -197,12 +326,13 @@ void handleSerialCommands()
       Serial.println("Invalid scenario value.");
     }
   }
-  else if (command.startsWith("frequency"))
+  else if (command.startsWith("frequency "))
   {
-    float new_freq = command.substring(9).toFloat();
+    float new_freq = command.substring(10).toFloat();
     if (new_freq >= 0 && new_freq <= 10000)
     {
       frequency = new_freq;
+      sanitizeTiming();
       updateSignalTable(scenario);
       dataBuffer.clear();
       Serial.println("Frequency set to " + String(frequency));
@@ -212,38 +342,58 @@ void handleSerialCommands()
       Serial.println("Invalid frequency value.");
     }
   }
-  else if (command.equals("pause"))
+  else if (command.startsWith("pause"))
   {
     paused = true;
     Serial.println("Data generation paused.");
   }
-  else if (command.equals("resume"))
+  else if (command.startsWith("resume"))
   {
     paused = false;
     dataBuffer.clear();
     Serial.println("Data generation resumed.");
   }
-  else if (command.equals("?"))
+  else if (command.startsWith("?"))
     {
         // Prints current settings
         Serial.println("=================================");
         Serial.println("Current Settings:");
-        Serial.println("Paused:     " + String(paused ? "Yes" : "No"));
-        Serial.println("Scenario:   " + String(scenario));
-        Serial.println("Interval:   " + String(interval) + " microseconds");
-        Serial.println("Samplerate: " + String(samplerate) + " Hz");
-        Serial.println("Frequency:  " + String(frequency) + " Hz");
+        Serial.printf("Interval:   %d microseconds\r\n", interval);
+        Serial.printf("Samplerate: %d Hz\r\n", samplerate);
+        Serial.printf("Scenario:   %d\r\n", scenario);
+        Serial.printf("Frequency:  %f\r\n", frequency);
+        Serial.printf("Paused:     %s\r\n", paused ? "Yes" : "No");
     }
+  else if (command.startsWith("."))
+    {
+    // Prints current ble status
+    snprintf(data, sizeof(data),
+      "==================================================================\r\n"
+      "Settings:\r\n"
+      "Chunk Size: %d\r\n"
+      "Permission to generate data is %s\r\n"
+      "Buffered used: %d bytes\r\n"
+      "Buffer low watermark: %d - high watermark: %d size: %d bytes\r\n"
+      "==================================================================\r\n",
+      FRAME_SIZE,
+      genPermit ? "on" : "off",
+      dataBuffer.available(), 
+      lowWaterMark,
+      highWaterMark,
+      dataBuffer.capacity()
+    );
+    Serial.print(data);
+  }
   else
   {
     Serial.println("=================================");
     Serial.println("Commands are:");
     Serial.println("pause");
     Serial.println("resume");
-    Serial.println("interval >=0 ms");
-    Serial.println("samplerate");
-    Serial.println("frequency 0..10000");    
-    Serial.println("scenario number: ");
+    Serial.println("interval <micro sec> > 0");
+    Serial.println("samplerate <Hz>");
+    Serial.println("frequency <Hz> 0..10000");    
+    Serial.println("scenario <number>: ");
     Serial.println("   1 Agriculture,    2 Satelite,             3 Environmental, ");
     Serial.println("   4 Medical,        5 Power                 6 Stereo Sinewave, ");
     Serial.println("   7 Mono Sinewave,  8 Mono Sinewave Header, 9 Mono Sawtooth, ");
@@ -251,11 +401,9 @@ void handleSerialCommands()
   }
 }
 
-/* 
-----------------------------------------------------------
- Data Generation Selector
-----------------------------------------------------------
-*/
+//----------------------------------------------------------
+// Data Generation Selector
+// ---------------------------------------------------------
 
 size_t generateData()
 {
@@ -277,19 +425,19 @@ size_t generateData()
     return(generatePowerSystemData());
     break;
   case 6:
-    return(generateDataStereo(samplerate, interval));
+    return(generateStereo(samplerate, interval));
     break;
   case 7:
-    return(generateData(samplerate, interval));
+    return(generateMono(samplerate, interval));
     break;
   case 8:
-    return(generateDataHeader(samplerate, interval, String("Sine")));
+    return(generateMonoHeader(samplerate, interval, String("Sine")));
     break;
   case 9:
-    return(generateData(samplerate, interval));
+    return(generateMono(samplerate, interval));
     break;
   case 10:
-    return(generateData(samplerate, interval));
+    return(generateMono(samplerate, interval));
     break;
   case 11:
     return(generate64Chars());
@@ -330,19 +478,24 @@ void updateSignalTable(int scenario){
 // Corrected updateSineWaveTable function
 void updateSineWaveTable() {
     Serial.println("Updating sine table...");
-    for (int i = 0; i < TABLESIZE; i++) {
-        int16_t value1 = int16_t(amplitude       * sin(( 2.0 * M_PI * i) / float(TABLESIZE))); 
+    for (size_t i = 0; i < TABLESIZE; i++) {
+        int16_t value1 = int16_t(amplitude       * sin(( 2.0 * M_PI * float(i)) / float(TABLESIZE))); 
         // int16_t value2 = int16_t((amplitude / 4) * sin((10.0 * M_PI * i) / float(TABLESIZE))); // Adjusted frequency
         // signalTable[i] = value1 + value2;
         signalTable[i] = value1;
     }
-}
 
+    int16_t mn = INT16_MAX, mx = INT16_MIN;
+    for (size_t i = 0; i < TABLESIZE; ++i) { 
+      mn = min(mn, signalTable[i]); 
+      mx = max(mx, signalTable[i]);
+    }
+    Serial.printf("Sine table range: [%d, %d]\r\n", (int)mn, (int)mx);
+  }
 
 void updateSawToothTable() {
     Serial.println("Updating sawtooth table...");
-
-    for (int i = 0; i < TABLESIZE; i++) {
+    for (size_t i = 0; i < TABLESIZE; i++) {
         int16_t value = int16_t(-amplitude + 2.* amplitude * (float(i) / float(TABLESIZE)));
         signalTable[i] = value;
     }
@@ -350,8 +503,7 @@ void updateSawToothTable() {
 
 void updateSquareWaveTable() {
     Serial.println("Updating square table...");
-
-    for (int i = 0; i < TABLESIZE; i++) {
+    for (size_t i = 0; i < TABLESIZE; i++) {
         int16_t value;
         if (i < TABLESIZE / 2) {  // Corrected missing parentheses
             value = int16_t(amplitude);
@@ -366,114 +518,203 @@ void updateSquareWaveTable() {
 // Data Generators
 // =============================================================================================
 
-/* 
-----------------------------------------------------------
- Data Generation from Table with Header
-----------------------------------------------------------
-*/
-size_t generateDataHeader(int samplerate, unsigned long interval, String header) {
-    char* ptr = data;
-    int samples = (samplerate * interval) / 1000000;
-    float stepSize = (TABLESIZE * frequency) / float(samplerate);
-
-    for (int i = 0; i < samples; i++) {
-        int idx = int(loc) % TABLESIZE;
-        int16_t value = signalTable[idx];
-
-        if (ptr >= data + sizeof(data) - 10) break; 
-        ptr += snprintf(ptr, data + sizeof(data) - ptr, "%s: %d\n", header.c_str(), value);
-
-        loc += stepSize;
-    }
-
-size_t length = min((size_t)strlen(data), sizeof(data) - 1);
-    return dataBuffer.push(data, length, false);
+// Estimate avg characters per sample for buffer sizing
+static int avgCharsPerSample(int scen) {
+  switch (scen) {
+    case 1:  return 184; // Agriculture: "Temp: 23.45 C, Hum: 56.78 %, Soil: 12.34 %\r\n"
+    case 2:  return 718; // CanSat: "T:23.45C,P:1013.25hPa,H:56.78%,A:123.
+    case 3:  return 159; // Environmental: "Temp: 23.45 C, Hum: 56.78 %, CO2: 400 ppm\r\n"
+    case 4:  return 138; // Medical: "HR: 72 bpm, SpO2: 98 %, BP: 120/80 mmHg, Temp: 36.5 C\r\n"
+    case 5:  return 129; // Power: "Volt: 12.34 V, Curr: 1.23 A, Power: 15.00 W\r\n"
+    case 6:  return  16; // Stereo: "-1024, -1024\r\n" ~ 14 → use 16
+    case 7:  return   8; // Mono: "-1024\r\n" ~ 6–7 → use 16
+    case 8:  return  14; // Header + value: "Sine: -1024\r\n" ~ 12–14 → use 16
+    case 9:  return   8; // Mono: "-1024\r\n" ~ 6–7 → use 8
+    case 10: return   8; // Mono: "-1024\r\n" ~ 6–7 → use 8
+    case 11: return  64; // 64 chars + newline
+    case 20: return  35; // Speed test: count=%9lu, lines/sec=%6lu\r\n
+    default: return  64; // Other CSV scenarios build one line per call; keep generous
+  }
 }
 
+// Compute max samples per frame that fit the per-call text buffer
+static int maxSamplesForBuffer(int scen) {
+  const int overhead = 32; // guard for final null and minor variation
+  int avg = avgCharsPerSample(scen);
+  if (avg < 1) avg = 8;
+  return max(1, (int)((sizeof(data) - overhead) / avg));
+}
 
-/* 
-----------------------------------------------------------
- Data Generator from Table
-----------------------------------------------------------
-*/
-size_t generateData(int samplerate, unsigned long interval) {
+// Clamp samplerate/interval and, if needed, shrink interval to keep samples per frame in bounds
+static void sanitizeTiming() {
+  // Clamp samplerate and interval
+  samplerate = constrain(samplerate, MIN_SAMPLERATE_HZ, MAX_SAMPLERATE_HZ);
+  // Fast modes (11, 20): do NOT clamp interval; allow 0
+  if (scenario == 11 || scenario == 20) {
+    return;
+  }
+  // Other scenarios: clamp interval into sane bounds
+  interval   = constrain(interval, MIN_INTERVAL_US, MAX_INTERVAL_US);
+
+  // Only waveform scenarios (6..10) use samplerate and interval
+  if (scenario >= 6 && scenario <= 10) {
+    const uint64_t ticks   = (uint64_t)samplerate * (uint64_t)interval;
+    int requestedSamples   = (int)(ticks / 1000000ULL);
+    int maxSamplesAllowed  = maxSamplesForBuffer(scenario);
+
+    if (requestedSamples < 1) {
+      requestedSamples = 1;
+    }
+    if (requestedSamples > maxSamplesAllowed) {
+      // Reduce interval to fit in buffer while keeping samplerate
+      // interval_us = samples * 1e6 / samplerate
+      unsigned long newInterval = (unsigned long)((uint64_t)maxSamplesAllowed * 1000000ULL / (uint64_t)samplerate);
+      newInterval = constrain(newInterval, MIN_INTERVAL_US, MAX_INTERVAL_US);
+      if (newInterval != interval) {
+        interval = newInterval;
+        Serial.print("Note: interval reduced to fit buffer: ");
+        Serial.print(interval);
+        Serial.println("µs");
+      }
+    }
+  }
+}
+
+// ----------------------------------------------------------
+//  Data Generation from Table with Header
+// ----------------------------------------------------------
+
+size_t generateMonoHeader(int samplerate, unsigned long interval, String header) {
     char* ptr = data;
-    int samples = (samplerate * interval) / 1000000;
-    float stepSize = (TABLESIZE * frequency) / float(samplerate);
+    
+    const uint64_t ticks = (uint64_t)samplerate * (uint64_t)interval; // microsecond ticks
+    int samples = (int)(ticks / 1000000ULL);
+    if (samples <= 0) return 0;
 
-    for (int i = 0; i < samples; i++) {
-        int idx = int(loc) % TABLESIZE;
-        int16_t value = signalTable[idx];
+    // Fixed‑point phase increment (TABLESIZE << FRAC scaled by freq / samplerate)
+    const uint32_t inc = phase_inc_from_hz(frequency, samplerate);
+
+    const char* h = header.c_str();
+    uint32_t p = phase;
+
+    for (int i = 0; i < samples; ++i) {
+        size_t rem = sizeof(data) - (size_t)(ptr - data);
+        if (rem <= 1) break;
         
-        if (ptr >= data + sizeof(data) - 10) break; 
-        ptr += snprintf(ptr, data + sizeof(data) - ptr, "%d\n", value);
+        int idx = table_index(p);
+        int wrote = snprintf(ptr, rem, "%s: %d\r\n", h, (int)signalTable[idx]);
+        if (wrote <= 0 || wrote >= (int)rem) break;
+        ptr += wrote;
 
-        loc += stepSize;
+        p = advance_phase(p, inc);
     }
 
-    size_t length = min((size_t)strlen(data), sizeof(data) - 1);
-    return dataBuffer.push(data, length, false);
+    phase = p;
+
+    const size_t len = (size_t)(ptr - data);
+    return dataBuffer.push(data, len, false);
 }
 
-/* 
-----------------------------------------------------------
- Data Generation from Table: Stereo
-----------------------------------------------------------
-*/
+// ----------------------------------------------------------
+// Data Generator from Table
+// ----------------------------------------------------------
 
-size_t generateDataStereo(int samplerate, unsigned long interval) {
+
+size_t generateMono(int samplerate, unsigned long interval) {
     char* ptr = data;
-    int samples = (samplerate * interval) / 1000000;
-    float stepSize = (TABLESIZE * frequency) / float(samplerate);
-    int offset = int(stepSize * 2);
-    int idx;
-    int16_t value1;
-    int16_t value2;
+    const uint64_t ticks = (uint64_t)samplerate * (uint64_t)interval;
+    int samples = (int)(ticks / 1000000ULL);
+    if (samples <= 0) return 0;
 
-    for (int i = 0; i < samples; i++) {
-        idx = int(loc) % TABLESIZE;
-        value1 = signalTable[idx];
-        idx = int(loc + offset) % TABLESIZE;
-        value2 = signalTable[idx];
+    // phase increment: TABLESIZE steps per cycle
+    const uint32_t inc = phase_inc_from_hz(frequency, samplerate);
 
-        if (ptr >= data + sizeof(data) - 10) break; 
-        ptr += snprintf(ptr, data + sizeof(data) - ptr, "%d, %d\n", value1, value2);
+    uint32_t p = phase;
+        
+    for (int i = 0; i < samples; ++i) {
+        size_t rem = sizeof(data) - (size_t)(ptr - data);
+        if (rem <= 1) break;
+        
+        int idx = table_index(p);
+        int wrote = snprintf(ptr, rem, "%d\r\n", signalTable[idx]);
+        if (wrote <= 0 || wrote >= (int)rem) break;
+        ptr += wrote;
 
-        loc += stepSize;
+        p   = advance_phase(p, inc);
     }
 
-    size_t length = min((size_t)strlen(data), sizeof(data) - 1);
+    phase = p;
 
-    return dataBuffer.push(data, length, false);
+    const size_t len = (size_t)(ptr - data);
+    return dataBuffer.push(data, len, false);
 }
 
-/* 
-----------------------------------------------------------
- Data Generator: 64 Characters
-----------------------------------------------------------
-*/
+//----------------------------------------------------------
+// Data Generation from Table: Stereo
+//----------------------------------------------------------
 
-const char FIXED_64_CHAR[65] =  "ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZ.0123456789\n"; 
+
+size_t generateStereo(int samplerate, unsigned long interval) {
+    char* ptr = data;
+    const uint64_t ticks = (uint64_t)samplerate * (uint64_t)interval;
+    int samples = (int)(ticks / 1000000ULL);
+    if (samples <= 0) return 0;
+
+    const uint32_t inc        = phase_inc_from_hz(frequency,        samplerate);
+    const uint32_t inc_offset = phase_inc_from_hz(stereo_drift_hz,  samplerate);
+
+    // Local working copies keep constant relative offset
+    uint32_t p = phase;
+    uint32_t off = stereo_offset_fp;
+
+    for (int i = 0; i < samples; ++i) {
+        size_t rem = sizeof(data) - (size_t)(ptr - data);
+        if (rem <= 1) break;
+
+        int idx1 = table_index(p);
+        int idx2 = table_index(p + off);
+
+        int wrote = snprintf(ptr, rem, "%d, %d\r\n", signalTable[idx1], signalTable[idx2]);
+        if (wrote <= 0 || wrote >= (int)rem) break;
+        ptr += wrote;
+
+        p   = advance_phase(p, inc);
+        off = advance_phase(off, inc_offset);
+    }
+
+    phase = p;
+    stereo_offset_fp = off;
+ 
+    const size_t len = (size_t)(ptr - data);
+    return dataBuffer.push(data, len, false);
+}
+
+// ----------------------------------------------------------
+// Data Generator: 64 Characters
+// ----------------------------------------------------------
+
+inline constexpr char FIXED_64_CHAR[65] =  "ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZ.012345678\r\n"; 
 
 size_t generate64Chars() {
     return dataBuffer.push(FIXED_64_CHAR, 64, false);  // Push 64 bytes to ring buffer
 }
 
-/* 
-----------------------------------------------------------
- Data Generator for USB test, includes line counter and lines per second
-----------------------------------------------------------
-*/
+// ----------------------------------------------------------
+//  Data Generator for USB test, includes line counter and lines per second
+// ----------------------------------------------------------
+
 size_t generateStoffregen() {
-  char line[40];  // Sufficient size: 15 (count) + 14 (text) + 6 (lines/sec) + 2 (\n\r) + 1 (\0 safety)
-  size_t len;
 
-  len = snprintf(line, sizeof(line), "count=%9lu, lines/sec=%6lu\n", currentCounts, countsPerSecond);
-
-  if (len >= sizeof(line)) {
-    len = sizeof(line) - 1;
-    line[len] = '\0';
-  }
+  // 34 characters 
+  size_t n = snprintf(data, sizeof(data), "count=%9lu, lines/sec=%6lu\r\n", currentCounts, countsPerSecond);
+  // Sufficient size: 
+  // count=: 6
+  // counts: 9 
+  // , lines/sec=: 12 
+  // cps: 6
+  // \r\n: 1
+  // 0: 1
+  // Total: 35
 
   currentCounts++;
 
@@ -484,42 +725,42 @@ size_t generateStoffregen() {
     lastUSBTime = currentTime;
   }
 
-  return dataBuffer.push(line, len, false);
+  return dataBuffer.push(data, n, false);
 }
 
-/* 
-----------------------------------------------------------
- Data Generator for Agriculture Data
-----------------------------------------------------------
-*/
+// ----------------------------------------------------------
+// Data Generator for Agriculture Data
+// ----------------------------------------------------------
+
 
 size_t  generateAgriculturalMonitoringData()
 {
 
-  float soilMoisture = random(200, 800) / 10.0;          // Soil moisture in percentage
+  float soilMoisture    = random(200, 800) / 10.0;       // Soil moisture in percentage
   float soilTemperature = random(100, 350) / 10.0;       // Soil temperature in Celsius
-  float airTemperature = random(150, 350) / 10.0;        // Air temperature in Celsius
-  float airHumidity = random(300, 900) / 10.0;           // Air humidity in percentage
-  float lightIntensity = random(2000 / 100, 1000 / 100); // Light intensity in lux/100
-  float pHLevel = random(50, 80) / 10.0;                 // Soil pH level
-  int leafWetness = random(0, 15);                       // Leaf wetness
-  float co2Level = random(300 / 10, 800 / 10);           // CO2 level in ppm/10
-  float windSpeed = random(0, 200) / 10.0;               // Wind speed in m/s
-  float rssi = random(-90, -30);                         // RSSI value
+  float airTemperature  = random(150, 350) / 10.0;       // Air temperature in Celsius
+  float airHumidity     = random(300, 900) / 10.0;       // Air humidity in percentage
+  float lightIntensity  = random(2000,10000) / 100.0;    // Light intensity in lux/100 (overcast)
+  float pHLevel         = random(50, 80) / 10.0;         // Soil pH level
+  int leafWetness       = random(0, 15);                 // Leaf wetness
+  float co2Level        = random(300, 800) / 10.0;       // CO2 level in ppm/10
+  float windSpeed       = random(0, 200) / 10.0;         // Wind speed in m/s
+  float arssi           = random(-90, -30);              // RSSI value
 
-  sprintf(data,"SoilMoisture: %f, SoilTemperature: %f, AirTemperature: %f,AirHumidity: %f,LightIntensity: %f, PHLevel: %f, LeafWetness: %d, CO2Level: %f, WindSpeed: %f,RSSI: %f\n", 
-          soilMoisture, soilTemperature, airTemperature, airHumidity,lightIntensity,pHLevel,leafWetness,co2Level,windSpeed,rssi);
+  int n = snprintf(data, sizeof(data), 
+         "SoilMoisture: %.1f, SoilTemperature: %.1f, AirTemperature: %.1f, AirHumidity: %.1f, LightIntensity: %.1f, PHLevel: %.2f, LeafWetness: %d, CO2Level: %.1f, WindSpeed: %.1f, RSSI: %.1f\r\n",
+          soilMoisture, soilTemperature, airTemperature,
+          airHumidity, lightIntensity, pHLevel, leafWetness,
+          co2Level, windSpeed, arssi);
 
-  size_t length = min(strlen(data), sizeof(data));
-  return(dataBuffer.push(data, length, false));
-
+  size_t len = (n > 0 && n < (int)sizeof(data)) ? (size_t)n : (sizeof(data) - 1);
+  return(dataBuffer.push(data, len, false));
 }
 
-/*
-  Data Generator for Power Monitoring System
+// ----------------------------------------------------------
+//  Data Generator for Power Monitoring System
+// ----------------------------------------------------------
 
-  This file contains the data generation function for a power monitoring scenario.
-*/
 size_t generatePowerSystemData()
 {
   float voltageSensor = random(300, 500) / 10.0;                // Voltage sensor
@@ -528,23 +769,24 @@ size_t generatePowerSystemData()
   float energySensor = powerSensor * random(10, 1000) / 1000.0; // Energy sensor
   float batteryLevel = random(0, 100);                          // Battery level percentage
   float temperatureBattery = random(200, 450) / 10.0;           // Battery temperature
-  float rssi = random(-90, -30);                                // RSSI value
+  float prssi = random(-90, -30);                                // RSSI value
 
-  char* ptr = data;
+  int n = snprintf(data, sizeof(data),
+    "VoltageSensor:%.1f,CurrentSensor:%.1f,"
+    "PowerSensor:%.1f,EnergySensor:%.1f,BatteryLevel:%.1f,"
+    "TemperatureBattery:%.1f,RSSI:%.1f\r\n",
+    voltageSensor, currentSensor,
+    powerSensor, energySensor, batteryLevel,
+    temperatureBattery, prssi);
 
-  ptr += sprintf(ptr, "VoltageSensor:%.1f,CurrentSensor:%.1f,", voltageSensor, currentSensor);
-  ptr += sprintf(ptr, "PowerSensor:%.1f,EnergySensor:%.1f,BatteryLevel:%.1f,", powerSensor, energySensor, batteryLevel);
-  ptr += sprintf(ptr, "TemperatureBattery:%.1f,RSSI:%.1f\n", temperatureBattery, rssi);
-
-  size_t length = min(strlen(data), sizeof(data));
-  return(dataBuffer.push(data, length, false));
+  size_t length = (n > 0 && n < (int)sizeof(data)) ? (size_t)n : sizeof(data)-1;
+  return dataBuffer.push(data, length, false);
 }
 
-/*
-  Data Generator for Medical Monitoring System
+// ----------------------------------------------------------
+// Data Generator for Medical Monitoring System
+// ----------------------------------------------------------
 
-  This file contains the data generation function for a medical monitoring system scenario.
-*/
 
 size_t generateMedicalMonitoringData()
 {
@@ -556,24 +798,26 @@ size_t generateMedicalMonitoringData()
   float respirationRate = random(12, 20);            // Respiration rate in breaths per minute
   float glucoseLevel = random(70, 140);              // Glucose level in mg/dL
   int stepCount = random(0, 10000);                  // Step count
-  float rssi = random(-90, -30);                     // RSSI value
+  float mrssi = random(-90, -30);                     // RSSI value
 
-  char* ptr = data;
-
-  ptr += sprintf(ptr, "BodyTemp:%.1f,HeartRate:%d,", bodyTemp, heartRate);
-  ptr += sprintf(ptr, "BloodPressure:%d/%d,BloodOxygenLevel:%.1f,", bloodPressureSystolic, bloodPressureDiastolic, bloodOxygenLevel);
-  ptr += sprintf(ptr, "RespirationRate:%.1f,GlucoseLevel:%.1f,StepCount:%d,", respirationRate, glucoseLevel, stepCount);
-  ptr += sprintf(ptr, "RSSI:%.1f\n", rssi);
+  int n = snprintf(data, sizeof(data),
+    "BodyTemp:%.1f,HeartRate:%d,"
+    "BloodPressure:%d/%d,BloodOxygenLevel:%.1f,"
+    "RespirationRate:%.1f,GlucoseLevel:%.1f,StepCount:%d,"
+    "RSSI:%.1f\r\n",
+    bodyTemp, heartRate,
+    bloodPressureSystolic, bloodPressureDiastolic, bloodOxygenLevel,
+    respirationRate, glucoseLevel, stepCount,
+    mrssi);
 
   size_t length = min(strlen(data), sizeof(data));
   return(dataBuffer.push(data, length, false));
 }
 
-/*
-  Data Generator for Environmental Monitoring System
+// ----------------------------------------------------------
+//  Data Generator for Environmental Monitoring System
+// ----------------------------------------------------------
 
-  This file contains the data generation function for an environmental monitoring scenario.
-*/
 
 size_t generateEnvironmentalData()
 {
@@ -585,24 +829,26 @@ size_t generateEnvironmentalData()
   int co2Sensor = random(300, 600);                  // CO2 sensor
   float airQualityIndex = random(50, 150);           // Air quality index
   float noiseLevel = random(30, 100);                // Noise level in dB
-  float rssi = random(-90, -30);                     // RSSI value
+  float erssi = random(-90, -30);                     // RSSI value
 
-  char* ptr = data;
-
-  ptr += sprintf(ptr, "TempSensor1:%.1f,TempSensor2:%.1f,", tempSensor1, tempSensor2);
-  ptr += sprintf(ptr, "HumiditySensor:%.1f,PressureSensor:%.1f,LightSensor:%.1f,", humiditySensor, pressureSensor, lightSensor);
-  ptr += sprintf(ptr, "CO2Sensor:%d,AirQualityIndex:%.1f,NoiseLevel:%.1f,", co2Sensor, airQualityIndex, noiseLevel);
-  ptr += sprintf(ptr, "RSSI:%.1f\n", rssi);
+  int n = snprintf(data, sizeof(data),
+    "TempSensor1:%.1f,TempSensor2:%.1f,"
+    "HumiditySensor:%.1f,PressureSensor:%.1f,LightSensor:%.1f,"
+    "CO2Sensor:%d,AirQualityIndex:%.1f,NoiseLevel:%.1f,"
+    "RSSI:%.1f\r\n",
+    tempSensor1, tempSensor2,
+    humiditySensor, pressureSensor, lightSensor,
+    co2Sensor, airQualityIndex, noiseLevel,
+    erssi);
 
   size_t length = min(strlen(data), sizeof(data));
   return(dataBuffer.push(data, length, false));
 }
 
-/*
-  Data Generator for CanSat
+// ----------------------------------------------------------
+//  Data Generator for CanSat
+// ----------------------------------------------------------
 
-  This file contains the data generation function for the CanSat scenario: https://github.com/charles-the-forth/data-generator
-*/
 size_t generateCanSatData()
 {
   uint32_t lightIntensity = random(1000, 5000);
@@ -629,7 +875,7 @@ size_t generateCanSatData()
   int co2CCS811 = 200;
   int tvoc = 20;
   float o2Concentration = random(100, 1000) / 10.0;
-  int rssi = random(0, 60) - 90;
+  int crssi = random(0, 60) - 90;
   float accelerationX = random(10, 150) / 10.0;
   float accelerationY = random(10, 150) / 10.0;
   float accelerationZ = random(10, 150) / 10.0;
@@ -658,33 +904,31 @@ size_t generateCanSatData()
   float v = random(10, 500) / 10.0;
   float w = random(10, 500) / 10.0;
 
-  char* ptr = data;
-
-  ptr += sprintf(ptr, "LightIntensity:%lu,UVIndex:%.1f,", 
-                  lightIntensity, uvIndex);
-  ptr += sprintf(ptr, "TemperatureCanSat:%.1f,TemperatureMPU:%.1f,TemperatureExternal:%.1f,TemperatureSCD30:%.1f,AmbientTemp:%.1f,ObjectTemp:%.1f,", 
-                  temperatureCanSat, temperatureMPU, temperatureExternal, temperatureSCD30, ambientTemp, objectTemp);
-  ptr += sprintf(ptr, "HumidityCanSat:%.1f,HumidityExternal:%.1f,HumiditySCD30:%.1f,PressureCanSat:%.1f,", 
-                  humidityCanSat, humidityExternal, humiditySCD30, pressureCanSat);
-  ptr += sprintf(ptr, "PressureExternal:%.1f,AltitudeCanSat:%.1f,AltitudeExternal:%.1f,", 
-                  pressureExternal, altitudeCanSat, altitudeExternal);
-  ptr += sprintf(ptr, "AccelerationX:%.1f,AccelerationY:%.1f,AccelerationZ:%.1f,", 
-                  accelerationX, accelerationY, accelerationZ);
-  ptr += sprintf(ptr, "RotationX:%.1f,RotationY:%.1f,RotationZ:%.1f,MagnetometerX:%.1f,", 
-                  rotationX, rotationY, rotationZ, magnetometerX);
-  ptr += sprintf(ptr, "MagnetometerY:%.1f,MagnetometerZ:%.1f,LatInt:%u,LonInt:%u,", 
-                  magnetometerY, magnetometerZ, latInt, lonInt);
-  ptr += sprintf(ptr, "LatAfterDot:%lu,LonAfterDot:%lu,CO2SCD30:%d,CO2CCS811:%d,", 
-                  latAfterDot, lonAfterDot, co2SCD30, co2CCS811);
-  ptr += sprintf(ptr, "TVOC:%d,O2Concentration:%.1f,A:%.1f,B:%.1f,C:%.1f,D:%.1f,", 
-                  tvoc, o2Concentration, a, b, c, d);
-  ptr += sprintf(ptr, "E:%.1f,F:%.1f,G:%.1f,H:%.1f,I:%.1f,J:%.1f,K:%.1f,L:%.1f,", 
-                  e, f, g, h, i, j, k, l);
-  ptr += sprintf(ptr, "R:%.1f,S:%.1f,T:%.1f,U:%.1f,V:%.1f,W:%.1f,", 
-                  r, s, t, u, v, w);
-  ptr += sprintf(ptr, "NumberOfSatellites:%u,RSSI:%d", numberOfSatellites, rssi);
-
-  ptr += sprintf(ptr, "\n");
+  int n = snprintf(data, sizeof(data),
+    "LightIntensity:%lu,UVIndex:%.1f,"
+    "TemperatureCanSat:%.1f,TemperatureMPU:%.1f,TemperatureExternal:%.1f,TemperatureSCD30:%.1f,AmbientTemp:%.1f,ObjectTemp:%.1f,"
+    "HumidityCanSat:%.1f,HumidityExternal:%.1f,HumiditySCD30:%.1f,PressureCanSat:%.1f,"
+    "PressureExternal:%.1f,AltitudeCanSat:%.1f,AltitudeExternal:%.1f,"
+    "AccelerationX:%.1f,AccelerationY:%.1f,AccelerationZ:%.1f,"
+    "RotationX:%.1f,RotationY:%.1f,RotationZ:%.1f,MagnetometerX:%.1f,"
+    "MagnetometerY:%.1f,MagnetometerZ:%.1f,LatInt:%u,LonInt:%u,"
+    "LatAfterDot:%lu,LonAfterDot:%lu,CO2SCD30:%d,CO2CCS811:%d,"
+    "TVOC:%d,O2Concentration:%.1f,A:%.1f,B:%.1f,C:%.1f,D:%.1f,"
+    "E:%.1f,F:%.1f,G:%.1f,H:%.1f,I:%.1f,J:%.1f,K:%.1f,L:%.1f,"
+    "R:%.1f,S:%.1f,T:%.1f,U:%.1f,V:%.1f,W:%.1f,"
+    "NumberOfSatellites:%u,RSSI:%d\r\n",
+    lightIntensity, uvIndex,
+    temperatureCanSat, temperatureMPU, temperatureExternal, temperatureSCD30, ambientTemp, objectTemp,
+    humidityCanSat, humidityExternal, humiditySCD30, pressureCanSat,
+    pressureExternal, altitudeCanSat, altitudeExternal,
+    accelerationX, accelerationY, accelerationZ,
+    rotationX, rotationY, rotationZ, magnetometerX,
+    magnetometerY, magnetometerZ, latInt, lonInt,
+    latAfterDot, lonAfterDot, co2SCD30, co2CCS811,
+    tvoc, o2Concentration, a, b, c, d,
+    e, f, g, h, i, j, k, l,
+    r, s, t, u, v, w,
+    numberOfSatellites, crssi);
 
   size_t length = min(strlen(data), sizeof(data));
   return(dataBuffer.push(data, length, false));

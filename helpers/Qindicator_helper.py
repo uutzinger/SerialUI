@@ -1,22 +1,31 @@
 
-############################################################################################
+############################################################################################################################################
 # QT Indicator Helper
-############################################################################################
-# Summer 2024: created
 #
-# This code is maintained by Urs Utzinger
-############################################################################################
-
 # NOT FINISHED
 #   new line to data parser
 #   single value to indicator
 #   tripple value to indicator
 #   quadrupple value to indicator
 #   tripple value to 3D plot
+#
+# This code is maintained by Urs Utzinger
+############################################################################################################################################
+#
+# ==============================================================================
+# Configuration
+# ==============================================================================
+from config import ( USE_3DPLOT,
+                     MAX_COLS )                                                # maximum number of data columns to expect
+# ==============================================================================
+# Imports
+# ==============================================================================
+#
+# General Imports
+# ----------------------------------------
 
-# CHECK FIX THIS
-
-import logging, time
+import logging
+IMPORT time
 
 try:
     from PyQt5.QtCore import (
@@ -29,7 +38,7 @@ try:
     )
     from PyQt5.QtGui import QBrush, QColor, QIcon, QVector3D
     hasQt6 = True
-except:
+except Exception:
     from PyQt5.QtCore import(
         QObject, QTimer, QThread, pyqtSlot, 
         QStandardPaths, QSettings, pyqtSignal
@@ -45,29 +54,29 @@ except:
 import pyqtgraph as pg
 import pyqtgraph.opengl as gl
 
-# Numerical Math
+# Numericprofileal Math
 import numpy as np
 
 # Constants
-########################################################################################
-UPDATE_INTERVAL = 100 # milliseconds, visualization does not improve with updates faster than 10 Hz
+# ==============================================================================
+UPDATE_INTERVAL = 100                                                          # milliseconds, visualization does not improve with updates faster than 10 Hz
 # Colors for graphing
-from helpers.Qgraph_colors import color_names_sweet16 as COLORS
+from colors import color_names_sweet16 as COLORS
 
 # COLORS = ['green', 'red', 'blue', 'black', 'magenta'] # need to have MAX_COLUMNS colors
 # https://i.sstatic.net/lFZum.png
 
 # Support Functions and Classes
-########################################################################################
+# # =========================================================================
 
 def clip_value(value, min_value, max_value):
     return max(min_value, min(value, max_value))
 
-############################################################################################
+# ==============================================================================
 # QChart interaction with Graphical User Interface
-############################################################################################
-    
-class QIndicatorUI(QObject):
+# ==============================================================================
+
+class QIndicator(QObject):
     """
     - Single Value Indicator Interface for QT
     - 3D GL plotting Interface for QT
@@ -91,13 +100,13 @@ class QIndicatorUI(QObject):
 
 
     # Signals
-    ########################################################################################
+    # ==========================================================================
 
     # No Signals, no worker, all in the main thread
                
     def __init__(self, parent=None, ui=None, serialUI=None, serialWorker=None):
         # super().__init__()
-        super(QIndicatorUI, self).__init__(parent)
+        super(QIndicator, self).__init__(parent)
 
         if ui is None:
             self.logger.log(logging.ERROR, "[{}]: Need to have access to User Interface".format(int(QThread.currentThreadId())))
@@ -116,25 +125,27 @@ class QIndicatorUI(QObject):
         ThreeD_3_range = 10
         ThreeD_4_range = 10
 
-        # Buttons -------------------------------------------
+        # Buttons 
+        # ----------------------------------------
         
         # START/STOP Button
         # CLEAR Button
         # SAVE Button
         # DATA SEPARATOR Drop Down        
 
-        # Data Stores --------------------------------------
+        # Data Stores 
+        # ----------------------------------------
         #   for 3D plot 
         self.data_1 = np.zeros([1,3])
         self.data_2 = np.zeros([1,3])
         self.data_3 = np.zeros([1,3])
         self.data_4 = np.zeros([1,3])
 
-        if USE3DPLOT is True:
+        if USE_3DPLOT is True:
 
             g_1 = gl.GLGridItem(antialias=True, glOptions='opaque')
-            g_1.setSize(x=ThreeD_1_range*2, y=ThreeD_1_range*2)  # Set the grid size (xSpacing, ySpacing)
-            g_1.setSpacing(x=ThreeD_1_range/10, y=ThreeD_1_range/10)  # Set the grid size (xSpacing, ySpacing)
+            g_1.setSize(x=ThreeD_1_range*2, y=ThreeD_1_range*2)                # Set the grid size (xSpacing, ySpacing)
+            g_1.setSpacing(x=ThreeD_1_range/10, y=ThreeD_1_range/10)           # Set the grid size (xSpacing, ySpacing)
             g_1.setColor((0, 0, 0, 255)) 
             self.ui.ThreeD_1.addItem(g_1)
 
@@ -147,15 +158,15 @@ class QIndicatorUI(QObject):
             self.ui.ThreeD_2.addItem(self.lp_1)
 
             self.ui.ThreeD_1.opts['center'] = QVector3D(0, 0, 0) 
-            self.ui.ThreeD_1.opts['bgcolor'] = (255, 255, 255, 255)  # Set background color to white
+            self.ui.ThreeD_1.opts['bgcolor'] = (255, 255, 255, 255)            # Set background color to white
             self.ui.ThreeD_1.opts['distance'] = 1.*ThreeD_1_range
             self.ui.ThreeD_1.opts['translucent'] = True
             self.ui.ThreeD_1.show()
             self.ui.ThreeD_1.update()
 
             g_2 = gl.GLGridItem(antialias=True, glOptions='opaque')
-            g_2.setSize(x=ThreeD_2_range*2, y=ThreeD_2_range*2)  # Set the grid size (xSpacing, ySpacing)
-            g_2.setSpacing(x=ThreeD_2_range/10, y=ThreeD_2_range/10)  # Set the grid size (xSpacing, ySpacing)
+            g_2.setSize(x=ThreeD_2_range*2, y=ThreeD_2_range*2)                # Set the grid size (xSpacing, ySpacing)
+            g_2.setSpacing(x=ThreeD_2_range/10, y=ThreeD_2_range/10)           # Set the grid size (xSpacing, ySpacing)
             g_2.setColor((0, 0, 0, 255)) 
             self.ui.ThreeD_1.addItem(g_2)
 
@@ -168,7 +179,7 @@ class QIndicatorUI(QObject):
             self.ui.ThreeD_2.addItem(self.lp_2)
 
             self.ui.ThreeD_2.opts['center'] = QVector3D(0, 0, 0) 
-            self.ui.ThreeD_2.opts['bgcolor'] = (255, 255, 255, 255)  # Set background color to white
+            self.ui.ThreeD_2.opts['bgcolor'] = (255, 255, 255, 255)            # Set background color to white
             self.ui.ThreeD_2.opts['distance'] = 1.*ThreeD_1_range
             self.ui.ThreeD_2.opts['translucent'] = True
             self.ui.ThreeD_2.show()
@@ -218,22 +229,22 @@ class QIndicatorUI(QObject):
         
         self.logger = logging.getLogger("QIndicatorUI_")
 
-        self.textDataSeparator = b'\t'                                       # default data separator
-        index = self.ui.comboBoxDropDown_DataSeparator.findText("tab (\\t)") # find default data separator in drop down
-        self.ui.comboBoxDropDown_DataSeparator.setCurrentIndex(index)        # update data separator combobox
+        self.textDataSeparator = b'\t'                                         # default data separator
+        index = self.ui.comboBoxDropDown_DataSeparator.findText("tab (\\t)")   # find default data separator in drop down
+        self.ui.comboBoxDropDown_DataSeparator.setCurrentIndex(index)          # update data separator combobox
         self.logger.log(logging.DEBUG, "[{}]: data separator {}.".format(int(QThread.currentThreadId()), repr(self.textDataSeparator)))
 
         self.ui.pushButton_IndicatorStartStop.setText("Start")
 
         # Plot update frequency
-        self.IndicatorTimer = QTimer()
-        self.IndicatorTimer.setInterval(100)  # milliseconds, we can not see more than 50 Hz, 10Hz still looks smooth
+        self.IndicatorTimer = QTimer(self)
+        self.IndicatorTimer.setInterval(100)                                   # milliseconds, we can not see more than 50 Hz, 10Hz still looks smooth
         self.IndicatorTimer.timeout.connect(self.updatePlot)
                 
         self.logger.log(logging.INFO, "[{}]: Initialized.".format(int(QThread.currentThreadId())))
 
     # Response Functions to User Interface Signals
-    ########################################################################################
+    # ==========================================================================
 
     def update_Indicators(self):
         """
@@ -251,7 +262,7 @@ class QIndicatorUI(QObject):
 
         # expecting 4 sets of 3 values
             
-        if USE3DPLOT == True:
+        if USE_3DPLOT == True:
 
             color = (1., 0., 0., 0.5)
             size = 10.
@@ -329,7 +340,7 @@ class QIndicatorUI(QObject):
             self.ui.ThreeD_4.update()
 
     def clear_3Ddata(self):
-        if USE3DPLOT == True:
+        if USE_3DPLOT == True:
             self.data3D_1 = np.zeros([1,3])
             self.data3D_2 = np.zeros([1,3])
             self.data3D_3 = np.zeros([1,3])
@@ -393,15 +404,15 @@ class QIndicatorUI(QObject):
                     if len(parts) == 1:
                         try:
                             data_row.append(float(parts[0].strip()))
-                        except:
-                            self.logger.log(logging.DEBUG, "[{}]: Could not convert to float: {}".format(int(QThread.currentThreadId()), parts[0]))
+                        except Exception as e:
+                            self.logger.log(logging.DEBUG, "[{}]: Could not convert to float: {}: {}.".format(int(QThread.currentThreadId()), parts[0], e))
                     elif len(parts) == 2:
                         legend, value = parts
                         legend_row.append(legend.strip().decode(self.serialUI.encoding))
                         try:
                             data_row.append(float(value.strip()))
-                        except:
-                            self.logger.log(logging.DEBUG, "[{}]: Could not convert to float: {}".format(int(QThread.currentThreadId()), value))
+                        except Exception as e:
+                            self.logger.log(logging.DEBUG, "[{}]: Could not convert to float: {}: {}.".format(int(QThread.currentThreadId()), value, e))
                     else:
                         # wrong separator
                         self.logger.log(logging.DEBUG, "[{}]: Wrong separator in line: {}".format(int(QThread.currentThreadId()), line))
@@ -421,11 +432,11 @@ class QIndicatorUI(QObject):
         num_rows, num_cols = data_array.shape
         sample_numbers = np.arange(self.sample_number, self.sample_number + num_rows).reshape(-1, 1)
         self.sample_number += num_rows
-        right_pad = MAX_COLUMNS - num_cols
+        right_pad = MAX_COLS - num_cols
         if right_pad > 0:
             new_array = np.hstack([sample_numbers, data_array, np.full((num_rows, right_pad), np.nan)])
         else:
-            new_array = np.hstack([sample_numbers, data_array[:, :MAX_COLUMNS]])
+            new_array = np.hstack([sample_numbers, data_array[:, :MAX_COLS]])
 
         self.buffer.push(new_array)
         self.legends = legends[-1]
@@ -446,7 +457,7 @@ class QIndicatorUI(QObject):
             if self.serialUI.textLineTerminator == '':
                 self.logger.log(logging.ERROR, "[{}]: Indicating of of raw data not yet supported".format(int(QThread.currentThreadId())))
                 return
-            self.serialWorker.linesReceived.connect(self.on_newLinesReceived) # enable plot data feed
+            self.serialWorker.linesReceived.connect(self.on_newLinesReceived)  # enable plot data feed
             self.IndicatorTimer.start()
             if self.serialUI.receiverIsRunning == False:
                 self.serialUI.startReceiverRequest.emit()
@@ -460,8 +471,8 @@ class QIndicatorUI(QObject):
             self.ui.pushButton_IndicatorStartStop.setText("Start")
             try:
                 self.serialWorker.linesReceived.disconnect(self.on_newLinesReceived)
-            except:
-                self.logger.log(logging.WARNING, "[{}]: lines-received signal was not connected the indicator".format(int(QThread.currentThreadId())))
+            except Exception as e:
+                self.logger.log(logging.WARNING, "[{}]: lines-received signal was not connected the indicator: {}.".format(int(QThread.currentThreadId()), e))
             self.logger.log(logging.INFO, "[{}]: Stopped indicating".format(int(QThread.currentThreadId())))
             self.ui.statusBar().showMessage('Indicator update stopped.', 2000)            
 
@@ -491,9 +502,9 @@ class QIndicatorUI(QObject):
         self.logger.log(logging.INFO, "[{}]: Saved plotted data.".format(int(QThread.currentThreadId())))
         self.ui.statusBar().showMessage('Chart data saved.', 2000)            
 
-#####################################################################################
+############################################################################################################################################
 # Testing
-#####################################################################################
+############################################################################################################################################
 
 if __name__ == '__main__':
     # not implemented

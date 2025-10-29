@@ -1,7 +1,7 @@
 
-############################################################################################
+############################################################################################################################################
 # Codec, Compressor and Serial Stream Processor Helper
-############################################################################################
+############################################################################################################################################
 #
 # - GeneralCodec: 
 #       Encodes and decodes data to a limited set of alternatives: 0..BASE-1. 
@@ -11,8 +11,8 @@
 # - Compressor: 
 #       Compresses and decompresses data using 
 #           rle: Run-Length Encoding, 
-#           zlib, 
-#           tamp.
+#           zlib, 60/190 Mbytes/sec compression/decompression on Ryzen 7 laptop 56% compression ratio
+#           tamp. 4/27 Mbytes/sec compression/decompression on Ryzen 7 laptop 62% compression ratio
 # - ADPCMCodec: 
 #       Encodes and decodes audio data using 
 #           raw on mono stereo int8 or int16 data
@@ -24,10 +24,10 @@
 #           Packets are encoded using COBS (Consistent Overhead Byte Stuffing) encoding, 
 #             essentially removing b\\x00 bytes from the data and using it as end of packet marker
 #           The first byte of each packet determines the data type, followed by the data.
-#           (can handle about 20-30 MBytes/sec without compression and 2-4 MBytes/sec with compression on Ryzen 7 laptop)
+#           (can handle about 20-30 MBytes/sec without compression and 5-10 MBytes/sec with compression on Ryzen 7 laptop)
 #       Arduino Text Stream Processor:
 #           Processes text data in a format similar to the Arduino Serial Plotter.
-#           (can handle about 5-10k short lines/sec on Ryzen 7 laptop)
+#           (can handle about 10-15k short lines/sec on Ryzen 7 laptop)
 #
 # Dependencies:
 # 
@@ -77,30 +77,27 @@
 # Max MTU for BLE is 247 and therefore a 244 bytes payload
 # If packet size is larger, they need to be assembled from multiple payloads
 #
-# ------------------------------------------------
-#
-# Fall 2024: created
 #
 # This code is maintained by Urs Utzinger
-############################################################################################
+############################################################################################################################################
 
 import math
 import struct
-import logging                       # logger
-import time                          # time for timestamp
-import re                            # regular expressions
-from typing import List, Dict, Tuple # type hints
-from scipy.fft import idct           # image decompression
-from scipy.fft import dct            # image compression
-import numpy as np                   # NumPy for numerical computing
-from numba import njit, jit          # Numba for JIT compilation
-from  cobs import cobs               # serial data encoding (byte stuffing)
-import zlib                          # Standard Python zlib library
-import tamp                          # tamp compression library
+import logging                                                                 # logger
+import time                                                                    # time for timestamp
+import re                                                                      # regular expressions
+from typing import List, Dict, Tuple                                           # type hints
+from scipy.fft import idct                                                     # image decompression
+from scipy.fft import dct                                                      # image compression
+import numpy as np                                                             # NumPy for numerical computing
+from numba import njit, jit                                                    # Numba for JIT compilation
+from  cobs import cobs                                                         # serial data encoding (byte stuffing)
+import zlib                                                                    # Standard Python zlib library
+import tamp                                                                    # tamp compression library
 
-####################################################################################
+# ==============================================================================
 # Universal Helper
-####################################################################################
+# ==============================================================================
 
 def to_numpy_array(data):
     """
@@ -129,9 +126,9 @@ def to_bytes(data):
         # Assume data is an iterable of integers
         return bytes(data)
 
-####################################################################################
+# ==============================================================================
 # General BASE Codec
-####################################################################################
+# ==============================================================================
 
 class GeneralCodec:
     """
@@ -281,16 +278,16 @@ class GeneralCodec:
 
     #     return decoded
 
-####################################################################################
+# ==============================================================================
 # Convert to printable ASCII characters
-####################################################################################
+# ==============================================================================
 
 class PrintableCodec:
     """
     This codec provides encoding of binary data to printable ASCII characters.
     After encoding, data can be printed in a terminal or shell.
-    Although text is not related to human readable numbers this might be useful when
-    visualizing data or transmitting data on a terminal.
+    Although text is not related to human readable format, this might be useful when
+    inspecting data as printable characters.
 
     Acceptable characters are: 32..126 (printable ASCII characters) and 161..255 (extended ASCII characters)
     Backspace, Delete, Escape, Nul, Horizontal Tab, Vertical Tab, Line Feed, Form Feed, Carriage Return 
@@ -354,7 +351,7 @@ class PrintableCodec:
         value = int.from_bytes(data, 'big', signed=False)
 
         # Build a list of exactly 'max_digits' characters, from right to left
-        encoded_chars = [table[0]] * max_digits   # pre-fill with the '0' digit (leading zero char)
+        encoded_chars = [table[0]] * max_digits                                # pre-fill with the '0' digit (leading zero char)
         idx = max_digits - 1
 
         while value > 0 and idx >= 0:
@@ -374,16 +371,16 @@ class PrintableCodec:
 
         # Convert that integer to 'out_byte_length' bytes, big-endian
         return value.to_bytes(out_byte_length, byteorder='big', signed=False)
-    
-####################################################################################
+
+# ==============================================================================
 # Compressor
-####################################################################################
+# ==============================================================================
 
 class Compressor:
     def __init__(self, compressor="rle"):
         """
-        Initialize the Compressor.
-        :param compressor: 
+        Initialize the Compressor. The following compressors are available:
+        compressor =  
             "rle"  : Run-Length Encoding : Custom Implementation
             "zlib" : Standard Python zlib library and https://github.com/pfalcon/uzlib
             "tamp" : https://github.com/BrianPugh/tamp
@@ -448,7 +445,7 @@ class Compressor:
         return data.tobytes()
 
     # - Compressor functions
-    # ----------------------
+    # ----------------------------------------
 
     @staticmethod
     @njit
@@ -510,14 +507,14 @@ class Compressor:
         for i in range(0, encoded_data.size, 2):
             value = encoded_data[i]
             count = encoded_data[i + 1]
-            decoded_array[write_index:write_index + count] = value  # Slice assignment
+            decoded_array[write_index:write_index + count] = value             # Slice assignment
             write_index += count
 
         return decoded_array
     
-####################################################################################
+# ==============================================================================
 # ADPCM Audio Codec
-####################################################################################
+# ==============================================================================
 
 class ADPCMCodec:
     """
@@ -638,7 +635,7 @@ class ADPCMCodec:
     ], dtype=np.int32)
 
     # - Encoder functions
-    # -------------------
+    # ----------------------------------------
 
     @staticmethod
     @njit
@@ -656,7 +653,7 @@ class ADPCMCodec:
             np.ndarray of dtype=np.uint8 containing the ADPCM nibbles packed two-per-byte.
         """
 
-        num_samples = input_samples.shape[0]  # total samples (including both channels if stereo)
+        num_samples = input_samples.shape[0]                                   # total samples (including both channels if stereo)
         # We will produce 1 nibble per input sample.
         # Two nibbles get packed into one output byte.
         # Hence output size in bytes = (num_samples + 1) // 2
@@ -676,7 +673,7 @@ class ADPCMCodec:
         # For simplicity, just treat all intermediate math as int32 in Numba.
 
         # We will loop over input_samples, compute nibbles, and pack them into adpcm_data.
-        nibble_index = 0  # which nibble within the adpcm_data we are generating
+        nibble_index = 0                                                       # which nibble within the adpcm_data we are generating
         for i in range(num_samples):
             # Determine which channel we are in (for stereo)
             ch = i % channels
@@ -696,7 +693,7 @@ class ADPCMCodec:
                 diff = -diff
 
             # Quantize the difference
-            mask = step >> 3  # step / 8
+            mask = step >> 3                                                   # step / 8
             if diff >= step:
                 adpcm_nibble |= 4
                 diff -= step
@@ -800,18 +797,18 @@ class ADPCMCodec:
 
         return output_samples
 
-##############################################################################
+# ==============================================================================
 # Stream Handlers:
 # - Arduino Text Stream
 # - Binary Data Stream
-##############################################################################
+# ==============================================================================
 
 class ArduinoTextStreamProcessor:
     """
     Encode and Decode data to a format that is similar to what Arduino Serial Plotter understands
 
-    [[label:][{'\s' '\t' ''} value {',' ';' ''}]]
-    ----------------------------------------------
+    [[label:][{'\s' '\t' ''} value {',' ''}]]
+    -----------------------------------------
     Example with label: V: 12.65 I: 0.25
     Example without label: 12.65, 0.25
 
@@ -820,131 +817,106 @@ class ArduinoTextStreamProcessor:
     2) For each group separate labels from values: "label1: value1" to ("label1", "value1")
     3) For each set of values : "value1, value2; value3" to ["value1", "value2", "value3"].
 
-    Scalars and vectors are separated by commas or semicolons.
+    Scalars and vectors are separated by commas.
     Vector elements are separated by whitespace.
     """
 
     def __init__(self, eol=b'\n', encoding='utf-8', logger=None):
 
-        self.eol = eol # end of line
-        self.encoding = encoding # text encoding
-        self.partial_line = bytearray() # partial packet buffer
-        
-        # Regular expression pattern to separate data values
-        # This precompiles the text parsers
-        self.labeled_data_re  = re.compile(r',(?=\s*\w+:)')  # separate labeled data into segments
-        self.label_data_re    = re.compile(r'(\w+):\s*(.+)') # separate segments into label and data
-        self.vector_scalar_re = re.compile(r'[,]\s*')        # split on commas
+        self.eol = eol                                                         # end of line
+        self.encoding = encoding                                               # text encoding
+        self.partial_line = bytearray()                                        # partial packet buffer
+        self.ID = BinaryStreamProcessor.FLOAT_ID
 
-        if logger == None:
-            self.logger = logging.getLogger(__name__)
+        # 1) Header regex:    “Label: data… up to next Label: or EOL”
+        self.header_re    = re.compile(
+            r'([A-Za-z][\w ]*):\s*'                                            # header name
+            r'(.*?)'                                                           # data chunk (non-greedy)
+            r'(?=\s*[A-Za-z][\w ]*:\s*|$)'                                     # lookahead next header or EOL
+        )
+        self.header_split = self.header_re.findall
 
-    def parse_line(self, line:bytes, labels:bool=True) -> List[Dict]:
+        # 2) Channel split:   “,” only, one-to-one (empty slots preserved)
+        self.seg_split    = lambda s: s.split(',')
+
+        # Logging
+        self.logger = logger or logging.getLogger(__name__)
+
+    def parse_line(self, line:bytes, use_labels:bool=True) -> List[Dict]:
         """
         Parses a text line for labels, vectors, scalars, or unlabeled data.
 
         If `labels` is False, data is not parsed for labels.
 
-        Scalars and vectors are separated by commas or semicolons.
+        Scalars and vectors are separated by commas.
         Vector elements are separated by whitespace.
 
-        Returns a list of dictionaries with parsed data.
+        Returns a list of dicts:
+          { "datatype": FLOAT_ID,
+            "name":     <column_name>,
+            "data":     [float,…],
+            "timestamp": time.time() 
+          }
         """
 
+        header_split = self.header_split
+        seg_split    = self.seg_split
+        now = time.time()
+
         results = []
-        scalar_count = 0
-        vector_count = 0
+        # scalar_count = 0
+        # vector_count = 0
 
-        _decoded_line = line.decode(self.encoding)
-        decoded_line = _decoded_line.replace(';', ',') # replace semicolons with commas
+        # Decode the line if it's a byte object
+        if isinstance(line, (bytes, bytearray)):
+            decoded_line = line.decode(self.encoding)
+        else:
+            decoded_line = line
 
-        # 1) Separate groups: "label1: value1 label2: value2" to "label1: value1" and "label2: value2".
-        segments = self.labeled_data_re.split(decoded_line) if labels else [decoded_line]
+       # 1) Cut into (label, chunk) pairs if labels=True, else one unnamed chunk
+        if use_labels:
+            hdrs = header_split(decoded_line)
+            if not hdrs:
+                hdrs = [("", decoded_line)]
+        else:
+            hdrs = [("", decoded_line)]
 
-        for raw_segment in filter(None, segments):
+        for label, chunk in hdrs:
+            # 2) Break that chunk into comma-separated segments
+            raw_segs = seg_split(chunk)
 
-            # remove trailing or preceding commas or spaces
-            segment = raw_segment.strip(" ,")
+            for idx, raw in enumerate(raw_segs):
+                seg = raw.strip()                                              # strip spaces/tabs
 
-            label = None
-            data = segment
-            # 2) For each group separate labels from values: "label1: value1" to ("label1", "value1")  
-            if labels:
-                match = self.label_data_re.match(segment)
-                if match:
-                    label, data = match.groups()
-
-            # 3) Split data into scalar or vector elements
-            data_elements = self.vector_scalar_re.split(data)
-
-            for element in filter(None, data_elements):  # Filter out empty elements
-                try:
-                    numbers = list(map(float, element.split()))  # Convert to floats
-                except ValueError:
-                    continue  # Skip invalid entries
-
-                if not numbers:
-                    continue  # Skip empty lists
-
-                # Assign a name based on label or generate one
-                if label:
-                    name = label
-                elif len(numbers) == 1:
-                    scalar_count += 1
-                    name = f"S{scalar_count}"  # Scalar
+                # 3) Empty field → NaN list; else split on whitespace → floats
+                if seg == "":
+                    nums = [float('nan')]
                 else:
-                    vector_count += 1
-                    name = f"V{vector_count}"  # Vector
+                    parts = seg.split()
+                    try:
+                        nums = [float(x) for x in parts]
+                    except ValueError:
+                        # skip this segment entirely if it can't be parsed
+                        continue
 
-                # Add the parsed data to results
+                # 4) Decide on a column name
+                base = label.strip() or str(idx)
+                if len(raw_segs) > 1:
+                    name = f"{base}_{idx+1}"
+                else:
+                    name = base
+
+                # 5) Emit as a dict
                 results.append({
-                    "datatype": 10,
-                    "name": name,
-                    "data": numbers,
-                    "timestamp": time.time(),  # Add a timestamp
+                    "datatype": self.ID,
+                    "name":     name,
+                    "data":     nums,
+                    "timestamp": now,
                 })
 
         return results
-    
-    # Potential alternative implementation for speed improvements
-    # It needs some further tweaking until it matches the above implementation.
-    #
-    # def parse_line(line):
-    #     # Step 1: replace all semicolons with commas
-    #     line = line.replace(';', ',')
-    #     # Step 2: split by space => "V:", "12.65,", "I:", "0.25"
-    #     chunks = line.split()
-    #
-    #     results = []
-    #     label = None
-    #     for chunk in chunks:
-    #         if ':' in chunk:
-    #             # This chunk is like "V:" or "I:"
-    #             part = chunk.split(':', 1)
-    #             label = part[0].strip()
-    #             # the chunk might end with a colon only
-    #             data_portion = part[1].strip() if len(part) > 1 else ""
-    #             if data_portion:
-    #                 # parse the data portion for floats
-    #                 data_list = data_portion.split(',')
-    #                 for d in data_list:
-    #                     d = d.strip()
-    #                     if d:
-    #                         results.append((label, float(d)))
-    #         else:
-    #             # This chunk might be numeric data, possibly "12.65," or "0.25"
-    #             data_list = chunk.split(',')
-    #             for d in data_list:
-    #                 d = d.strip()
-    #                 if d:
-    #                     if label is None:
-    #                         # no label so far => auto-generate or keep as None
-    #                         label = "S"
-    #                     results.append((label, float(d)))
-    #
-    #     return results    
 
-    def process(self, new_data: bytes, labels: bool = True) -> List[Dict]:
+    def process(self, new_data: bytes, use_labels: bool = True) -> List[Dict]:
         """
         Process new data for lines and parse each line.
         Retains partial lines for future processing.
@@ -958,14 +930,14 @@ class ArduinoTextStreamProcessor:
 
         # Split into complete lines and retain the partial line
         lines = self.partial_line.split(self.eol)
-        self.partial_line = lines.pop()  # Last element is the partial line
+        self.partial_line = lines.pop()                                        # Last element is the partial line
 
         # Process each complete line
         results = []
         for i, line in enumerate(lines):
-            if line.strip():  # Skip empty lines
+            if line.strip():                                                   # Skip empty lines
                 self.logger.log(logging.DEBUG, f"Processing line {i}: {line}")
-                results.extend(self.parse_line(line, labels=labels))  # Assume parse_line returns a list
+                results.extend(self.parse_line(line, use_labels=use_labels))   # Assume parse_line returns a list
 
         return results
 
@@ -1045,7 +1017,7 @@ class BinaryStreamProcessor:
     | 64 | RR  | Respiratory rate   | breaths/min  | u short    | 0...655.356 bpm
     | 65 | BP  | Blood Pressure     | mmHg         | u short    | 0...655.36 mmHg
     | 66 | BPsys| Blood Pressure Systolic | mmHg   | u short    | 0...655.36 mmHg
-    | 67 | BPdua | Blood Pressure Diastolic | mmHg | u short    | 0...655.36 mmHg
+    | 67 | BPdia | Blood Pressure Diastolic | mmHg | u short    | 0...655.36 mmHg
     | 68 | SPO2 | SPO2              | %            | u short    | 0...100.00% 
     | -- | --  | Anthropometric     | ---          | -----      |
     | 70 | --  | Weight             | gr           | u int      | 0...4,294,967.295 gr
@@ -1086,32 +1058,32 @@ class BinaryStreamProcessor:
     | 111 |     | Range of Motion   |
     | 112 |     | Grip Strength     |
 
-    ## 12 Lead ECG
+    ## 12 Lead ECG, (ID 91)
 
     Created from measurements from 9 electrodes plus Right Leg Drive:
     RA, LA, LL, V1, V2, V3, V4, V5, V6, RL Drive
 
     | Lead	| Derived From	                    | Heart Wall/Region Viewed  |
     | ----- | ----------------------------------| ------------------------- |
-    | I	    | LA (+) and RA (-)	                | Lateral | 
+    | I	    | LA (+) and RA (-)	                | Lateral  | 
     | II	| LL (+) and RA (-)	                | Inferior | 
     | III	| LL (+) and LA (-)	                | Inferior | 
     | aVR	| RA	                            | Right atrium, cavity of the heart | 
-    | aVL	| LA	                            | Lateral | 
+    | aVL	| LA	                            | Lateral  | 
     | aVF	| LL	                            | Inferior | 
     | V1	| Chest (4th ICS, right)	        | Right ventricle, septum | 
     | V2	| Chest (4th ICS, left)	            | Right ventricle, septum | 
     | V3	| Chest (between V2 and V4)	        | Anterior | 
     | V4	| Chest (5th ICS, midclavicular)	| Anterior | 
-    | V5	| Chest (5th ICS, anterior axillary)| Lateral | 
-    | V6	| Chest (5th ICS, midaxillary)    	| Lateral | 
+    | V5	| Chest (5th ICS, anterior axillary)| Lateral  | 
+    | V6	| Chest (5th ICS, midaxillary)    	| Lateral  | 
 
-    Analog Devices ADAS1000, measured 5 channels, EVAL-ADAS1000SDZ
+    Analog Devices ADAS1000, measures 5 channels, EVAL-ADAS1000SDZ and by ganing up with ADAS1000-2 an additional 5.
 
     ## Motion and Position Sensors
     ===========================
-    | ID  | Abr | measurement        | units     | datatype(s) |
-    | --  | --- | -----------        | -----     | ----------- |
+    | ID  | Abr | measurement        | units      | datatype(s) |
+    | --  | --- | -----------        | -----      | ----------- |
     | 120 |     | Acceleration 3D    | m/s^2      | float, float, float
     | 121 |     | Velocity 3D        | m/s        | float, float, float
     | 122 |     | Position 3D        | m          | float, float, float
@@ -1172,6 +1144,7 @@ class BinaryStreamProcessor:
 
     ## Image
     ===========================
+    by providing number of lines the line resolution can be calculated based on the number of bytes
     | ID  | Abr | measurement           |                       | datatype(s)     |
     | --  | --- | -----------           | -----                 | -----------     |
     | 220 |     | Image 8 bit grayscale | lines, bytes          | short, bytes... |
@@ -1187,15 +1160,185 @@ class BinaryStreamProcessor:
     | --  | --- | -----------        | -----     | ----------- |
     | 252 | used to extend this table with zLib compressed data
     | 253 | used to extent this table tamp compressed data
-    | 254 | used to extend this table, next byte is the index for the second table
+    | 254 | used to extend this table, the next byte is the index of the extension table
     | 255 | reserved
-
     """
 
-    def __init__(self, eop=b'\x00', logger = None):
+    """
+    ## Extension Table
+    ===========================
+    Not needed yet
+    """
 
-        self.eop = eop                     # End of packet marker, default for COBS
-        self.partial_packet = bytearray()  # Partial packet buffer
+    EOP                           = b'\x00'                                    # End of Packet, COBS Zero
+
+    # Basic types
+    CHAR_ID                       = 0                                          # Character
+    BOOL_ID                       = 1                                          # Boolean
+    BYTE_ID                       = 2                                          # Byte
+    INT8_ID                       = 3                                          # int8
+    SHORT_ID                      = 4                                          # short integer
+    UNSIGNED_SHORT_ID             = 5                                          # unsigned short
+    INTEGER_ID                    = 6                                          # integer
+    UNSIGNED_INT_ID               = 7                                          # unsigned int
+    LONG_ID                       = 8                                          # long integer
+    UNSIGNED_LONG_ID              = 9                                          # unsigned long
+    FLOAT_ID                      = 10                                         # float
+    DOUBLE_ID                     = 11                                         # double
+    # IDs 12–15 reserved for future basic data types
+
+    # Physics
+    LENGTH_ID                     = 16                                         # Length (meter)
+    MASS_ID                       = 17                                         # Mass (kg)
+    TIME_ID                       = 18                                         # Time (second)
+    CURRENT_ID                    = 19                                         # Current (Ampere)
+    TEMPERATURE_KELVIN_ID         = 20                                         # Temperature (Kelvin)
+    AMOUNT_MOL_ID                 = 21                                         # Amount (mol)
+    LUMINOUS_INTENSITY_ID         = 22                                         # Luminous intensity (candela)
+    BRIGHTNESS_ID                 = 23                                         # Brightness (lumens)
+    ANGLE_ID                      = 24                                         # Angle (degrees)
+    AREA_ID                       = 25                                         # Area (m²)
+    VOLUME_ID                     = 26                                         # Volume (m³)
+    FORCE_ID                      = 27                                         # Force (Newtons)
+    VELOCITY_ID                   = 28                                         # Velocity (m/s)
+    ACCELERATION_ID               = 29                                         # Acceleration (m/s²)
+    PRESSURE_PASCAL_ID            = 31                                         # Pressure (Pascal)
+    PRESSURE_MBAR_ID              = 32                                         # Pressure (milliBar)
+    ENERGY_ID                     = 33                                         # Energy (Joule)
+    POWER_ID                      = 34                                         # Power (Watt)
+    CHARGE_ID                     = 35                                         # Charge (Coulomb)
+    VOLTAGE_ID                    = 36                                         # Voltage (Volt)
+    RESISTANCE_ID                 = 37                                         # Resistance (Ohm)
+    CONDUCTANCE_ID                = 38                                         # Conductance (Siemens)
+    REACTANCE_ID                  = 39                                         # Reactance
+    IMPEDANCE_ID                  = 40                                         # Impedance (R + jX)
+    PHASE_ID                      = 41                                         # Phase (degrees)
+    INDUCTANCE_ID                 = 42                                         # Inductance (Henry)
+    CAPACITANCE_ID                = 43                                         # Capacitance (Farad)
+    MAGNETIC_FIELD_ID             = 44                                         # Magnetic Field (Tesla)
+    FREQUENCY_ID                  = 45                                         # Frequency (Hertz)
+    MOLARITY_ID                   = 46                                         # Molarity (moles/liter)
+    ELECTRON_VOLT_ID              = 47                                         # electron Volts (eV)
+    OPTICAL_SPECTRUM_ID           = 50                                         # Optical Spectrum (Wavelength, Intensity)
+    FREQUENCY_SPECTRUM_ID         = 51                                         # Frequency Spectrum (Frequency, Intensity)
+
+    # Physiology measurements
+    TEMPERATURE_MILLI_C_ID        = 61                                         # Temperature (milliCelsius)
+    HEART_RATE_ID                 = 62                                         # Heart Rate (bpm)
+    HEART_RATE_VARIABILITY_ID     = 63                                         # Heart Rate variability (ms)
+    RESPIRATORY_RATE_ID           = 64                                         # Respiratory rate (breaths/min)
+    BLOOD_PRESSURE_ID             = 65                                         # Blood Pressure (mmHg)
+    BLOOD_PRESSURE_SYSTOLIC_ID    = 66                                         # Blood Pressure Systolic (mmHg)
+    BLOOD_PRESSURE_DIASTOLIC_ID   = 67                                         # Blood Pressure Diastolic (mmHg)
+    SPO2_ID                       = 68                                         # SPO₂ (%)
+    WEIGHT_GR_ID                  = 70                                         # Weight (gr)
+    HEIGHT_CM_ID                  = 71                                         # Height (cm)
+    AGE_YEARS_ID                  = 72                                         # Age (years)
+    BMI_ID                        = 73                                         # Body Mass Index (unitless)
+    WAIST_CIRCUMFERENCE_CM_ID     = 74                                         # Waist circumference (cm)
+    HIP_CIRCUMFERENCE_CM_ID       = 75                                         # Hip circumference (cm)
+    CHEST_CIRCUMFERENCE_CM_ID     = 76                                         # Chest circumference (cm)
+    THIGH_CIRCUMFERENCE_CM_ID     = 77                                         # Thigh circumference (cm)
+    ARM_CIRCUMFERENCE_CM_ID       = 78                                         # Arm circumference (cm)
+    CALF_CIRCUMFERENCE_CM_ID      = 79                                         # Calf circumference (cm)
+    BIOZ_FREQUENCY_IMPEDANCE_ID   = 80                                         # BioZ: Frequency, Impedance (f, Z real, Z imag)
+    FAT_FREE_MASS_KG_ID           = 81                                         # Fat free mass (kg)
+    TOTAL_BODY_WATER_L_ID         = 82                                         # Total body water (L)
+    EXTRACELLULAR_WATER_L_ID      = 83                                         # Extracellular water (L)
+    TOTAL_BODY_POTASSIUM_G_ID     = 84                                         # Total body potassium (g)
+    BODY_FAT_PERCENTAGE_ID        = 85                                         # Body fat percentage (%)
+    BODY_WATER_PERCENTAGE_ID      = 86                                         # Body water percentage (%)
+    MUSCLE_MASS_PERCENTAGE_ID     = 87                                         # Muscle mass percentage (%)
+    ECG_TWO_LEAD_ID               = 90                                         # ECG two-lead (μV)
+    ECG_12_LEAD_ID                = 91                                         # ECG 12-lead (μV)
+    EEG_ID                        = 92                                         # Electroencephalogram (μV)
+    EMG_ID                        = 93                                         # Electromyogram (μV)
+    FEV1_ID                       = 100                                        # Forced Expiratory Volume in 1 sec
+    LUNG_FLOW_MLS_ID              = 101                                        # Lung Flow (mL/s)
+    LUNG_VOLUME_ML_ID             = 102                                        # Lung Volume (mL)
+    GLUCOSE_LEVEL_MG_DL_ID        = 105                                        # Glucose level (mg/dL)
+    CHOLESTEROL_LEVEL_MG_DL_ID    = 106                                        # Cholesterol level (mg/dL)
+    BMR_KCAL_DAY_ID               = 107                                        # Base Metabolic Rate (kcal/day)
+    REACTION_TIME_ID              = 110                                        # Reaction Time
+    RANGE_OF_MOTION_ID            = 111                                        # Range of Motion
+    GRIP_STRENGTH_ID              = 112                                        # Grip Strength
+
+    # Motion & Position
+    ACCELERATION_3D_ID            = 120                                        # Acceleration 3D (m/s²)
+    VELOCITY_3D_ID                = 121                                        # Velocity 3D (m/s)
+    POSITION_3D_ID                = 122                                        # Position 3D (m)
+    ORIENTATION_YPR_DEG_ID        = 123                                        # Orientation YPR 3D (°)
+    ORIENTATION_YPR_CENTI_DEG_ID  = 124                                        # Orientation YPR 3D (centi°)
+    MAGNETOMETER_3D_ID            = 125                                        # Magnetometer 3D (μT)
+    MAGNETOMETER_3D_ALT_ID        = 126                                        # Magnetometer 3D (μT) – alt
+    GYRATION_3D_ID                = 128                                        # Gyration 3D (°/s)
+    GYRATION_3D_ALT_ID            = 129                                        # Gyration 3D (°/s) – alt
+    POSITION_LONG_LAT_ALT_ID      = 130                                        # Position (Lon, Lat, Alt)
+    ALTITUDE_ID                   = 131                                        # Altitude (m)
+    STEPS_PER_MINUTE_ID           = 140                                        # Steps per minute (1/min)
+    STEPS_TOTAL_ID                = 141                                        # Steps total (unitless)
+
+    # Air Quality & Gas
+    PM_1_0_2_5_10_ID              = 150                                        # PM1.0, PM2.5, PM10 (µg/m³)
+    PM1_ID                        = 151                                        # PM1.0 (µg/m³)
+    PM25_ID                       = 152                                        # PM2.5 (µg/m³)
+    PM10_ID                       = 153                                        # PM10 (µg/m³)
+    CO2_PPM_ID                    = 155                                        # CO₂ ppm
+    ECO2_ID                       = 156                                        # eCO₂ (arbitrary)
+    VOC_PPB_ID                    = 157                                        # VOC ppb
+    EVOC_ID                       = 158                                        # eVOC (arbitrary)
+    NO2_PPB_ID                    = 159                                        # NO₂ ppb
+    ENO2_ID                       = 160                                        # eNO₂ (arbitrary)
+    SO2_PPB_ID                    = 161                                        # SO₂ ppb
+    ESO2_ID                       = 162                                        # eSO₂ (arbitrary)
+    O3_PPB_ID                     = 163                                        # O₃ ppb
+    EO3_ID                        = 164                                        # eO₃ (arbitrary)
+    CO_PPM_ID                     = 165                                        # CO ppm
+    ECO_ID                        = 166                                        # eCO (arbitrary)
+    H2S_PPB_ID                    = 167                                        # H₂S ppb
+    EH2S_ID                       = 168                                        # eH₂S (arbitrary)
+    NH3_PPB_ID                    = 169                                        # NH₃ ppb
+    ENH3_ID                       = 170                                        # eNH₃ (arbitrary)
+    H2_PPM_ID                     = 171                                        # H₂ ppm
+    EH2_ID                        = 172                                        # eH₂ (arbitrary)
+    CH4_PPM_ID                    = 173                                        # CH₄ ppm
+    ECH4_ID                       = 174                                        # eCH₄ (arbitrary)
+    C2H6_PPM_ID                   = 175                                        # C₂H₆ ppm
+    EC2H6_ID                      = 176                                        # eC₂H₆ (arbitrary)
+    IAC_ID                        = 190                                        # Indoor Air Quality
+
+    # Audio
+    AUDIO_MONO_8BIT_ID            = 200                                        # Audio Mono 8-bit
+    AUDIO_STEREO_8BIT_ID          = 201                                        # Audio Stereo 8-bit
+    AUDIO_MONO_16BIT_ID           = 202                                        # Audio Mono 16-bit
+    AUDIO_STEREO_16BIT_ID         = 203                                        # Audio Stereo 16-bit
+    AUDIO_MONO_ADPCM_4BIT_ID      = 204                                        # Audio Mono 4-bit ADPCM
+    AUDIO_STEREO_ADPCM_4BIT_ID    = 205                                        # Audio Stereo 4-bit ADPCM
+
+    # Image
+    IMAGE_8BIT_GRAYSCALE_ID       = 220                                        # Image 8-bit grayscale
+    IMAGE_8BIT_COLOR_ID           = 221                                        # Image 8-bit color
+    IMAGE_24BIT_COLOR_ID          = 222                                        # Image 24-bit color
+    IMAGE_32BIT_COLOR_ID          = 223                                        # Image 32-bit color (RGBA)
+    IMAGE_8BIT_GRAYSCALE_RLE_DCT_ID  = 224                                     # RLE DCT grayscale
+    IMAGE_24BIT_COLOR_RLE_DCT_ID     = 225                                     # RLE DCT color
+
+    # Compressor
+    ZLIB_ID                       = 252                                        # zLib compressed extension
+    TAMP_ID                       = 253                                        # tamp compressed extension
+
+    # Extension
+    EXTENDED_ID                   = 254                                        # next byte selects 2nd table
+    RESERVED_ID                   = 255                                        # reserved
+
+    DECOMPRESSORS = {
+        ZLIB_ID: zlib.decompress,
+        TAMP_ID: tamp.decompress,
+    }
+
+    def __init__(self, logger = None):
+
+        self.partial_packet = bytearray()                                      # Partial packet buffer
 
         # Audio ADPCM codecs
         self.mono_adpcm8    = ADPCMCodec(channels=1, sample_width=8)
@@ -1204,7 +1347,7 @@ class BinaryStreamProcessor:
         self.stereo_adpcm16 = ADPCMCodec(channels=2, sample_width=16)
 
         self.rle_compressor = Compressor(compressor="rle")
-        self.block_size_dct = 8 # DCT image compression block size
+        self.block_size_dct = 8                                                # DCT image compression block size
 
         # Map data type codes to handler functions
         # 0..255 with 254 reserved for extension table
@@ -1465,12 +1608,12 @@ class BinaryStreamProcessor:
             247: self.handle_unknown,
             248: self.handle_unknown,
             249: self.handle_unknown,
-            250: self.handle_unknown, # reserved
-            251: self.handle_unknown, # reserved
-            252: self.handle_unknown, # reserved for zlib
-            253: self.handle_unknown, # reserved for tamp
-            254: self.handle_unknown, # reserved for extension
-            255: self.handle_unknown, # reserved
+            250: self.handle_unknown,                                          # reserved
+            251: self.handle_unknown,                                          # reserved
+            252: self.handle_unknown,                                          # reserved for zlib
+            253: self.handle_unknown,                                          # reserved for tamp
+            254: self.handle_unknown,                                          # reserved for extension
+            255: self.handle_unknown,                                          # reserved
         }
 
         self.name = {
@@ -1723,18 +1866,18 @@ class BinaryStreamProcessor:
             247: "u/k",
             248: "u/k",
             249: "u/k",
-            250: "u/k", # reserved
-            251: "u/k", # reserved
-            252: "zlib compression", # reserved
-            253: "tamp compression", # reserved
-            254: "general extension", # reserved
-            255: "u/k", # reserved
+            250: "u/k",                                                        # reserved
+            251: "u/k",                                                        # reserved
+            252: "zlib compression",                                           # reserved
+            253: "tamp compression",                                           # reserved
+            254: "general extension",                                          # reserved
+            255: "u/k",                                                        # reserved
         }
 
         if logger == None:
             self.logger = logging.getLogger(__name__)
     
-    def process(self, new_data: bytes, local_partial_packet: bytearray = None):
+    def process(self, new_data: bytes) -> List[Dict]:
         """
         Process new data, extract complete packets, decode them, and handle based on data type.
 
@@ -1745,86 +1888,84 @@ class BinaryStreamProcessor:
         if not new_data:
             return []
 
-        eop_marker = self.eop
-
-        # Add new data to the partial packet buffer
-        if local_partial_packet is None:
-            local_partial_packet = self.partial_packet
-        
-        local_partial_packet.extend(new_data)
-
-        # Split into packets using the EOP marker
-        all_complete_packets = local_partial_packet.split(eop_marker)
-        local_partial_packet.clear() # Clear the buffer
-        local_partial_packet.extend(all_complete_packets.pop())
+        buf = self.partial_packet
+        buf.extend(new_data)
 
         results = []
+        eop = self.EOP
+        find = buf.find
 
-        for i, packet in enumerate(all_complete_packets):
-            if not packet:
-                continue  # Skip empty packets
+        idx = find(eop)
 
-            self.logger.log(logging.DEBUG, f"Processing packet {i}: {packet}")
-
-            try:
-                # Decode the packet using COBS
-                decoded_packet = cobs.decode(packet)
-                if not decoded_packet:
-                    self.logger.log(logging.WARNING, f"Empty decoded packet {i}")
-                    continue
-
-                # Extract data type and payload
-                _data_type, *_payload = decoded_packet
-
-                # Standard uncompressed data
-                if _data_type < 250:
-                    data_type = _data_type
-                    payload = _payload
-
-                # Zlib compressed data
-                elif _data_type == 252:  # zlib compressed data
-                    decompressed_data = zlib.decompress(bytes(_payload))
-                    new_local_buffer = bytearray()
-                    results.extend(self.process(decompressed_data, new_local_buffer))
-                    continue
-
-                # Tamp compressed data
-                elif _data_type == 253:  # tamp compressed data
-                    decompressed_data = tamp.decompress(bytes(_payload))
-                    new_local_buffer = bytearray()
-                    results.extend(self.process(decompressed_data, new_local_buffer))
-                    continue
-
-                # Extension table
-                elif _data_type == 254:  # extension table
-                    data_type, payload = self.handle_extension(_payload)
-
-                # Whatever is left
-                else:
-                    data_type = _data_type
-                    payload = _payload
-            
-                # Retrieve the handler for the data type
-                handler = self.handlers.get(data_type)
-                if handler:
-                    decoded_data = handler(bytes(payload))  # Ensure payload is bytes
-                    results.append({
-                        "datatype": data_type,
-                        "name": self.name.get(data_type, f"Unknown_{data_type}"),
-                        "data": decoded_data,
-                        "timestamp": time.time(),  # Add a timestamp
-                    })
-                else:
-                    self.logger.log(logging.ERROR, f"Unknown data type: {data_type} in packet {i}")
-
-            except Exception as e:
-                self.logger.log(logging.ERROR, f"Error decoding packet {i}: {e}")
+        # While there’s a full packet in the buffer…
+        while idx != -1:
+            packet = bytes(buf[:idx])                                          # extract
+            del buf[:idx+len(eop)]                                             # consume, including the EOP
+            results.extend(self.process_packet(packet))
+            idx = find(eop)
 
         return results
 
-    #########################################################################################
+    def process_packet(self, packet: bytes) -> List[Dict]:
+
+        """
+        This method processes a single packet, decoding it and handling the data based on its type.
+        """
+
+        name_map = self.name
+        logger= self.logger
+        handlers = self.handlers
+
+        now = time.time
+
+        # Decode the packet using COBS
+        try:
+            raw = cobs.decode(packet)
+        except cobs.DecodeError as e:
+            logger.error(f"COBS decode failed: {e}")
+            return []
+
+        if not raw:
+            logger.warning("Empty decoded packet")
+            return []
+
+        data_type, *payload  = raw
+
+        # handle recursive decompression
+        if data_type in self.DECOMPRESSORS:
+            try:
+                dec = self.DECOMPRESSORS[data_type](bytes(payload))
+            except Exception as e:
+                logger.error(f"Decompress type {data_type} failed: {e}")
+                return []
+            return self.process(dec)                                           # recursive framing on decompressed bytes
+
+        # extension table
+        if data_type == 254:
+            data_type, payload = self.handle_extension(payload)
+
+        # dispatch to handler
+        handler = handlers.get(data_type)
+        if not handler:
+            logger.error(f"Unknown data type {data_type}")
+            return []
+
+        try:
+            data = handler(bytes(payload))
+        except Exception as e:
+            logger.error(f"Handler {data_type} failed: {e}")
+            return []
+
+        return [{
+            "datatype": data_type,
+            "name":     name_map.get(data_type, f"Unknown_{data_type}"),
+            "data":     data,
+            "timestamp": now(),
+        }]
+
+    # ==========================================================================
     # Data Types
-    #########################################################################################
+    # ==========================================================================
 
     """ 
     ## General
@@ -1838,10 +1979,11 @@ class BinaryStreamProcessor:
         return [s.decode('utf-8') for s in strings if s]
 
     def handle_byte(self,payload):
-        if len(payload) == 1:
+        len_payload = len(payload)
+        if len_payload == 1:
             # Return the single byte as an integer
             return payload[0]
-        elif len(payload) > 1:
+        elif len_payload > 1:
             # Convert the payload to a NumPy array if it contains multiple bytes
             return np.frombuffer(payload, dtype=np.uint8)
         else:
@@ -1849,81 +1991,91 @@ class BinaryStreamProcessor:
             raise ValueError("Payload is empty")
 
     def handle_bool(self,payload: bytes):
-        if len(payload) == 1:
-            return bool(payload[0])  # Return a single byte as a boolean
-        elif len(payload) > 1:
+        len_payload = len(payload)
+        if len_payload == 1:
+            return bool(payload[0])                                            # Return a single byte as a boolean
+        elif len_payload  > 1:
             return np.frombuffer(payload, dtype=np.uint8).astype(bool)
         else:
             raise ValueError("Payload is empty")
 
     def handle_int8(self,payload: bytes):
-        if len(payload) == 1:
+        len_payload = len(payload)
+        if len_payload == 1:
             return struct.unpack("b", payload)[0]
-        elif len(payload) > 1:
+        elif len_payload > 1:
             return np.frombuffer(payload, dtype=np.int8)
         else:
             raise ValueError("Payload is empty")
 
     def handle_short(self,payload: bytes):
-        if len(payload) == 2:
-            return struct.unpack("h", payload)[0]  # Single int16 value
-        elif len(payload) % 2 == 0:
+        len_payload = len(payload)
+        if len_payload == 2:
+            return struct.unpack("h", payload)[0]                              # Single int16 value
+        elif len_payload % 2 == 0:
             return np.frombuffer(payload, dtype=np.int16)
         else:
             raise ValueError("Payload length is not a multiple of 2 for int16")
 
     def handle_ushort(self,payload: bytes):
-        if len(payload) == 2:
-            return struct.unpack("H", payload)[0]  # Single uint16 value
-        elif len(payload) % 2 == 0:
+        len_payload = len(payload)
+        if len_payload == 2:
+            return struct.unpack("H", payload)[0]                              # Single uint16 value
+        elif len_payload % 2 == 0:
             return np.frombuffer(payload, dtype=np.uint16)
         else:
             raise ValueError("Payload length is not a multiple of 2 for uint16")
 
     def handle_int(self,payload: bytes):
-        if len(payload) == 4:
-            return struct.unpack("i", payload)[0]  # Single int32 value
-        elif len(payload) % 4 == 0:
+        len_payload = len(payload)
+        if len_payload == 4:
+            return struct.unpack("i", payload)[0]                              # Single int32 value
+        elif len_payload % 4 == 0:
             return np.frombuffer(payload, dtype=np.int32)
         else:
             raise ValueError("Payload length is not a multiple of 4 for int32")
 
     def handle_uint(self,payload: bytes):
-        if len(payload) == 4:
-            return struct.unpack("I", payload)[0]  # Single uint32 value
-        elif len(payload) % 4 == 0:
+        len_payload = len(payload)
+        if len_payload == 4:
+            return struct.unpack("I", payload)[0]                              # Single uint32 value
+        elif len_payload % 4 == 0:
             return np.frombuffer(payload, dtype=np.uint32)
         else:
             raise ValueError("Payload length is not a multiple of 4 for uint32")
 
     def handle_long(self,payload: bytes):
-        if len(payload) == 8:
-            return struct.unpack("q", payload)[0]  # Single int64 value
-        elif len(payload) % 8 == 0:
+        len_payload = len(payload)
+        if len_payload == 8:
+            return struct.unpack("q", payload)[0]                              # Single int64 value
+        elif len_payload % 8 == 0:
             return np.frombuffer(payload, dtype=np.int64)
         else:
             raise ValueError("Payload length is not a multiple of 8 for int64")
 
     def handle_ulong(self,payload: bytes):
-        if len(payload) == 8:
-            return struct.unpack("Q", payload)[0]  # Single uint64 value
-        elif len(payload) % 8 == 0:
+        len_payload = len(payload)
+        if len_payload == 8:
+            return struct.unpack("Q", payload)[0]                              # Single uint64 value
+        elif len_payload % 8 == 0:
             return np.frombuffer(payload, dtype=np.uint64)
         else:
             raise ValueError("Payload length is not a multiple of 8 for uint64")
 
     def handle_float(self,payload: bytes):
-        if len(payload) == 4:
-            return struct.unpack("f", payload)[0]  # Single float32 value
-        elif len(payload) % 4 == 0:
+        len_payload = len(payload)
+        if len_payload == 4:
+            return struct.unpack("f", payload)[0]                              # Single float32 value
+        elif len_payload % 4 == 0:
             return np.frombuffer(payload, dtype=np.float32)
         else:
             raise ValueError("Payload length is not a multiple of 4 for float32")
 
     def handle_double(self,payload: bytes):
-        if len(payload) == 8:
-            return struct.unpack("d", payload)[0]  # Single float64 value
-        elif len(payload) % 8 == 0:
+        len_payload = len(payload)
+        if len_payload == 8:
+            return struct.unpack("d", payload)[0]                              # Single float64 value
+        elif len_payload % 8 == 0:
             return np.frombuffer(payload, dtype=np.float64)
         else: 
             raise ValueError("Payload length is not a multiple of 8 for float64")
@@ -2481,8 +2633,8 @@ class BinaryStreamProcessor:
     
     def handle_image_gray8(self,payload):
         raw = self.handle_byte(payload)
-        lines = np.frombuffer(raw[:2], dtype=np.uint16)[0]  # Extract as uint16
-        image_data = raw[2:]  # Remaining bytes are the image data
+        lines = np.frombuffer(raw[:2], dtype=np.uint16)[0]                     # Extract as uint16
+        image_data = raw[2:]                                                   # Remaining bytes are the image data
         pixels_per_line = len(image_data) // lines
         if len(image_data) % lines != 0:
             raise ValueError("Image data size is not a multiple of the number of lines.")
@@ -2497,7 +2649,7 @@ class BinaryStreamProcessor:
             raise ValueError("Palette data size is not divisible by 3.")
         palette = palette_data.reshape(-1, 3)
         image_data = raw[770:]
-        image_data_rgb = palette[image_data]  # Each index is replaced with its RGB triplet
+        image_data_rgb = palette[image_data]                                   # Each index is replaced with its RGB triplet
         pixels_per_line = len(image_data) // lines
         if len(image_data) % lines != 0:
             raise ValueError("Image data size is not a multiple of the number of lines.")
@@ -2527,7 +2679,7 @@ class BinaryStreamProcessor:
         # Extract data
         raw = self.handle_byte(payload)
         lines = np.frombuffer(raw[:2], dtype=np.uint16)[0]
-        compressed_image_data = raw[2:]  # Remaining bytes are the RLE-compressed DCT coefficients
+        compressed_image_data = raw[2:]                                        # Remaining bytes are the RLE-compressed DCT coefficients
         # RLE Decompress
         dct_coefficients = self.rle_compressor.decompress(compressed_image_data)
         # Inverse DCT
@@ -2547,7 +2699,7 @@ class BinaryStreamProcessor:
         # Assume the payload is structured as RLE-compressed data for R, G, B channels consecutively
         raw = self.handle_byte(payload)
         lines = np.frombuffer(raw[:2], dtype=np.uint16)[0]
-        compressed_data = raw[2:]  # Remaining bytes contain compressed data for all channels
+        compressed_data = raw[2:]                                              # Remaining bytes contain compressed data for all channels
         # Decompress the entire payload
         dct_coefficients = self.rle_compressor.decompress(compressed_data)
         # Split compressed data into three parts: R, G, B
@@ -2580,461 +2732,9 @@ class BinaryStreamProcessor:
         channel_b = reconstruct_channel(dct_b)
 
         # Combine channels into an RGB image
-        reconstructed_image = np.stack([channel_r, channel_g, channel_b], axis=-1)  # Shape: (height, width, 3)
+        reconstructed_image = np.stack([channel_r, channel_g, channel_b], axis=-1) # Shape: (height, width, 3)
         return reconstructed_image
 
-    """    
-    ## Do not use
-    ===========================
-    | ID  | Abr | measurement        | units     | datatype(s) |
-    | --  | --- | -----------        | -----     | ----------- |
-    | 254 | used to extend this table, next byte is the index for the second table
-    | 255 | is reserved for separator
-    """
-
-    """
-    ## Second Table
-    ===========================
-    Not needed yet
-    """
-
-text = """
-The Fox and the Moonlit Night
-In the forest deep where the shadows play,
-A fox set out at the close of day.
-His fur was bright, his step was light,
-Beneath the stars and the moon so white.
-
-He wandered far through the trees so tall,
-Listening close to the owl's soft call.
-With a leap and bound, he chased the breeze,
-Darting swiftly between the trees.
-
-The brook did glisten, the leaves did sway,
-And the fox kept on till the break of day.
-A rabbit peered from a thicket near,
-The fox gave a smile, "You’ve nothing to fear."
-
-Through meadows wide and hills so steep,
-The fox’s journey would never sleep.
-He climbed a ridge to behold the view,
-Where the sky was painted in morning's hue.
-
-The sun arose, and the stars grew dim,
-The fox felt joy as he ran with vim.
-For the forest calls and the winds do sigh,
-To the quick brown fox 'neath the open sky.
-
-In the heart of nature, he found his home,
-Under the heavens, free to roam.
-And so, dear reader, remember this tale,
-Of the fox's journey through hill and dale.
-"""
-
 if __name__ == "__main__":
-    import os
-    import matplotlib
-    matplotlib.use('TkAgg') 
-    import matplotlib.pyplot as plt
-    
-    # General Codec with base 254 encoding [PASSED]
-
-    base = 254
-    codec = GeneralCodec(base)
-    max_digits = codec.compute_digits(8) # encode double with 8 bytes
-    original_data = 98.2
-    byte_data = struct.pack('d', original_data) # 'f' for float, 'd' for double
-    print(f"Original: {original_data}")
-    encoded = codec.encode(byte_data, length = 8)
-    print(f"Encoded (base254): {encoded}")
-    decoded = codec.decode(encoded, length = 8)
-    print(f"Decoded: {decoded}")
-    value = struct.unpack('d', decoded)[0]
-    print(f"Value: {value}")
-    assert byte_data == decoded
-
-
-    # Printable Codec [PASSED]
-
-    codec = PrintableCodec()
-    print(f"Table: {codec.table}")
-    print(f"Base: {codec.base}")
-    print(f"Base {codec.char_to_val}")
-    encoded = codec.encode(byte_data, length = 8)
-    print(f"Encoded (printable): {encoded}")
-    decoded = codec.decode(encoded, length = 8)
-    print(f"Decoded: {decoded}")
-    value = struct.unpack('d', decoded)[0]
-    print(f"Value: {value}")
-    assert byte_data == decoded
-
-    # Compressor RLE [PASSED]
-    # 30 microseconds encode for 1k text
-    # 5300 microseconds decode for 1k text !!!!!!!!!!!!!!!
-    byte_data = bytearray(text.encode('utf-8'))
-
-    compressor = Compressor("rle")
-    print(f"Original: {byte_data}")
-    compressed = compressor.compress(byte_data)
-    tic = time.perf_counter()
-    for i in range(100):
-        compressed = compressor.compress(byte_data)
-    toc = time.perf_counter()
-    time_elapsed = (toc - tic)/100
-    print(f"Elapsed time RLE compress: {time_elapsed} seconds for 1k text")
-    print(f"Compressed (rle): {compressed}")
-    tic = time.perf_counter()
-    for i in range(100):
-        decompressed = compressor.decompress(compressed)
-    toc = time.perf_counter()
-    time_elapsed = (toc - tic)/100
-    print(f"Elapsed time RLE decompress: {time_elapsed} seconds for 1k text")
-    print(f"Decompressed: {decompressed}")
-    assert byte_data == decompressed
-
-    # Compressor ZIP  [PASSED]
-    # 200 microseconds for 1k text compress
-    # 1000 microseconds for 1k text decompress
-
-    compressor = Compressor("zlib")
-    print(f"Original: {byte_data}")
-    compressed = compressor.compress(byte_data)
-    tic = time.perf_counter()
-    for i in range(100):
-        compressed = compressor.compress(byte_data)
-    toc = time.perf_counter()
-    time_elapsed = (toc - tic)/100
-    print(f"Elapsed time ZLIB compress: {time_elapsed} seconds for 1k text")
-    print(f"Compressed (zip): {compressed}")
-    decompressed = compressor.decompress(compressed)
-    tic = time.perf_counter()
-    for i in range(100):
-        decompressed = compressor.decompress(compressed)
-    toc = time.perf_counter()
-    time_elapsed = (toc - tic)/100
-    print(f"Elapsed time ZLIB decompress: {time_elapsed} seconds for 1k text")
-    print(f"Decompressed: {decompressed}")
-    assert byte_data == decompressed
-
-    # Compressor TAMP  [PASSED]
-    # 620 microseconds for 1k text compress
-    # 230 microseconds for 1k text decompress
-
-    compressor = Compressor("tamp")
-    print(f"Original: {byte_data}")
-    compressed = compressor.compress(byte_data)
-    tic = time.perf_counter()
-    for i in range(100):
-        compressed = compressor.compress(byte_data)
-    toc = time.perf_counter()
-    time_elapsed = (toc - tic)/100
-    print(f"Elapsed time TAMP compress: {time_elapsed} seconds for 1k text")
-    print(f"Compressed (tamp): {compressed}")
-    decompressed = compressor.decompress(compressed)
-    tic = time.perf_counter()
-    for i in range(100):
-        decompressed = compressor.decompress(compressed)
-    toc = time.perf_counter()
-    time_elapsed = (toc - tic)/100
-    print(f"Elapsed time TAMP decompress: {time_elapsed} seconds for 1k text")
-    print(f"Decompressed: {decompressed}")
-    assert byte_data == decompressed
-
-    # COBS  [PASSED]
-    # 80 microseconds for 1k text encode
-    # 85 microseconds for 1k text decode`
-
-    data = os.urandom(1024)
-    print(f"Original: {data}")
-    encoded_packet = cobs.encode(data) + b'\x00'
-    tic = time.perf_counter()
-    for i in range(100):
-        encoded_packet = cobs.encode(data) + b'\x00'
-    toc = time.perf_counter()
-    time_elapsed = (toc - tic)/100
-    print(f"Elapsed time COBS encode: {time_elapsed} seconds for 1024 bytes")
-    print(f"Encoded (cobs): {encoded_packet}")
-    packet = encoded_packet.split(b'\x00')[0]
-    decoded_packet = cobs.decode(packet)
-    tic = time.perf_counter()
-    for i in range(100):
-        decoded_packet = cobs.decode(packet)
-    toc = time.perf_counter()
-    time_elapsed = (toc - tic)/100
-    print(f"Elapsed time COBS decode: {time_elapsed} seconds for 1024 bytes")
-    decoded_packet = cobs.decode(packet)
-    assert data == decoded_packet
-    
-    # ADPCM
-
-    # Mono [PASSED]
-    # 780 micro seconds to encode 1000 samples 1.3 Mega samples per second
-    # 780 micro seconds to decode 1000 samples
-
-    num_samples = 1000
-    period = 100  # Period of the sine wave
-    x = np.arange(num_samples)  # Sample indices
-    sine_wave = np.sin(2 * np.pi * x / period)  # Sine wave
-    # Scale to np.int16 range (-32768 to 32767)
-    mono_data = (sine_wave * 32767).astype(np.int16)
-
-    # Plot data
-    plt.ion()  # Enable interactive mode
-    plt.figure(figsize=(10, 5))
-    plt.plot(x, mono_data, label="Mono Data", color="blue")
-    plt.title("Mono Sine Wave")
-    plt.xlabel("Sample Index")
-    plt.ylabel("Amplitude")
-    plt.grid()
-    plt.legend()
-    plt.tight_layout()
-    plt.show(block=True)
-
-    codec = ADPCMCodec(channels=1, sample_width=16)
-    encoded_data = codec.encode(mono_data)
-    tic = time.perf_counter()
-    for i in range(100):
-        encoded_data = codec.encode(mono_data)
-    toc = time.perf_counter()
-    time_elapsed = (toc - tic)/100
-    print(f"Elapsed time ADPCM mono encode: {time_elapsed} seconds 1000 samples")
-
-    #print(f"Encoded (ADPCM): {encoded_data}")
-    decoded_data = codec.decode(encoded_data)
-    tic = time.perf_counter()
-    for i in range(100):
-        decoded_data = codec.decode(encoded_data)
-    toc = time.perf_counter()
-    time_elapsed = (toc - tic)/100
-    print(f"Elapsed time ADPCM mono decode: {time_elapsed} seconds 1000 samples")
-    #print(f"Decoded: {decoded_data}")
-    difference = ((mono_data-decoded_data)/mono_data*100)
-    difference_int = np.round(difference).astype(int)
-    #print(f"Decoded: {difference_int}")
-
-    # Create the figure and primary axis
-    fig, ax1 = plt.subplots(1, 1, figsize=(10, 5))
-    # Plot on the left y-axis
-    ax1.plot(x, mono_data, 'b-', label="Sine Wave")  # Blue line for y1
-    ax1.set_xlabel("X-Axis")
-    ax1.set_ylabel("Sine Wave", color="b")
-    ax1.tick_params(axis='y', colors="b")
-
-    # Create the secondary axis (right y-axis)
-    ax2 = ax1.twinx()  # Shares the same x-axis
-    ax2.plot(x, difference, 'r-', label="Difference")  # Red line for y2
-    ax2.set_ylabel("Relative Difference [%]", color="r")
-    ax2.tick_params(axis='y', colors="r")
-
-    # Optional: Add legends
-    ax1.legend(loc="upper left")
-    ax2.legend(loc="upper right")
-
-    # Display the plot
-    plt.title("Mono ADPCM")
-    plt.grid()
-    plt.tight_layout()
-    plt.show(block=True)
-
-    # Stereo [PASSED]
-    # 1250 micro seconds to encode 2000 samples 1.6 Mega samples per second
-    # 1150 micro seconds to decode 2000 samples 1.7 Mega samples per second
-
-    num_samples = 1000
-    period = 100  # Period of the sine wave
-    x = np.arange(num_samples)  # Sample indices
-    left_sine_wave = np.sin(2 * np.pi * x / period)  # Sine wave
-    right_sine_wave = np.sin(2 * np.pi * x / period + np.pi/4)  # Sine wave
-    # Scale to np.int16 range (-32768 to 32767)
-    left_channel = (left_sine_wave * 32767).astype(np.int16)
-    right_channel = (right_sine_wave * 32767).astype(np.int16)
-    stereo_data = np.empty((num_samples * 2,), dtype=np.int16)
-    stereo_data[0::2] = left_channel  # Left channel samples
-    stereo_data[1::2] = right_channel  # Right channel samples
-
-    # Plot data
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10))
-    ax1.plot(x, stereo_data[0::2], label="Left Channel", color="blue")
-    ax1.set_title("Stereo Sine Wave")
-    ax1.set_xlabel("Sample Index")
-    ax1.set_ylabel("Amplitude")
-    ax1.grid()
-    ax1.legend()
-    ax2.plot(x, stereo_data[1::2], label="Right Channel", color="blue")
-    ax2.set_title("Stereo Sine Wave")
-    ax2.set_xlabel("Sample Index")
-    ax2.set_ylabel("Amplitude")
-    ax2.grid()
-    ax2.legend()
-    plt.tight_layout()
-    plt.show(block=True)
-
-    #print(f"Original: {stereo_data}")
-    codec = ADPCMCodec(channels=2, sample_width=16)
-    encoded_data = codec.encode(stereo_data)
-    tic = time.perf_counter()
-    for i in range(100):
-        encoded_data = codec.encode(stereo_data)
-    toc = time.perf_counter()
-    time_elapsed = (toc - tic)/100
-    print(f"Elapsed time ADPCM stereo encode: {time_elapsed} seconds 20000 samples")
-    #print(f"Encoded (ADPCM): {encoded_data}")
-    decoded_data = codec.decode(encoded_data)
-    tic = time.perf_counter()
-    for i in range(100):
-       decoded_data = codec.decode(encoded_data)
-    toc = time.perf_counter()
-    time_elapsed = (toc - tic)/100
-    print(f"Elapsed time ADPCM stereo decode: {time_elapsed} seconds 2000 samples")
-    #  difference = ((stereo_data-decoded_data)/stereo_data*100)
-    difference = ((stereo_data-decoded_data))
-    #print(f"Decoded: {difference_int}")
-
-    # Create the figure and primary axis
-    fig, (ax1, ax3) = plt.subplots(2, 1, figsize=(10, 10))
-    # Plot on the left y-axis
-    ax1.plot(x, stereo_data[0::2], 'b-', label="Left Channel")  # Blue line for y1
-    ax1.plot(x, decoded_data[0::2], 'k-', label="Left Channel ADPCM")  # Blue line for y1
-    ax1.set_xlabel("X-Axis")
-    ax1.set_ylabel("Sine Wave", color="b")
-    ax1.tick_params(axis='y', colors="b")
-
-    # Create the secondary axis (right y-axis)
-    ax2 = ax1.twinx()  # Shares the same x-axis
-    ax2.plot(x, difference[0::2], 'r-', label="Difference")  # Red line for y2
-    ax2.set_ylabel("Difference", color="r")
-    ax2.tick_params(axis='y', colors="r")
-
-    # Optional: Add legends
-    ax1.legend(loc="upper left")
-    ax2.legend(loc="upper right")
-
-    ax3.plot(x, stereo_data[1::2], 'b-', label="Right Channel")  # Blue line for y1
-    ax3.plot(x, decoded_data[1::2], 'k-', label="Right Channel ADPCM")  # Blue line for y1
-    ax3.set_xlabel("X-Axis")
-    ax3.set_ylabel("Sine Wave", color="b")
-    ax3.tick_params(axis='y', colors="b")
-
-    # Create the secondary axis (right y-axis)
-    ax4 = ax3.twinx()  # Shares the same x-axis
-    ax4.plot(x, difference[1::2], 'r-', label="Difference")  # Red line for y2
-    ax4.set_ylabel("Difference", color="r")
-    ax4.tick_params(axis='y', colors="r")
-
-    # Optional: Add legends
-    ax3.legend(loc="upper left")
-    ax4.legend(loc="upper right")
-
-    # Display the plot
-    plt.title("Stereo ADPCM")
-    plt.grid()
-    plt.tight_layout()
-    plt.show(block=True)
-
-    # Arduino line processor [PASSED]
-    # Header 150 microsceonds
-    # No Header 160 milliseconds
-
-    processor = ArduinoTextStreamProcessor(eol=b'\n', encoding='utf-8')
-    data = b'Voltage: 12, 11.8, 11.6\nCurrent: 1.2, 1.3, 1.4\n'
-    print(f"Original: {data}")
-    results = processor.process(data, labels = True)
-    for result in results:
-        print(result)
-
-    data = b'Voltage: 12 11.8 11.6\nCurrent: 1.2 1.3 1.4\n'
-    print(f"Original: {data}")
-    results = processor.process(data, labels = True)
-    tic = time.perf_counter()
-    for i in range(100):
-        results = processor.process(data, labels = True)
-    toc = time.perf_counter()
-    time_elapsed = (toc - tic)/100
-    print(f"Elapsed time Arduino Header: {time_elapsed} seconds")
-    for result in results:
-        print(result)
-
-    processor = ArduinoTextStreamProcessor(eol=b'\n', encoding='utf-8')
-    data = b'12, 11.8, 11.6\n1.2, 1.3, 1.4\n'
-    print(f"Original: {data}")
-    results = processor.process(data, labels = False)
-    for result in results:
-        print(result)
-
-    data = b'12 11.8 11.6\n1.2 1.3 1.4\n'
-    print(f"Original: {data}")
-    results = processor.process(data, labels = False)
-    tic = time.perf_counter()
-    for i in range(100):
-        results = processor.process(data, labels = False)
-    toc = time.perf_counter()
-    time_elapsed = (toc - tic)/100
-    print(f"Elapsed time Arduino no header: {time_elapsed} seconds")
-    for result in results:
-        print(result)
-
-    # Binary stream processor 
-
-    # Straight 50 microseconds  1k text 20Mbytes/sec
-    # Zlib 285 microseconds  1k text 3.5Mbytes/sec
-    # Tamp 390 microseconds 1k text 2.5Mbytes/sec
-
-    # [PASSED]
-    processor = BinaryStreamProcessor(eop=b'\x00')
-    data = b'\x02' + os.urandom(1024)
-    np_data = np.frombuffer(data, dtype=np.uint8)
-    print(f"Original: {np_data}")
-    encoded_packet = cobs.encode(data) + b'\x00'
-    # print(f"Encoded (cobs): {encoded_packet}")
-    results = processor.process(encoded_packet)
-    tic = time.perf_counter()
-    for i in range(100):
-        results = processor.process(encoded_packet)
-    toc = time.perf_counter()
-    time_elapsed = (toc - tic)/100
-    print(f"Elapsed time Binary: {time_elapsed} seconds for 1024 bytes")
-    for result in results:
-        print(result["data"])
-
-    # Binary stream processor with compression
-
-    ZLIB_ID = 252
-    TAMP_ID = 253
-    CHAR_ID = 0
-
-    # [PASSED]
-
-    data = struct.pack('B', CHAR_ID) + text.encode('utf-8')
-    data_packet = cobs.encode(data) + b'\x00'
-    compressed_data_packet = zlib.compress(data_packet)
-    packet = struct.pack('B', ZLIB_ID) + compressed_data_packet 
-    encoded_packet = cobs.encode(packet) + b'\x00'
-    results = processor.process(encoded_packet)
-    tic = time.perf_counter()
-    for i in range(100):
-        results = processor.process(encoded_packet)
-    toc = time.perf_counter()
-    time_elapsed = (toc - tic)/100
-    print(f"Elapsed time binary ZLIB: {time_elapsed} seconds for 1k text")
-    for result in results:
-        print(result["data"])
-
-    # [PASSED]
-
-    data = struct.pack('B', CHAR_ID) + text.encode('utf-8')
-    data_packet = cobs.encode(data) + b'\x00'
-    compressed_data_packet = tamp.compress(data_packet)
-    packet = struct.pack('B', TAMP_ID) + compressed_data_packet 
-    encoded_packet = cobs.encode(packet) + b'\x00'
-    results = processor.process(encoded_packet)
-    tic = time.perf_counter()
-    for i in range(100):
-        results = processor.process(encoded_packet)
-    toc = time.perf_counter()
-    time_elapsed = (toc - tic)/100
-    print(f"Elapsed time binary TAMP: {time_elapsed} seconds for 1k text")
-    for result in results:
-        print(result["data"])
-
-
-
+    # not implemented
+    pass

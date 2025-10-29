@@ -1,0 +1,1 @@
+Edit SerialUI.desktop and adjust the folders before installing.
