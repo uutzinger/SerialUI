@@ -28,6 +28,7 @@ extern "C" {
   #include "host/ble_hs.h"       // BLE_HS_EDONE for notivy backoff
 }
 
+#include <inttypes.h>  // for PRIu32 in printf
 #include <cmath>
 #include "RingBuffer.h"
 
@@ -60,13 +61,15 @@ extern "C" {
 // INFO output on Serial about system changes
 // WARNING output on Serial about issues
 // ERROR output on Serial about errors
+// For any issues select DEBUG
 #define NONE    0
 #define WANTED  1
 #define ERROR   1 
 #define WARNING 2
 #define INFO    3
 #define DEBUG   4
-#define DEBUG_LEVEL WANTED
+
+#define DEBUG_LEVEL DEBUG
 
 // require pairing and encryption
 //
@@ -229,6 +232,27 @@ volatile int                  mtuRetryCount         = 0;            // number of
 const int                     mtuRetryMax           = 3;            // max number of times we retry to obtain MTU
 
 // ===== Tx backoff/throttle =====
+inline constexpr uint16_t     PROBE_AFTER_SUCCESSES = 64;           // wait this many clean sends before probing faster
+inline constexpr uint16_t     PROBE_CONFIRM_SUCCESSES = 48;         // accept probe only after this many clean sends
+inline constexpr uint32_t     PROBE_STEP_US         = 10;           // absolute probe step
+inline constexpr uint32_t     PROBE_STEP_PCT        = 2;            // or % of current interval (use the larger of the two)
+
+inline constexpr uint8_t      LKG_ESCALATE_AFTER_FAILS = 3;         // if LKG last known good fails this many times in a row, relax it
+inline constexpr uint32_t     LKG_ESCALATE_NUM      = 103;          // ×1.06
+inline constexpr uint32_t     LKG_ESCALATE_DEN      = 100;
+
+inline constexpr int          COOL_SUCCESS_REQUIRED = 64;           // successes before probing resumes after a backoff
+inline constexpr uint32_t     ESCALATE_COOLDOWN_US  = 1000000;      // 1 s
+inline constexpr uint32_t     TIMEOUT_BACKOFF_NUM   = 6;            // ×1.20 on timeout
+inline constexpr uint32_t     TIMEOUT_BACKOFF_DEN   = 5;
+
+volatile uint32_t             lkgInterval           = 0;            // last-known-good interval
+volatile bool                 probing               = false;        // currently probing lkg
+volatile uint16_t             probeSuccesses        = 0;
+volatile uint8_t              probeFailures         = 0;
+volatile uint8_t              lkgFailStreak         = 0;
+volatile unsigned long        lastEscalateAt        = 0; 
+
 volatile uint32_t             minSendIntervalUs     =  200;         // floor in µs
 const uint32_t                maxSendIntervalUs     =
 #if defined(LOWPOWER)
@@ -243,6 +267,8 @@ volatile uint32_t             lastSend              = 0;            // last time
 volatile size_t               pendingLen            = 0;            // length data that we attempted to send
 volatile bool                 txOkFlag              = false;        // no issues last data was sent
 volatile int                  successStreak         = 0;            // number of consecutive successful sends
+volatile int                  cooldownSuccess       = 0;            // successes since last backoff
+volatile bool                 recentlyBackedOff     = false;        // gate decreases after congestion
 
 // *****************************************************************************************************************
 
@@ -271,10 +297,10 @@ inline constexpr unsigned long MIN_INTERVAL_US      =    100;       // 0.1 ms mi
 inline constexpr unsigned long MAX_INTERVAL_US      = 500000;       // 500 ms maximum frame period
 
 // ===== BLE Speedtester Globals =====
-unsigned long                lastBLETime            =        0;       // Last time data was produced
-unsigned long                lastCounts             = 10000000; 
-unsigned long                currentCounts          = 10000000;       // Number of lines sent
-unsigned long                countsPerSecond        =        0;
+unsigned long                 lastBLETime           =        0;     // Last time data was produced
+unsigned long                 lastCounts            = 10000000; 
+unsigned long                 currentCounts         = 10000000;     // Number of lines sent
+unsigned long                 countsPerSecond       =        0;
 
 // ===== Scenarios =====
 
@@ -328,12 +354,23 @@ static inline uint32_t compute_minSendIntervalUs(uint16_t chunkSize, uint16_t ll
     return (uint32_t)num_ll_pd * (uint32_t)ll_time_us * 11 / 10;
 }
 
+static inline size_t update_lowWaterMark(size_t chunkSize) {
+    size_t lw = 2 * (size_t)chunkSize;              // up to two outbound packets buffered
+    size_t cap = BUFFERSIZE / 4;                    // don't let low water exceed 25% of buffer
+    if (lw > cap) lw = cap;
+    if (lw < chunkSize) lw = chunkSize;             // never below one chunk
+    return lw;
+}
+
 static inline void recompute_tx_timing() {
     // update chunk size and send interval floor
     txChunkSize  = compute_txChunkSize(mtu, g_ll_tx_octets);
     minSendIntervalUs = compute_minSendIntervalUs(txChunkSize, g_ll_tx_octets, llTimeUS);
     if (sendInterval < minSendIntervalUs) sendInterval = minSendIntervalUs;
     lowWaterMark = update_lowWaterMark(txChunkSize);
+    // Seed/repair last-known-good after timing changes
+    if (lkgInterval == 0 || lkgInterval < minSendIntervalUs) lkgInterval = sendInterval;
+    if (!probing && lkgInterval > sendInterval) lkgInterval = sendInterval;
     size_t used = dataBuffer.available();
     if (pendingLen == 0 && used <= lowWaterMark) {
         genPermit = true;
@@ -353,14 +390,6 @@ static inline void update_ll_time() {
         llTimeUS = LL_TIME_1M_US;
     }
     recompute_tx_timing();
-}
-
-static inline size_t update_lowWaterMark(size_t chunkSize) {
-    size_t lw = 2 * (size_t)chunkSize;              // up to two outbound packets buffered
-    size_t cap = BUFFERSIZE / 4;                    // don't let low water exceed 25% of buffer
-    if (lw > cap) lw = cap;
-    if (lw < chunkSize) lw = chunkSize;             // never below one chunk
-    return lw;
 }
 
 // ===============================================================================================================================================================
@@ -441,6 +470,11 @@ public:
 
       // Apply DLE for this link
       (void)ble_gap_set_data_len(g_connectHandle, LL_TX_OCTETS, llTimeUS);
+      // reset controller
+      probing = false; probeSuccesses = 0; probeFailures = 0; lkgFailStreak = 0;
+      recentlyBackedOff = false; cooldownSuccess = 0; successStreak = 0;
+      lkgInterval = sendInterval;
+
     } else {
       // Fallback: assume 1M timings if we couldn't read
       (void)ble_gap_set_data_len(g_connectHandle, LL_TX_OCTETS, LL_TIME_1M_US);
@@ -498,6 +532,9 @@ public:
   void onMTUChange(uint16_t m, NimBLEConnInfo& connInfo) override {
     mtu = m;
     recompute_tx_timing();
+    probing = false; probeSuccesses = 0; probeFailures = 0; lkgFailStreak = 0;
+    recentlyBackedOff = false; cooldownSuccess = 0; successStreak = 0;
+    lkgInterval = sendInterval;    
     #if DEBUG_LEVEL >= INFO
       Serial.printf("MTU updated: %u (conn=%u), tx chunk size=%u, min send interval=%u\r\n", 
         m, connInfo.getConnHandle(), txChunkSize, minSendIntervalUs);
@@ -595,19 +632,57 @@ public:
       // Success
       txOkFlag = true;
       mtuRetryCount = 0;
-      if (++successStreak >= 16) {                // shrink send interval every 16 successes
-        successStreak = 0;
-        sendInterval = (sendInterval * 9) / 10;   // -10%
-        if (sendInterval < minSendIntervalUs) {
-          sendInterval = minSendIntervalUs;
-        } else{
+
+      // cooldown after any backoff/error before allowing new probes for faster rates
+      if (recentlyBackedOff) {
+        if (++cooldownSuccess >= COOL_SUCCESS_REQUIRED) {
+          recentlyBackedOff = false;
+          cooldownSuccess   = 0;
+          successStreak     = 0;
+          lkgFailStreak     = 0; // reset fail streak when we calm down
+        }
+        return; // do not probe during cooldown
+      }
+
+      // If we are probing for faster rates, count successes; accept probe once stable
+      if (probing) {
+        if (++probeSuccesses >= PROBE_CONFIRM_SUCCESSES) {
+          lkgInterval   = sendInterval;   // new stable floor
+          probing       = false;
+          probeSuccesses= 0;
+          probeFailures = 0;
+          lkgFailStreak = 0;
+          successStreak = 0;
           #if DEBUG_LEVEL >= INFO
-            Serial.printf("Decreased send interval: %u\r\n", sendInterval);
+            Serial.printf("Probe accepted. LKG=%u\r\n", lkgInterval);
+          #endif
+        }
+        return;
+      }
+
+      // Not probing: a success at LKG clears fail streak
+      lkgFailStreak = 0;
+ 
+      // After enough successes, try a small faster probe
+      if (++successStreak >= PROBE_AFTER_SUCCESSES) {
+        successStreak    = 0;
+        lkgInterval      = sendInterval;
+        uint32_t stepAbs = PROBE_STEP_US;
+        uint32_t stepPct = (sendInterval * PROBE_STEP_PCT) / 100;
+        uint32_t step    = (stepPct > stepAbs) ? stepPct : stepAbs;
+        uint32_t cand    = (sendInterval > step) ? (sendInterval - step) : minSendIntervalUs;
+        if (cand < minSendIntervalUs) cand = (uint32_t)minSendIntervalUs;
+        if (cand < sendInterval) {
+          sendInterval   = cand;
+          probing        = true;
+          probeSuccesses = 0;
+          probeFailures  = 0;
+          #if DEBUG_LEVEL >= INFO
+            Serial.printf("Probe start: %u -> %u\r\n", lkgInterval, sendInterval);
           #endif
         }
       }
-
-    } 
+    }
     
     else if (code == BLE_HS_EMSGSIZE) 
     {
@@ -663,48 +738,111 @@ public:
     
     else if (code == BLE_HS_ENOMEM || code == BLE_HS_EBUSY) 
     {
-      // Congestion: back off aggressively
-      // Out of memory, GATT procedure already in progress
+      // Congestion:
       successStreak = 0;
-      sendInterval = (sendInterval * 2);          // +100%
-      if (sendInterval > maxSendIntervalUs) {
-        sendInterval = maxSendIntervalUs;
+      recentlyBackedOff = true;
+      cooldownSuccess = 0;
+
+      if (probing) {
+        probing = false;
+        probeFailures++;
+        sendInterval = lkgInterval;
+        lkgFailStreak = 0;
+        #if DEBUG_LEVEL >= INFO
+          Serial.printf("Probe failed, revert to LKG=%u\r\n", sendInterval);
+        #endif
+      } else {
+        // failure at LKG; if repeated, relax LKG slightly
+        if (++lkgFailStreak >= LKG_ESCALATE_AFTER_FAILS) {
+          unsigned long now = micros();
+          // only escalate if cooldown passed AND buffer shows pressure
+          size_t used = dataBuffer.available();
+          if ((now - lastEscalateAt) >= ESCALATE_COOLDOWN_US && used >= lowWaterMark) {
+            lastEscalateAt = now;
+            lkgFailStreak  = 0;
+            uint32_t next  = (lkgInterval * LKG_ESCALATE_NUM) / LKG_ESCALATE_DEN;
+            if (next < minSendIntervalUs) next = (uint32_t)minSendIntervalUs;
+            if (next > maxSendIntervalUs) next = maxSendIntervalUs;
+            lkgInterval  = next;
+            sendInterval = next;
+            #if DEBUG_LEVEL >= INFO
+              Serial.printf("Escalate LKG to %u\r\n", lkgInterval);
+            #endif
+          }
+        }
       }
-      #if DEBUG_LEVEL >= INFO
-        Serial.printf("Increased send interval: %u\r\n", sendInterval);
-      #endif
-    } 
-    
+    }
+
     else if (code == BLE_HS_ETIMEOUT) 
     {
-    // Timeout
-      successStreak = 0;
-      sendInterval = (sendInterval * 3) / 2;      // +50%
-      if (sendInterval > maxSendIntervalUs) {
-        sendInterval = maxSendIntervalUs;
-      }
-      #if DEBUG_LEVEL >= INFO
-        Serial.printf("Increased send interval: %u\r\n", sendInterval);
-      #endif
-    } 
+      // Timeout
+      successStreak     = 0;
+      recentlyBackedOff = true;
+      cooldownSuccess   = 0;
+
+      if (probing) {
+        probing       = false;
+        sendInterval  = lkgInterval;
+        lkgFailStreak = 0;                            // <<< important
+        #if DEBUG_LEVEL >= INFO
+          Serial.printf("Probe failed, revert to LKG=%u\r\n", sendInterval);
+        #endif
+      } else {
+        if (++lkgFailStreak >= LKG_ESCALATE_AFTER_FAILS) {
+          unsigned long now = micros();
+          if (now - lastEscalateAt >= ESCALATE_COOLDOWN_US) {
+            lastEscalateAt = now;
+            lkgFailStreak  = 0;
+            uint32_t next  = (lkgInterval * LKG_ESCALATE_NUM) / LKG_ESCALATE_DEN;
+            if (next < minSendIntervalUs) next = (uint32_t)minSendIntervalUs;
+            if (next > maxSendIntervalUs) next = maxSendIntervalUs;
+            lkgInterval = next;
+            sendInterval = next;
+            #if DEBUG_LEVEL >= INFO
+              Serial.printf("Escalate LKG to %u (timeout)\r\n", lkgInterval);
+            #endif
+          }
+        }
+      }    } 
     
     else if (code == BLE_HS_ENOTCONN) 
     {
       // Connection dropped
       successStreak = 0;
-      sendInterval = maxSendIntervalUs;           // restart conservatively
+      recentlyBackedOff = false;
+      cooldownSuccess = 0;
+      probing = false;
+      probeSuccesses = probeFailures = lkgFailStreak = 0;
+      sendInterval = maxSendIntervalUs;
+      lkgInterval  = sendInterval;
       #if DEBUG_LEVEL >= WARNING
         Serial.println("Connection dropped");
-      #endif
+      #endif      
     } 
 
     else 
     {
-      // Other errors: also reset streak and optionally back off a bit
-      successStreak = 0;
-      sendInterval = (sendInterval * 11) / 10;      // +10%
-      if (sendInterval > maxSendIntervalUs) {
-        sendInterval = maxSendIntervalUs;
+      // other errors: same pattern; no auto-escalate if it was a probe
+      successStreak     = 0;
+      recentlyBackedOff = true;
+      cooldownSuccess   = 0;
+      if (probing) {
+        probing       = false;
+        sendInterval  = lkgInterval;
+        lkgFailStreak = 0;                            // <<< important
+      } else {
+        if (++lkgFailStreak >= LKG_ESCALATE_AFTER_FAILS) {
+          unsigned long now = micros();
+          if (now - lastEscalateAt >= ESCALATE_COOLDOWN_US) {
+            lastEscalateAt = now;
+            lkgFailStreak  = 0;
+            uint32_t next  = (lkgInterval * LKG_ESCALATE_NUM) / LKG_ESCALATE_DEN;
+            if (next < minSendIntervalUs) next = (uint32_t)minSendIntervalUs;
+            if (next > maxSendIntervalUs) next = maxSendIntervalUs;
+            lkgInterval = next;
+            sendInterval = next;
+          }
+        }
       }
     }
   }
@@ -755,6 +893,9 @@ static int myGapHandler(struct ble_gap_event* ev, void* /*arg*/) {
       g_ll_tx_time_us = llTimeUS;
       g_ll_rx_time_us = llTimeUS;
       recompute_tx_timing();
+      probing = false; probeSuccesses = 0; probeFailures = 0; lkgFailStreak = 0;
+      recentlyBackedOff = false; cooldownSuccess = 0; successStreak = 0;
+      lkgInterval = sendInterval;      
       #if DEBUG_LEVEL >= INFO
         Serial.printf("DLE updated: tx=%u octets / %u ll time µs, rx =%u octets / ll time %u µs, tx chunk size=%u, min send interval=%u\r\n",
                       g_ll_tx_octets, g_ll_tx_time_us, g_ll_rx_octets, g_ll_rx_time_us, 
@@ -783,6 +924,9 @@ static int myGapHandler(struct ble_gap_event* ev, void* /*arg*/) {
         codedScheme = 0;
       }
       update_ll_time(); // also recomputes tx timing
+      probing = false; probeSuccesses = 0; probeFailures = 0; lkgFailStreak = 0;
+      recentlyBackedOff = false; cooldownSuccess = 0; successStreak = 0;
+      lkgInterval = sendInterval;      
       #if DEBUG_LEVEL >= INFO
         Serial.printf("PHY updated: tx=%u rx=%u %s ll time=%u, tx chunk size=%u, min send interval=%u\r\n",
                       p.tx_phy, p.rx_phy,
@@ -1234,8 +1378,17 @@ void handleBLECommands(const String& cmd)
           Serial.print(data);
         #endif
       }
+      // If we leave fast mode and interval was 0, give it a sane default before sanitize
+      if (!fastMode && interval == 0 && !userSetInterval) {
+        interval = 10000UL; // 10 ms default
+      }      
       sanitizeTiming();
       updateSignalTable(scenario);
+      // Start fresh after scenario switch so we don’t trip “buffer full” or stale frames
+      dataBuffer.clear();
+      genPermit   = true;
+      pendingLen  = 0;
+      successStreak = 0;      
       n = snprintf(data, sizeof(data), "Scenario set to %d\r\n", scenario);
     }
     else
@@ -1507,8 +1660,8 @@ void updateSineWaveTable() {
     mn = min(mn, signalTable[i]); 
     mx = max(mx, signalTable[i]);
   }
-  int n = snprintf(data, sizeof(data), "Sine table min: %d, max: %d\r\n", mn, mx);
-  size_t len = (n < (int)sizeof(data)) ? (size_t)n : sizeof(data)-1;
+  n = snprintf(data, sizeof(data), "Sine table min: %d, max: %d\r\n", mn, mx);
+  len = (n < (int)sizeof(data)) ? (size_t)n : sizeof(data)-1;
   dataBuffer.push(data, len, false);
 }
 
@@ -1560,7 +1713,7 @@ static int avgCharsPerSample(int s) {
     case 9:  return   8; // Mono: "-1024\r\n" ~ 6–7 → use 8
     case 10: return   8; // Mono: "-1024\r\n" ~ 6–7 → use 8
     case 11: return  64; // 64 chars + newline
-    case 20: return  35; // Speed test: count=%9lu, lines/sec=%6lu\r\n
+    case 20: return  36; // Speed test: count=%9lu, lines/sec=%6lu\r\n
     default: return  64; // Other CSV scenarios build one line per call; keep generous
   }
 }
@@ -1587,13 +1740,17 @@ static void sanitizeTiming() {
 
   // Waveform scenarios (6..10) use samplerate and interval
   if (scenario >= 6 && scenario <= 10) {
+    // Ensure we have at least 1 sample per frame
+    const unsigned long minIntervalForOneSample =
+      (unsigned long)((1000000ULL + (uint64_t)samplerate - 1ULL) / (uint64_t)samplerate); // ceil(1e6/samplerate)
+    if (interval < minIntervalForOneSample) {
+    interval = minIntervalForOneSample;
+    }
+
     const uint64_t ticks   = (uint64_t)samplerate * (uint64_t)interval;
     int requestedSamples   = (int)(ticks / 1000000ULL);
     int maxSamplesAllowed  = maxSamplesForBuffer(scenario);
 
-    if (requestedSamples < 1) {
-      requestedSamples = 1;
-    }
     if (requestedSamples > maxSamplesAllowed) {
       // Reduce interval to fit in buffer while keeping samplerate
       // interval_us = samples * 1e6 / samplerate
@@ -1621,7 +1778,7 @@ size_t generateMonoHeader(int samplerate, unsigned long interval, String header)
 
     const uint64_t ticks = (uint64_t)samplerate * (uint64_t)interval; // microsecond ticks
     int samples = (int)(ticks / 1000000ULL);
-    if (samples <= 0) return 0;
+    if (samples <= 0) samples =1;
 
     // Fixed‑point phase increment (TABLESIZE << FRAC scaled by freq / samplerate)
    const uint32_t inc = phase_inc_from_hz(frequency, samplerate);
@@ -1655,7 +1812,7 @@ size_t generateMono(int samplerate, unsigned long interval) {
     char* ptr = data;
     const uint64_t ticks = (uint64_t)samplerate * (uint64_t)interval;
     int samples = (int)(ticks / 1000000ULL);
-    if (samples <= 0) return 0;
+    if (samples <= 0) samples = 1;
 
     // phase increment: TABLESIZE steps per cycle
     const uint32_t inc = phase_inc_from_hz(frequency, samplerate);
@@ -1689,7 +1846,7 @@ size_t generateStereo(int samplerate, unsigned long interval) {
     char* ptr = data;
     const uint64_t ticks = (uint64_t)samplerate * (uint64_t)interval;
     int samples = (int)(ticks / 1000000ULL);
-    if (samples <= 0) return 0;
+    if (samples <= 0) samples = 1;
 
     const uint32_t inc = phase_inc_from_hz(frequency, samplerate);
     const uint32_t inc_offset = phase_inc_from_hz(stereo_drift_hz,  samplerate);

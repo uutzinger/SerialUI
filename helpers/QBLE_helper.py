@@ -518,7 +518,7 @@ class QBLESerial(QObject):
         """
         User selected a different line termination from drop down menu
         """
-        label = self.ui.comboBoxDropDown_LineTermination.currentText()
+        label = self.ui.comboBoxDropDown_LineTermination_BLE.currentText()
         term  = EOL_DICT.get(label, EOL_DEFAULT_BYTES)
         self.textLineTerminator = term
 
@@ -709,18 +709,18 @@ class QBLESerial(QObject):
 
     @pyqtSlot(bytes)
     def on_eolChanged(self, eol: bytes) -> None:
-        """Worker auto-detected EOL; sync UI and internal state."""
+        """Update EOL in UI and internal state."""
         self.textLineTerminator = eol
         label = EOL_DICT_INV.get(eol, repr(eol))
         try:
-            idx = self.ui.comboBoxDropDown_LineTermination.findText(label)
-            self.ui.comboBoxDropDown_LineTermination.blockSignals(True)
+            idx = self.ui.comboBoxDropDown_LineTermination_BLE.findText(label)
+            self.ui.comboBoxDropDown_LineTermination_BLE.blockSignals(True)
             if idx > -1:
-                self.ui.comboBoxDropDown_LineTermination.setCurrentIndex(idx)
+                self.ui.comboBoxDropDown_LineTermination_BLE.setCurrentIndex(idx)
         except Exception as e:
             self.logSignal.emit(logging.ERROR, f"[{self.instance_name[:15]:<15}]: EOL UI update error: {e}")
         finally:
-            self.ui.comboBoxDropDown_LineTermination.blockSignals(False)
+            self.ui.comboBoxDropDown_LineTermination_BLE.blockSignals(False)
         self.logSignal.emit(logging.INFO,
             f"[{self.instance_name[:15]:<15}]: Auto‑detected line termination -> {label} ({repr(eol)})."
         )
@@ -1109,6 +1109,14 @@ class QBLESerial(QObject):
             self.ui.lineEdit_Text.setEnabled(True)
             self.ui.pushButton_BLEConnect.setEnabled(True)
             self.ui.pushButton_BLEConnect.setText("Disconnect")
+
+            # Push current BLE EOL selection to worker so parsing starts correctly
+            label = self.ui.comboBoxDropDown_LineTermination_BLE.currentText()
+            term  = EOL_DICT.get(label, self.textLineTerminator)
+            if term is None:
+                term = self.textLineTerminator
+            self.textLineTerminator = term
+            self.changeLineTerminationRequest.emit(term)
 
         else:
             self.ui.pushButton_SendFile.setEnabled(False)
@@ -1770,7 +1778,7 @@ class BleakWorker(QObject):
 
     def start_transceiver(self):
         if self.receiverIsRunning:
-            self.logSignal.emit(logging.ERROR,
+            self.logSignal.emit(logging.DEBUG,
                 f"[{self.instance_name[:15]:<15}]: Transceiver is already running."
             )
             return

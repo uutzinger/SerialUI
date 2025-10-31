@@ -23,9 +23,9 @@ The reference computer was a notebook with AMD Ryzen 7, 4800H, RTX3060M.
 
 ### Results
 
-Cortex-M7 microcontroller is about 8 times faster than ESP32-S3. BLE text transfer is about 8 times slower than USB text transfer.
+Cortex-M7 microcontroller is about 8 times faster than ESP32-S3. BLE text transfer is about 8 times slower than USB text transfer. We achieved about 1M bit/s BLE through compared to reported real world throughput of 1.4M bit/s.
 
-With pyqtgraph plotting window length is limited when serial transfer rate is large.
+With pyqtgraph framework the plotting window length is limited when serial transfer rate is large.
 
 With fastplotlib the plotting window length did not affect the transfer rate. Because of its ability to update portions of the signal trace at low sampling rates and large window lengths much less data needed to be transferred to the plotting engine.
 

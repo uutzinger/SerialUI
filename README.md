@@ -9,7 +9,7 @@ It offers features beyond other serial terminals. For example, in addition to fe
 - Recording of received data
 - Extended charting of the data
   
-Throughput is similar to other serial terminal programs.
+Throughput is similar to other serial terminal programs. Data is transmitted using N
 
 This program is written in python using PyQt <img src="docs/pyqt.png" height="30"/> and Bleak <img src="docs/bleak.png" height="30"/> as well as PyQtGraph <img src="docs/pyqtgraph.png" height="30"/> or fastplotlib <img src="docs/fastplotlib.png" height="30"/>.
 
@@ -17,8 +17,13 @@ Under development are binary data transmission and indicating data with display 
 
 The main program is `SerialUI.py`. It uses files in the `assets`, `docs` and `helper` folders.
 
-When possible, workers in separate threads were utilized.
+## Video
 
+Video using ESP32 with testBLESerial program. Data is transmitted using BLE Serial and maximum transfer test shows > 100 kByte/s. Device is connected to application with both serial USB and serial BLE.
+
+<a href="https://youtu.be/O6hl1_sOgLs">
+  <img src="https://img.youtube.com/vi/O6hl1_sOgLs/maxresdefault.jpg" alt="Video" width="600">
+</a>
 
 ## Description
 The serial monitor interface
@@ -65,7 +70,7 @@ To install the optional accelerated text parser you need to navigate in your she
  
 This requires a c11 compiler and the python packages `pybind11` and `setuptools` to be available.
 
-In future version we will also need:
+A future version will also need:
 - `scipy` image decompression (FFT)
 - `cobs` serial data encoding (byte stuffing)
 - `tamp` for compression (lightweight for microcontrollers)
@@ -100,9 +105,9 @@ Indicating data is not implemented yet: [Feature not implemented yet](docs/Indic
 
 ## fastplotlib
 
-Fastplotlib itself is under development. There is cusom legend.py in python libraries folder that is needed when you enable fastplotlib in the config file. Legends need work.
+Fastplotlib itself is under development. There is a cusom legend.py in python libraries folder that is needed when you enable fastplotlib in the config file. The file replaces the legends.py of the creators. It needs more work.
 
-During program startup the library and the chart widget is initialized. This requires building pipeline for GPU which takes 5-10 seconds. During that time the program might be sluggish.
+During program startup the library and the chart widget are initialized. This requires building the pipeline for the GPU which takes 5-10 seconds. During that time the program might be sluggish.
 
 ## Arduino Test Programs
 
@@ -112,7 +117,7 @@ In the `Arduino_programs` folder are example programs that simulate data for ser
 
 A detailed [comparison of SerialUI with other serial IO programs](docs/Efficiency.md) was conducted.
 
-The SerialUI is as performant as other terminal programs. The maximum text transfer of an ESP32-S3 over USB is about 800k bytes/s and 100k bytes/s over BLE. With a Cortex-M7 (Teensy) we reached about 7M bytes/s over USB.
+The SerialUI is as performant as other good terminal programs. The maximum text transfer of an ESP32-S3 over USB is about 800k bytes/s and 100k bytes/s over BLE. With a Cortex-M7 (Teensy) we reached about 7M bytes/s over USB.
 
 With both fastplotlib and pyqtgraph we can plot two channels with at least 200k samples per second at 10Hz plotting refresh rate. When large display history is needed fastplotlib with a dedicated GPU is better suited as plotting engine.
 
@@ -122,8 +127,8 @@ The following libraries are used:
 
 - [asyncio for bleak](https://docs.python.org/3/library/asyncio.html)`**`
 - [bleak - BLE](https://github.com/hbldh/bleak)`**`
-- [cobs - serial binary](https://github.com/cmcqueen/cobs-python)
-- [fastplotlib - GPU based charting](https://fastplotlib.org/)`***`
+- [cobs - serial binary](https://github.com/cmcqueen/cobs-python)`****` 
+- [fastplotlib - GPU based charting](https://fastplotlib.org/)`***` beta
 - [datetime](https://docs.python.org/3/library/datetime.html)
 - [difflib - device ID comparison](https://docs.python.org/3/library/difflib.html)
 - [html - html display](https://docs.python.org/3/library/html.parser.html)
@@ -139,18 +144,19 @@ The following libraries are used:
 - [PyQt5 or 6 - UI](https://www.riverbankcomputing.com/software/pyqt/)
 - [pyqtgraph - charting](https://www.pyqtgraph.org/)
 - [re - regular expression filter](https://docs.python.org/3/library/re.html)
-- [scipy - fft](https://scipy.org/)
+- [scipy - fft](https://scipy.org/) `***`
 - [setuptools](https://github.com/pypa/setuptools)`*`
-- [tamp - compressor](https://github.com/BrianPugh/tamp)
+- [tamp - compressor](https://github.com/BrianPugh/tamp) `***`
 - [textwrap - logging](https://docs.python.org/3/library/textwrap.html)
 - [time](https://docs.python.org/3/library/time.html)
 - [typing](https://docs.python.org/3/library/typing.html)
 - [wmi - USB events](https://timgolden.me.uk/python/wmi/index.html) or [pyudev - USB events](https://pyudev.readthedocs.io/en/latest/)
-- [zlib - compressor](https://docs.python.org/3/library/zlib.html)
+- [zlib - compressor](https://docs.python.org/3/library/zlib.html) `***`
 
 [`*`] not required but will accelerate the program, 
 [`**`] needed if BLE is enabled, 
 [`***`] needed if fastplotlib is enabled
+[`***`] future version
 
 ## Contributors
 

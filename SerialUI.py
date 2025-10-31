@@ -1235,7 +1235,7 @@ class mainWindow(QMainWindow):
             self.ble.htmlBufferTimer.start()
 
         self.handle_log(logging.INFO, 
-            f"[{self.instance_name[:15]:<15}]: Text and Log display cleared."
+            f"[{self.instance_name[:15]:<15}]: Text display cleared."
         )
         self.ui.statusBar().showMessage("Text Display Cleared.", 2000)
 
@@ -1504,15 +1504,15 @@ class mainWindow(QMainWindow):
                 return
             self.textLineTerminator = self.serial.textLineTerminator
             ok = True
-            ok &= connect(self.sendFileRequest,  self.serial.sendFileRequest)
-            ok &= connect(self.sendTextRequest,  self.serial.sendTextRequest)
-            ok &= connect(self.sendLineRequest,  self.serial.sendLineRequest)
-            ok &= connect(self.sendLinesRequest, self.serial.sendLinesRequest)
+            ok &= connect(self.sendFileRequest,        self.serial.sendFileRequest)
+            ok &= connect(self.sendTextRequest,        self.serial.sendTextRequest)
+            ok &= connect(self.sendLineRequest,        self.serial.sendLineRequest)
+            ok &= connect(self.sendLinesRequest,       self.serial.sendLinesRequest)
             # also wire RX and Throughput control
-            ok &= connect(self.rxStartRequest,    self.serial.startTransceiverRequest)
-            ok &= connect(self.rxStopRequest,     self.serial.stopTransceiverRequest)
-            ok &= connect(self.throughputStartRequest,    self.serial.startThroughputRequest)
-            ok &= connect(self.throughputStopRequest,     self.serial.stopThroughputRequest)
+            ok &= connect(self.rxStartRequest,         self.serial.startTransceiverRequest)
+            ok &= connect(self.rxStopRequest,          self.serial.stopTransceiverRequest)
+            ok &= connect(self.throughputStartRequest, self.serial.startThroughputRequest)
+            ok &= connect(self.throughputStopRequest,  self.serial.stopThroughputRequest)
             self.txrxReady_wired_to_serial = ok
             if ok:
                 self.handle_log(logging.DEBUG, 
@@ -1531,14 +1531,14 @@ class mainWindow(QMainWindow):
             if not self.txrxReady_wired_to_serial:
                 return
             ok = True
-            ok &= disconnect(self.sendFileRequest,  self.serial.sendFileRequest)
-            ok &= disconnect(self.sendTextRequest,  self.serial.sendTextRequest)
-            ok &= disconnect(self.sendLineRequest,  self.serial.sendLineRequest)
-            ok &= disconnect(self.sendLinesRequest, self.serial.sendLinesRequest)
-            ok &= disconnect(self.rxStartRequest,   self.serial.startTransceiverRequest)
-            ok &= disconnect(self.rxStopRequest,    self.serial.stopTransceiverRequest)
-            ok &= disconnect(self.throughputStartRequest,   self.serial.startThroughputRequest)
-            ok &= disconnect(self.throughputStopRequest,    self.serial.stopThroughputRequest)
+            ok &= disconnect(self.sendFileRequest,        self.serial.sendFileRequest)
+            ok &= disconnect(self.sendTextRequest,        self.serial.sendTextRequest)
+            ok &= disconnect(self.sendLineRequest,        self.serial.sendLineRequest)
+            ok &= disconnect(self.sendLinesRequest,       self.serial.sendLinesRequest)
+            ok &= disconnect(self.rxStartRequest,         self.serial.startTransceiverRequest)
+            ok &= disconnect(self.rxStopRequest,          self.serial.stopTransceiverRequest)
+            ok &= disconnect(self.throughputStartRequest, self.serial.startThroughputRequest)
+            ok &= disconnect(self.throughputStopRequest,  self.serial.stopThroughputRequest)
             self.txrxReady_wired_to_serial = not ok
             if ok:
                 self.handle_log(logging.DEBUG, 
@@ -1560,15 +1560,15 @@ class mainWindow(QMainWindow):
                 return
             self.textLineTerminator = self.ble.textLineTerminator
             ok = True
-            ok &= connect(self.sendFileRequest,  self.ble.sendFileRequest)
-            ok &= connect(self.sendTextRequest,  self.ble.sendTextRequest)
-            ok &= connect(self.sendLineRequest,  self.ble.sendLineRequest)
-            ok &= connect(self.sendLinesRequest, self.ble.sendLinesRequest)
+            ok &= connect(self.sendFileRequest,        self.ble.sendFileRequest)
+            ok &= connect(self.sendTextRequest,        self.ble.sendTextRequest)
+            ok &= connect(self.sendLineRequest,        self.ble.sendLineRequest)
+            ok &= connect(self.sendLinesRequest,       self.ble.sendLinesRequest)
             # also wire RX and Throughput control
-            ok &= connect(self.rxStartRequest,    self.ble.startTransceiverRequest)
-            ok &= connect(self.rxStopRequest,     self.ble.stopTransceiverRequest)
-            ok &= connect(self.throughputStartRequest,    self.ble.startThroughputRequest)
-            ok &= connect(self.throughputStopRequest,     self.ble.stopThroughputRequest)
+            ok &= connect(self.rxStartRequest,         self.ble.startTransceiverRequest)
+            ok &= connect(self.rxStopRequest,          self.ble.stopTransceiverRequest)
+            ok &= connect(self.throughputStartRequest, self.ble.startThroughputRequest)
+            ok &= connect(self.throughputStopRequest,  self.ble.stopThroughputRequest)
             self.txrxReady_wired_to_ble = ok
             if ok:
                 self.handle_log(logging.DEBUG, 
@@ -1585,14 +1585,14 @@ class mainWindow(QMainWindow):
             if not self.txrxReady_wired_to_ble:
                 return
             ok = True
-            ok &= disconnect(self.sendFileRequest,  self.ble.sendFileRequest)
-            ok &= disconnect(self.sendTextRequest,  self.ble.sendTextRequest)
-            ok &= disconnect(self.sendLineRequest,  self.ble.sendLineRequest)
-            ok &= disconnect(self.sendLinesRequest, self.ble.sendLinesRequest)
-            ok &= disconnect(self.rxStartRequest,   self.ble.startTransceiverRequest)
-            ok &= disconnect(self.rxStopRequest,    self.ble.stopTransceiverRequest)
-            ok &= disconnect(self.throughputStartRequest,   self.ble.startThroughputRequest)
-            ok &= disconnect(self.throughputStopRequest,    self.ble.stopThroughputRequest)
+            ok &= disconnect(self.sendFileRequest,        self.ble.sendFileRequest)
+            ok &= disconnect(self.sendTextRequest,        self.ble.sendTextRequest)
+            ok &= disconnect(self.sendLineRequest,        self.ble.sendLineRequest)
+            ok &= disconnect(self.sendLinesRequest,       self.ble.sendLinesRequest)
+            ok &= disconnect(self.rxStartRequest,         self.ble.startTransceiverRequest)
+            ok &= disconnect(self.rxStopRequest,          self.ble.stopTransceiverRequest)
+            ok &= disconnect(self.throughputStartRequest, self.ble.startThroughputRequest)
+            ok &= disconnect(self.throughputStopRequest,  self.ble.stopThroughputRequest)
             self.txrxReady_wired_to_ble = not ok
             if ok:
                 self.handle_log(logging.DEBUG, 

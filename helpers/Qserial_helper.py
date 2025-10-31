@@ -800,8 +800,9 @@ class QSerial(QObject):
             # Not Connected
 
             # Disable TX UI when disconnected
-            self.ui.lineEdit_Text.setEnabled(False)
-            self.ui.pushButton_SendFile.setEnabled(False)
+            # Need to fix this because when BLE serial is open we can not just disable these two
+            # self.ui.lineEdit_Text.setEnabled(False)
+            # self.ui.pushButton_SendFile.setEnabled(False)
 
             self.ui.comboBoxDropDown_SerialPorts.blockSignals(True)
             if self.serialPort != "":
