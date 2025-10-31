@@ -121,7 +121,7 @@ header_ext = Extension(
 
 setup(
     name='line_parsers',
-    version='1.5',
+    version='1.6',
     packages=find_packages(),                                                  # finds line_parsers
     ext_modules=[simple_ext, header_ext],
     install_requires=['pybind11>=2.6.0','numpy'],

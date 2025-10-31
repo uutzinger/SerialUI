@@ -11,7 +11,7 @@ AUTHOR                  = "Urs Utzinger"         # me
 DATE                    = "2025"                 # year of last update
 ################################################################################################################################
 # Enable Features
-USE_FASTPLOTLIB         = False                  # use fastplotlib instead of pyqtgraph
+USE_FASTPLOTLIB         = True                  # use fastplotlib instead of pyqtgraph
 USE_BLE                 = True                   # enable bleak for BLE communication
 USE_BLUETOOTHCTL        = True                   # enable bluetoothctl for bluetoothctl functions on Linux
 USE_3DPLOT              = False                  # use the 3D vector display in indicator, not implemented yet

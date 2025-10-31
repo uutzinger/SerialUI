@@ -3,7 +3,7 @@
 //
 // High-performance simple parser for lines with numbers
 // - numbers are parsed into a numpy array
-// - in the arrauy, columns indicate a channel, rows are sequential data points
+// - in the array, columns indicate a channel, rows are sequential data points
 // - in the input data stream, space-separated numbers belong to the same channel
 // - in the input data stream a comma separates channels
 // - in the input data stream, a new line restarts the row counter for all channels
@@ -26,6 +26,7 @@
 #include <limits>
 #include <algorithm>
 #include <string_view>
+#include <cstring>   // memchr
 
 namespace py = pybind11;
 
@@ -111,7 +112,7 @@ py::tuple parse_lines(
         lines.emplace_back(py::cast<std::string>(py_lines[i]));
 
     // Grab channels names ----------------------------------------------------
-    bool channel_names_is_dict;
+    bool return_dict = false;    // API return kind    
     py::dict channel_names_dict;
     py::list channel_names_list;
 
@@ -119,18 +120,26 @@ py::tuple parse_lines(
     // channel_names not provided  ---
     if (channel_names_obj.is_none()) {
         // if no channel_names are provided, create an empty vector
-        channel_names_is_dict = false;
+        return_dict = false;
         n_channel_names = 0;
+        channel_names_list = py::list();
     // channel_names provided as list ---
     } else if (py::isinstance<py::list>(channel_names_obj)) {
-        channel_names_is_dict = false;
+        return_dict = false;
         channel_names_list = channel_names_obj.cast<py::list>();
         n_channel_names = channel_names_list.size();
     // channel_names provided as dictionary ---
     } else if (py::isinstance<py::dict>(channel_names_obj)) {
-        channel_names_is_dict = true;
-        channel_names_dict = channel_names_obj.cast<py::dict>();
-        n_channel_names = channel_names_dict.size();
+        return_dict = true;
+        py::dict tmp = channel_names_obj.cast<py::dict>();
+        if (tmp.empty()) {
+            // Treat {} like None: no prior names → use list mode
+            n_channel_names = 0;
+            channel_names_list = py::list();
+        } else {
+            channel_names_dict = std::move(tmp);
+            n_channel_names = channel_names_dict.size();
+        }
     // channel_names object not supported
     } else {
         throw py::type_error("`channel_names` must be a list or dict");
@@ -176,11 +185,17 @@ py::tuple parse_lines(
 
         // -- parse each channel ------------------------
         // speed optimization: reserve space for parsed numbers
-        parsed.clear();
-        parsed.resize(n_channels);
+        //
+        // parsed.clear();
+        // parsed.resize(n_channels);
+        // for (size_t i = 0; i < n_channels; ++i) {
+        //     parsed.emplace_back();       // new empty vector<double>
+        //     parsed.back().reserve(16);   // or whatever your average is
+        // }
+        // speed optimization: prepare parsed holders and pre-reserve
+        parsed.assign(n_channels, std::vector<double>());  // size = n_channels
         for (size_t i = 0; i < n_channels; ++i) {
-            parsed.emplace_back();       // new empty vector<double>
-            parsed.back().reserve(16);   // or whatever your average is
+            parsed[i].reserve(16);
         }
         size_t channel_len = 0;
         for (size_t ci = 0; ci < n_channels; ++ci) {
@@ -259,7 +274,7 @@ py::tuple parse_lines(
     // if we have the same or less number of columns than the intially provided list we return the initial names
     if (n_channel_names < n_cols_used) {
         // Update the channel names
-        if (channel_names_is_dict) {
+        if (return_dict) {
             // We need to return channel_names dictionary
             for (size_t col_idx = n_channel_names; col_idx < n_cols_used; ++col_idx) {
                 size_t candidate = col_idx+1;
@@ -268,7 +283,7 @@ py::tuple parse_lines(
                     candidate++;
                     key = std::to_string(candidate);
                 }
-                channel_names_dict[py::str(key)] = col_idx;
+                channel_names_dict[py::str(key)] = (py::ssize_t)col_idx;
             }
             return py::make_tuple(
                 arr, 
@@ -288,11 +303,11 @@ py::tuple parse_lines(
         }
     } else {
         // No changes in variable names, return object as is
-        return py::make_tuple(
-            arr, 
-            shape_tuple,
-            channel_names_obj
-        );
+        if (return_dict) {
+            return py::make_tuple(arr, shape_tuple, channel_names_dict);
+        } else {
+            return py::make_tuple(arr, shape_tuple, channel_names_list);
+        }
     }
 
 }

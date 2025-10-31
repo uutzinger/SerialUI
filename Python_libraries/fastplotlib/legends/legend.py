@@ -24,8 +24,9 @@ PADDING     =  2 # Padding around legend panel
 
 HAS_LINE_SCREEN_SPACE  = "screen_space" in inspect.signature(pygfx.Line.__init__).parameters
 HAS_GROUP_SCREEN_SPACE = "screen_space" in inspect.signature(pygfx.Group.__init__).parameters
-HAS_TEXT_SCREEN_SPACE  = hasattr(pygfx, "Text") and \
-    ("screen_space" in inspect.signature(pygfx.Text.__init__).parameters)
+HAS_TEXT_SCREEN_SPACE  = ( hasattr(pygfx, "Text") and
+                           ("screen_space" in inspect.signature(pygfx.Text.__init__).parameters)
+                        )
 
 class LegendItem:
     def __init__(
@@ -117,76 +118,41 @@ class LineLegendItem(LegendItem):
 
         # Legend Line
 
-        try:
-            # pygfx >=0.13.0
-            line_kw = {
-                "geometry": line_geometry,
-                "material": material(
-                    alpha_mode="blend",
-                    render_queue=RenderQueue.overlay,
-                    thickness=8,
-                    thickness_space="screen",
-                    color=self._color,
-                    depth_write=False,
-                    depth_test=False,
-                )
-            }
-            if HAS_LINE_SCREEN_SPACE:
-                line_kw["screen_space"] = True
-            self._line_world_object = pygfx.Line(**line_kw)
-
-        except Exception:
-            # pygfx 0.12.0
-            line_kw = {
-                "geometry": line_geometry,
-                "material": material(
-                    thickness=8,
-                    thickness_space="screen",
-                    color=self._color,
-                    depth_test=False,
-                ),
-            }
-            if HAS_LINE_SCREEN_SPACE:
-                line_kw["screen_space"] = True
-            self._line_world_object = pygfx.Line(**line_kw)
+        line_kw = {
+            "geometry": line_geometry,
+            "material": material(
+                alpha_mode="blend",
+                render_queue=RenderQueue.overlay,
+                thickness=8,
+                thickness_space="screen",
+                color=self._color,
+                depth_write=False,
+                depth_test=False,
+            )
+        }
+        if HAS_LINE_SCREEN_SPACE:
+            line_kw["screen_space"] = True
+        self._line_world_object = pygfx.Line(**line_kw)
 
         # Legend Label
-        try: 
-            # pygfx 0.13.0
-            text_kw = {
-                "text": str(label),
-                "font_size": FONT_PIX,
-                "anchor": "middle-left",
-                "material": pygfx.TextMaterial(
-                    alpha_mode="blend",
-                    render_queue=RenderQueue.overlay,
-                    color=label_color,
-                    outline_color=label_color,
-                    outline_thickness=0,
-                    depth_write=False,
-                    depth_test=False,
-                ),
-            }
-            if HAS_TEXT_SCREEN_SPACE:
-                text_kw["screen_space"] = True
-            self._label_world_object = pygfx.Text(**text_kw)
-        except Exception:
-            # pygfx 0.12.0
-            text_kw = {
-                "text": str(label),
-                "font_size": FONT_PIX,
-                "anchor": "middle-left",
-                "material": pygfx.TextMaterial(
-                    aa=True,
-                    color=label_color,
-                    outline_color=label_color,
-                    outline_thickness=0,
-                    depth_test=False,
-                ),
-            }
-            if HAS_TEXT_SCREEN_SPACE:
-                text_kw["screen_space"] = True
-            self._label_world_object = pygfx.Text(**text_kw)
+        # pygfx 0.13.0
+        text_kw = {
+            "text": str(label),
+            "font_size": FONT_PIX,
+            "anchor": "middle-left",
+            "material": pygfx.TextMaterial(
+                alpha_mode="blend",
+                render_queue=RenderQueue.overlay,
+                color=label_color,
+                outline_color=label_color,
+                outline_thickness=0,
+                depth_write=False,
+                depth_test=False,
+            ),
+        }
+        if HAS_TEXT_SCREEN_SPACE:
+            text_kw["screen_space"] = True
+        self._label_world_object = pygfx.Text(**text_kw)
 
         group_kw = {}
         if HAS_GROUP_SCREEN_SPACE:
@@ -336,26 +302,17 @@ class Legend(Graphic):
 
         self._legend_items_group = pygfx.Group()
 
-        try:  # pygfx ≥0.13
-            self._mesh = pygfx.Mesh(
-                geometry=pygfx.box_geometry(50, 10, 1),
-                material=pygfx.MeshBasicMaterial(
-                    alpha_mode="blend",
-                    render_queue=RenderQueue.overlay,
-                    color=mesh_color,
-                    wireframe_thickness=10,
-                    depth_write=False,
-                    depth_test=False,
-                ),
-            )
-        except Exception:
-            self._mesh = pygfx.Mesh(
-                geometry=pygfx.box_geometry(50, 10, 1),
-                material=pygfx.MeshBasicMaterial(
-                    color=mesh_color,
-                    wireframe_thickness=10,
-                ),
-            )
+        self._mesh = pygfx.Mesh(
+            geometry=pygfx.box_geometry(50, 10, 1),
+            material=pygfx.MeshBasicMaterial(
+                alpha_mode="blend",
+                render_queue=RenderQueue.overlay,
+                color=mesh_color,
+                wireframe_thickness=10,
+                depth_write=False,
+                depth_test=False,
+            ),
+        )
 
         group = pygfx.Group()
         group.add(self._mesh)
@@ -514,34 +471,8 @@ class Legend(Graphic):
             "width": panel_w,
             "height": panel_h,
             "position": (panel_center[0], panel_center[1], 1.0),   # z>0 so data at z=0 is in front
-            "maintain_aspect": False,                # optional; set True if you want locked aspect
+            "maintain_aspect": True,
         })
-
-        # Used to debug scaling and position:
-        # print(self._legend_items_group.get_world_bounding_box())
-        # print(self._mesh.get_world_bounding_box())
-        # print(self.world_object.get_world_bounding_box())
-        # print(cam_w, cam_h)
-        # print(scale_x, scale_y, scale)
-
-        # # Update Position
-        # wobj = self.world_object.world
-
-        # pad2 = PADDING * 2
-        # size = getattr(dock, "size", None)
-        # if isinstance(size, (tuple, list)):
-        #     dock_w, dock_h = size
-        # elif size is None:
-        #     dock_w = panel_w + pad2
-        #     dock_h = panel_h + pad2
-        # else:
-        #     dock_w = dock_h = float(size)
-
-        # dock_w = max(dock_w, panel_w + pad2)
-        # dock_h = max(dock_h, panel_h + pad2)
-
-        # wobj.x = max(PADDING, min(wobj.x, dock_w - panel_w - PADDING))
-        # wobj.y = max(PADDING, min(wobj.y, dock_h - panel_h - PADDING))
 
     def remove_graphic(self, graphic: Graphic, *_, **__):
         """ Remove a graphic from the legend. """
@@ -582,33 +513,6 @@ class Legend(Graphic):
 
         # self._resize_dock_to_fit()
         self._reset_mesh_dims()
-
-    # def _resize_dock_to_fit(self):
-    #     if not self._items:
-    #         return
-
-    #     dock = self._plot_area
-    #     if not hasattr(dock, "resize"):
-    #         return
-
-    #     bbox = self._legend_items_group.get_world_bounding_box()
-    #     if bbox is None:
-    #         return
-    #     width, height, _ = np.ptp(bbox, axis=0)
-    #     if width <= 0 or height <= 0:
-    #         return
-
-    #     pad2 = PADDING * 2.0
-    #     target_w = width  + pad2
-    #     target_h = height + pad2
-    #     size = getattr(dock, "size", None)
-    #     if isinstance(size, (tuple, list)):
-    #         cur_w, cur_h = size
-    #     else:
-    #         cur_w = cur_h = float(size) if size is not None else target_w
-    #     if (not isclose(target_w, cur_w, rel_tol=0.05) or
-    #         not isclose(target_h, cur_h, rel_tol=0.05)):
-    #         dock.resize((target_w, target_h))        
 
     def clear(self):
         """Clear all legend items."""

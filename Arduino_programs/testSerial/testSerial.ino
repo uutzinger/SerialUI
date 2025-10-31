@@ -358,11 +358,11 @@ void handleSerialCommands()
         // Prints current settings
         Serial.println("=================================");
         Serial.println("Current Settings:");
+        Serial.printf("Paused:     %s\r\n", paused ? "Yes" : "No");
+        Serial.printf("Scenario:   %d\r\n", scenario);
         Serial.printf("Interval:   %d microseconds\r\n", interval);
         Serial.printf("Samplerate: %d Hz\r\n", samplerate);
-        Serial.printf("Scenario:   %d\r\n", scenario);
         Serial.printf("Frequency:  %f\r\n", frequency);
-        Serial.printf("Paused:     %s\r\n", paused ? "Yes" : "No");
     }
   else if (command.startsWith("."))
     {
@@ -388,6 +388,8 @@ void handleSerialCommands()
   {
     Serial.println("=================================");
     Serial.println("Commands are:");
+    Serial.println("? this help");
+    Serial.println(". current status");
     Serial.println("pause");
     Serial.println("resume");
     Serial.println("interval <micro sec> > 0");
@@ -532,7 +534,7 @@ static int avgCharsPerSample(int scen) {
     case 9:  return   8; // Mono: "-1024\r\n" ~ 6–7 → use 8
     case 10: return   8; // Mono: "-1024\r\n" ~ 6–7 → use 8
     case 11: return  64; // 64 chars + newline
-    case 20: return  35; // Speed test: count=%9lu, lines/sec=%6lu\r\n
+    case 20: return  36; // Speed test: count=%9lu, lines/sec=%6lu\r\n
     default: return  64; // Other CSV scenarios build one line per call; keep generous
   }
 }
@@ -558,13 +560,18 @@ static void sanitizeTiming() {
 
   // Only waveform scenarios (6..10) use samplerate and interval
   if (scenario >= 6 && scenario <= 10) {
+    // Ensure we have at least 1 sample per frame
+    const unsigned long minIntervalForOneSample =
+      (unsigned long)((1000000ULL + (uint64_t)samplerate - 1ULL) / (uint64_t)samplerate); // ceil(1e6/samplerate)
+    if (interval < minIntervalForOneSample) {
+    interval = minIntervalForOneSample;
+    }
+
     const uint64_t ticks   = (uint64_t)samplerate * (uint64_t)interval;
     int requestedSamples   = (int)(ticks / 1000000ULL);
     int maxSamplesAllowed  = maxSamplesForBuffer(scenario);
 
-    if (requestedSamples < 1) {
-      requestedSamples = 1;
-    }
+
     if (requestedSamples > maxSamplesAllowed) {
       // Reduce interval to fit in buffer while keeping samplerate
       // interval_us = samples * 1e6 / samplerate
@@ -589,7 +596,7 @@ size_t generateMonoHeader(int samplerate, unsigned long interval, String header)
     
     const uint64_t ticks = (uint64_t)samplerate * (uint64_t)interval; // microsecond ticks
     int samples = (int)(ticks / 1000000ULL);
-    if (samples <= 0) return 0;
+    if (samples <= 0) samples = 1;
 
     // Fixed‑point phase increment (TABLESIZE << FRAC scaled by freq / samplerate)
     const uint32_t inc = phase_inc_from_hz(frequency, samplerate);
@@ -624,7 +631,7 @@ size_t generateMono(int samplerate, unsigned long interval) {
     char* ptr = data;
     const uint64_t ticks = (uint64_t)samplerate * (uint64_t)interval;
     int samples = (int)(ticks / 1000000ULL);
-    if (samples <= 0) return 0;
+    if (samples <= 0) samples = 1;
 
     // phase increment: TABLESIZE steps per cycle
     const uint32_t inc = phase_inc_from_hz(frequency, samplerate);
@@ -658,7 +665,7 @@ size_t generateStereo(int samplerate, unsigned long interval) {
     char* ptr = data;
     const uint64_t ticks = (uint64_t)samplerate * (uint64_t)interval;
     int samples = (int)(ticks / 1000000ULL);
-    if (samples <= 0) return 0;
+    if (samples <= 0) samples = 1;
 
     const uint32_t inc        = phase_inc_from_hz(frequency,        samplerate);
     const uint32_t inc_offset = phase_inc_from_hz(stereo_drift_hz,  samplerate);

@@ -67,6 +67,12 @@ The following python modules are needed:
 To install the optional accelerated text parser you need to navigate in your shell to the `helper` folder and then execute:
 - `python3 setup.py build_ext --inplace -v`
 - `pip install -e .`
+If you are using virtual env for python don't forget to activate it.
+
+If you rebuild, clean the previous build with:
+- `python3 setup.py clean --all || true`
+- `rm -rf build *.egg-info .eggs`
+
  
 This requires a c11 compiler and the python packages `pybind11` and `setuptools` to be available.
 

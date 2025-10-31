@@ -225,15 +225,17 @@ split_headers(std::string_view sv)
         std::string_view data_sv;
 
         // c) trim the data range [dlo..dhi) to remove leading/trailing spaces
-        if (sv[dlo] != ' ' && sv[dhi-1] != ' ') {
-            // already clean, just use it
+        if (dlo >= dhi) {
+            // handle empty, `data` stays as the empty string.
+            data_sv = std::string_view("");
+        } else if (sv[dlo] != ' ' && sv[dhi - 1] != ' ') {
+            // already clean
             data_sv = sv.substr(dlo, dhi - dlo);
         } else {
             // only now do trim_range
             trim_range(sv, dlo, dhi);
-            data_sv = (dlo < dhi ? sv.substr(dlo, dhi - dlo) : "");
+            data_sv = (dlo < dhi ? sv.substr(dlo, dhi - dlo) : std::string_view(""));
         }
-        // (If dlo >= dhi, `data` stays as the empty string.)
 
         // d) Finally, push the (header_sv, data_sv) pair
         segs.emplace_back(header_sv, data_sv);
@@ -347,7 +349,7 @@ py::tuple parse_lines(
     #endif
 
     // Grab channel names ----------------------------------------------------
-    bool channel_names_is_dict;
+    bool return_dict = false;    // API return kind   
     py::dict channel_names_dict;
     py::list channel_names_list;
     ankerl::unordered_dense::map<std::string, size_t> channel_index;
@@ -358,13 +360,14 @@ py::tuple parse_lines(
     // channel_names not provided
     if (channel_names_obj.is_none()) {
         // if no channel_names are provided, create an empty vector
-        channel_names_is_dict = false;
+        return_dict = false;
         n_channel_names = 0;
         channel_index.reserve(128);
+        channel_names.reserve(128);
 
     // channel_names provided as list
     } else if (py::isinstance<py::list>(channel_names_obj)) {
-        channel_names_is_dict = false;
+        return_dict = false;
         channel_names_list  = channel_names_obj.cast<py::list>(); 
         n_channel_names = channel_names_list.size();
         size_t anticipated = std::max(n_channel_names, size_t(128));
@@ -382,28 +385,33 @@ py::tuple parse_lines(
 
     // channel_names provided as dictionary ---
     } else if (py::isinstance<py::dict>(channel_names_obj)) {
-        channel_names_is_dict = true;
-        channel_names_dict = channel_names_obj.cast<py::dict>();
-        n_channel_names = channel_names_dict.size();
+        return_dict = true;
+        py::dict tmp = channel_names_obj.cast<py::dict>();
+        // Treat {} like None: no prior channel names known -> use list mode
+        if (tmp.empty()) {            n_channel_names = 0;
+            channel_index.reserve(128);
+        } else {
+            channel_names_dict = std::move(tmp);
+            n_channel_names = channel_names_dict.size();
 
-        // Build name→index map from the dict keys and values.
-        // dict is { "channel_name": index, … }
-        // Build index→name map from the list
-        size_t anticipated = std::max(n_channel_names, size_t(128));
-        channel_index.reserve(anticipated);
-        size_t max_channel_index = 0;
-        for (auto item : channel_names_dict) {
-            size_t idx = static_cast<size_t>(item.second.cast<long>());
-            max_channel_index = std::max(max_channel_index, idx);
-        }
-        channel_names.resize(max_channel_index + 1);
-        for (auto item : channel_names_dict) {
-            // item.first  → a Python string 
-            // item.second → a Python int
-            std::string nm = item.first.cast<std::string>();
-            size_t idx     = static_cast<size_t>(item.second.cast<long>());
-            channel_index.emplace(nm, idx);
-            channel_names[idx] = nm;
+            // Build name→index map from the dict keys and values.
+            // dict is { "channel_name": index, … }
+            size_t anticipated = std::max(n_channel_names, size_t(128));
+            channel_index.reserve(anticipated);
+            size_t max_channel_index = 0;
+            for (auto item : channel_names_dict) {
+                size_t idx = static_cast<size_t>(item.second.cast<long>());
+                max_channel_index = std::max(max_channel_index, idx);
+            }
+            channel_names.resize(max_channel_index + 1);
+            for (auto item : channel_names_dict) {
+                // item.first  → a Python string
+                // item.second → a Python int
+                std::string nm = item.first.cast<std::string>();
+                size_t idx     = static_cast<size_t>(item.second.cast<long>());
+                channel_index.emplace(nm, idx);
+                channel_names[idx] = nm;
+            }
         }
 
     // channel_names object not supported
@@ -436,8 +444,8 @@ py::tuple parse_lines(
     std::vector<double> buffer(
         buffer_row_capacity * buffer_col_capacity,
         NAN_VAL);
-    std::vector<std::string_view> channels;
-    channels.reserve(buffer_col_capacity); 
+    // std::vector<std::string_view> channels;
+    // channels.reserve(buffer_col_capacity); 
 
     #ifdef DEBUG_LOG
     if (debug) log << "[parse_lines] Reserved " << buffer_col_capacity << " columns for buffer\n";
@@ -581,8 +589,8 @@ py::tuple parse_lines(
                     // hd.col_indices.push_back(single_channel_colidx);
 
                     #ifdef DEBUG_LOG
-                    if (debug) log << "    reusing existing sub-column '" 
-                                << base1 << "' at index " << colidx << "\n";
+                    if (debug) log << "    reusing existing sub-column '"
+                                << base1 << "' at index " << single_channel_colidx << "\n";
                     #endif
                 }                
 
@@ -593,7 +601,7 @@ py::tuple parse_lines(
 
                     #ifdef DEBUG_LOG
                     if (debug) log << "    reusing existing column '"
-                                << base << "' at index " << colidx << "\n";
+                                << base << "' at index " << single_channel_colidx << "\n";
                     #endif
                 }                
                 
@@ -606,7 +614,7 @@ py::tuple parse_lines(
 
                     #ifdef DEBUG_LOG
                     if (debug) log << "    created column '"
-                                << base << "' at index " << colidx << "\n";
+                                << base << "' at index " << single_channel_colidx << "\n";
                     #endif
                 }
             } else {
@@ -830,7 +838,7 @@ py::tuple parse_lines(
 
     // Build channel_names for output
 
-    if (channel_names_is_dict) {
+    if (return_dict) {
         // We need to return channel_names dictionary
         py::dict channel_names_dict_out;
         for (size_t col_idx = 0; col_idx < n_cols_used; ++col_idx) {
@@ -860,7 +868,7 @@ py::tuple parse_lines(
             channel_names_list_out.append(py::str(key));
         }
         #ifdef DEBUG_LOG
-        // Return (array, shape, dict, debug_string)
+        // Return (array, shape, list, debug_string)
         return py::make_tuple(
             arr, 
             shape_tuple, 

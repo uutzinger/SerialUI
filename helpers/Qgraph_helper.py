@@ -1339,7 +1339,7 @@ class QChart(QObject):
         self.fpl_clearLegend()                                                 # Clear the legend before updating
         for line, label in zip(lines, labels):
             self.legend.add_graphic(line, label, label_color = pygfx.Color(LEGEND_FONT_COLOR))
-        self.legend.update_using_camera()
+        # self.legend.update_using_camera()
 
     def fpl_clearLegend(self):
         """
@@ -1349,16 +1349,19 @@ class QChart(QObject):
         if legend is None:
             return                                                             # nothing to update when we dont have a legend
 
-        remover = None
-        if hasattr(legend, "remove_graphic"):
-            remover = getattr(legend, "remove_graphic")
-        elif hasattr(legend, "delete_graphic"):
-            remover = getattr(legend, "delete_graphic")
-
-        # Remove each item
-        for g in legend.graphics:
-            remover(g)
+        legend.clear()
         self.legend_entries = []
+
+        # remover = None
+        # if hasattr(legend, "remove_graphic"):
+        #     remover = getattr(legend, "remove_graphic")
+        # elif hasattr(legend, "delete_graphic"):
+        #     remover = getattr(legend, "delete_graphic")
+
+        # # Remove each item
+        # for g in legend.graphics:
+        #     remover(g)
+        # self.legend_entries = []
 
     @profile
     def fpl_updateAxesTicks(
@@ -1756,9 +1759,11 @@ class QChart(QObject):
                             # clear tail
                             line[keep_len:keep_end, 0:2] = np.nan
                             write_idx = keep_len
+                            total_points_uploaded += keep_len # if we copy data in the buffer that section will be "dirty" and reuploaded to plotter
                         else:
                             # full replace, clear entire buffer
-                            line[:write_idx,0:2] = np.nan
+                            #    setting to NaN is optional since we will overwrite it below, but it is good for debugging and visualization to see the cleared area
+                            line[:write_idx,0:2] = np.nan # we will not count this towards upload as we will count it in append below
                             write_idx = 0
 
                 # Append new data
@@ -1932,10 +1937,12 @@ class QChart(QObject):
         else:
             # FastPlotLib ─────────────────────────────────
 
-            # 1) set data limits on the axes
+            # 1) Based on x/y min/max values, calculate camera position and width/height
             # 2) set camera position, width and height
-            # 3) updated axes using camera
-            # 4) update axes ticks
+            # 3) set x/y_start_value on axis
+            # 4) update axes using camera
+            # 5) update tick marks if span changed
+            # 6) store current values for next comparison
 
             x_min, x_max = self.x_min, self.x_max
             y_min, y_max = self.y_min, self.y_max
