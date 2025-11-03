@@ -4,12 +4,12 @@
 
 It includes a serial plotter for displaying numerical data.
 
-It offers features beyond other serial terminals. For example, in addition to features found on Arduino IDE it offers:
-- Serial over BLE
+It offers features beyond other serial terminals. For example, in addition to features found on Arduino IDE Monitor or Plotter it offers:
+- Serial over BLE (NUS)
 - Recording of received data
 - Extended charting of the data
   
-Throughput is similar to other serial terminal programs. Data is transmitted using N
+Throughput is similar to other serial terminal programs.
 
 This program is written in python using PyQt <img src="docs/pyqt.png" height="30"/> and Bleak <img src="docs/bleak.png" height="30"/> as well as PyQtGraph <img src="docs/pyqtgraph.png" height="30"/> or fastplotlib <img src="docs/fastplotlib.png" height="30"/>.
 
@@ -19,7 +19,7 @@ The main program is `SerialUI.py`. It uses files in the `assets`, `docs` and `he
 
 ## Video
 
-Video using ESP32 with testBLESerial program. Data is transmitted using BLE Serial and maximum transfer test shows > 100 kByte/s. Device is connected to application with both serial USB and serial BLE.
+Video using ESP32 with testBLESerial program. Data is transmitted using BLE Serial and maximum transfer test shows > 100 kByte/s. Device is initally connected to application with serial USB and then with serial BLE.
 
 <a href="https://youtu.be/O6hl1_sOgLs">
   <img src="https://img.youtube.com/vi/O6hl1_sOgLs/maxresdefault.jpg" alt="Video" width="600">
