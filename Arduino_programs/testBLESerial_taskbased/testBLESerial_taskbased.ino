@@ -1,5 +1,5 @@
 // ********************************************************************************************************************
-//  Main File: testBLESerial.ino
+//  Main File: testBLESerial_taskbased.ino
 //
 //  This program handles data generation and BLE serial communication.
 //
@@ -14,15 +14,17 @@
 //
 // ********************************************************************************************************************
 
+#define VERSION_STRING "NUS Tester 1.1.1"
 
-#define VERSION_STRING "NUS Tester 1.0.6"
-
-// *****************************************************************************************************************
 #include <inttypes.h>  // for PRIu32 in printf
 #include <cmath>
 #include "RingBuffer.h"
-// for ble_gap_set_prefered_le_phy
+
+// *****************************************************************************************************************
+// ESP32 and NimBLE includes
+// *****************************************************************************************************************
 #include <NimBLEDevice.h>
+// for ble_gap_set_prefered_le_phy
 extern "C" {
   #include "host/ble_gap.h"      // ble_gap_* (conn params, PHY, DLE)
   #include "host/ble_hs_adv.h"   // BLE_HS_ADV_F_* flags for adv data
@@ -33,6 +35,18 @@ extern "C" {
   #include <esp_mac.h>      // IDF 5.x / Arduino core 3.x
 #else
   #include <esp_system.h>   // IDF 4.x / Arduino core 2.x
+#endif
+#if defined(ARDUINO_ARCH_ESP32)
+  #include "esp_rom_sys.h"
+#endif
+// for txTask and RSSI task
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#if defined(ARDUINO_ARCH_ESP32)
+  #include <esp_timer.h>   // microsecond one-shot timer for TX pacing
+  #define HAS_ESP_TIMER 1
+#else
+  #define HAS_ESP_TIMER 0
 #endif
 
 // *****************************************************************************************************************
@@ -65,8 +79,7 @@ extern "C" {
 #define DEBUG   4
 //
 // Avoid DEBUG for SPEED
-#define DEBUG_LEVEL DEBUG
-//
+#define DEBUG_LEVEL INFO
 // require pairing and encryption
 //
 // #define BLE_SECURE
@@ -100,6 +113,8 @@ RingBuffer<char, TX_BUFFERSIZE> txBuffer; // Should be a few times larger than t
 RingBuffer<char, RX_BUFFERSIZE> rxBuffer; // Buffer for incoming BLE commands, should be large enough to hold on BLE package
 
 // *****************************************************************************************************************
+// BLE
+// *****************************************************************************************************************
 
 // ===== GAP / Connection preferences =====
 #define DEVICE_NAME           "MediBrick"// Name shown when BLE scans for devices
@@ -115,7 +130,7 @@ inline constexpr int8_t        RSSI_FAST_THRESHOLD   =  -65;   // Switch back to
 inline constexpr int8_t        RSSI_HYSTERESIS       =    4;   // Prevent oscillation
 inline constexpr int8_t        RSSI_S8_THRESHOLD     =  -82;   // go S=8 below this
 inline constexpr int8_t        RSSI_S2_THRESHOLD     =  -75;   // go S=2 below this
-inline constexpr uint32_t      RSSI_INTERVAL_US      = 500000UL; // 0.5s
+inline constexpr uint32_t      RSSI_INTERVAL         =  500;   // 0.5s
 
 // ===== LL (Link-Layer) performance knobs =====
 // If MTU is larger than LL size the GATT packets need to be fragmented on the link layer
@@ -165,8 +180,8 @@ static constexpr uint16_t tout_ms(uint32_t ms)    { return (uint16_t)(ms / 10); 
   #define BLE_SUPERVISION_TIMEOUT   tout_ms(4000)  // Supervision timeout in milli seconds 100ms to 32s, needs to be larger than 2 * (latency + 1) * (max_interval_ms)
 #elif defined(LOWPOWER)
   // low power
-  #define MIN_BLE_INTERVAL         itvl_us(60000)  // 60ms
-  #define MAX_BLE_INTERVAL        itvl_us(120000)  // 120ms
+  #define MIN_BLE_INTERVAL         itvl_us(60000) // 60ms
+  #define MAX_BLE_INTERVAL        itvl_us(120000) // 120ms
   #define BLE_SLAVE_LATENCY                    8   // can raise
   #define BLE_SUPERVISION_TIMEOUT  tout_ms( 6000)  // 6s
 #else
@@ -205,7 +220,7 @@ static NimBLECharacteristic  *pTxCharacteristic     = nullptr;           // Tran
 static NimBLECharacteristic  *pRxCharacteristic     = nullptr;           // Reception BLE Characteristic
 static NimBLEAdvertising     *pAdvertising          = nullptr;           // Advertising 
 volatile bool                 deviceConnected       = false;             // Status
-volatile bool                 clientSubscribed      = false;             // set when subscribed
+volatile bool                 clientSubscribed      = false;             // GATT client enabled notifications
 const uint32_t                passkey               = BLE_PASSKEY_VALUE; // Define your passkey here
 volatile uint16_t             txChunkSize           = FRAME_SIZE;
 volatile uint16_t             mtu                   = txChunkSize+3; 
@@ -233,7 +248,7 @@ volatile uint16_t             g_ll_tx_time_us       = LL_TIME_1M_US;
 volatile uint16_t             g_ll_rx_time_us       = LL_TIME_1M_US;
 
 static char                   pending[FRAME_SIZE];                  // temp keep for sent frame
-volatile bool                 generationAllowed     = true;         // data producer is allowed to generate
+volatile bool                 generationAllowed     = true;         // producer gate based on buffer watermarks
 volatile uint32_t             sendInterval          = 200;          // start fast
 
 volatile int                  mtuRetryCount         = 0;            // number of times we retried to obtain MTU
@@ -274,14 +289,19 @@ const uint32_t                maxSendIntervalUs     =
                                                      30000;         // 30 ms balanced
 #endif
 
-volatile uint64_t             lastSend              = 0;            // last time data was sent/notify
+volatile uint64_t             lastSend              = 0;            // last time data was sent/notify (µs, 64-bit to avoid wrap)
 volatile size_t               pendingLen            = 0;            // length data that we attempted to send
 volatile bool                 txOkFlag              = false;        // no issues last data was sent
 volatile int                  successStreak         = 0;            // number of consecutive successful sends
 volatile int                  cooldownSuccess       = 0;            // successes since last backoff
 volatile bool                 recentlyBackedOff     = false;        // gate decreases after congestion
 volatile uint8_t              badDataRetries        = 0;            // EBADDATA soft fallback attempts
-inline constexpr uint8_t      badDataMaxRetries     = 8;            // limit EBADDATA chunk shrink attempts
+inline constexpr uint8_t      badDataMaxRetries     = 3;            // limit EBADDATA chunk shrink attempts
+
+// ===== Tasks =====
+static TaskHandle_t           txTaskHandle          = nullptr;
+volatile bool                 txDropPending         = false;
+static TaskHandle_t           rssiTaskHandle        = nullptr;
 
 // *****************************************************************************************************************
 
@@ -301,7 +321,6 @@ String                        receivedCommand       = "";
 volatile bool                 commandPending        = false;        // Flag to indicate if a command is waiting to be processed
 char                          data[1024];
 unsigned long                 lastDataGenerationTime= 0;            // Last time data was produced
-unsigned long                 lastRssiPoll          = 0;
 
 // ===== Data generation globals =====
 int                           scenario              =    6;        // stereo sine wave
@@ -352,6 +371,185 @@ static inline int table_index(uint32_t p) {
   return (int)((p >> FRAC) & (TABLESIZE - 1));
 }
 
+// ===============================================================================================================================================================
+// TX task 
+// ===============================================================================================================================================================
+
+#if HAS_ESP_TIMER
+static inline uint64_t nowMicros() { return esp_timer_get_time(); }
+#else
+static inline uint64_t nowMicros() { return (uint64_t)micros(); }
+#endif
+
+static inline void relax_delay_us(uint32_t us) {
+  if (us == 0) return;
+  #if defined(ARDUINO_ARCH_ESP32)
+    esp_rom_delay_us(us);
+  #else
+    delayMicroseconds(us);
+  #endif
+}
+
+// Only the TX task touches pendingLen/txBuffer; callbacks set flags.
+static void TxTask(void* /*arg*/) {
+  uint64_t nextDue = nowMicros();
+  for (;;) {
+
+    // Wait until subscribed and connected
+    if (!deviceConnected || !clientSubscribed) {
+      vTaskSuspend(nullptr); // resumed by onSubscribe
+      // After resume, fall through and process immediately
+      nextDue = nowMicros();
+    }
+
+    if (!deviceConnected || !clientSubscribed) continue;
+
+    // honor drop request posted by callbacks (e.g., MTU/EMSGSIZE)
+    if (txDropPending) {
+      pendingLen    = 0;
+      txDropPending = false;
+      if (txBuffer.available() <= lowWaterMark) generationAllowed = true;
+    }
+
+    // consume after a successful notify (signaled by onStatus)
+    if (txOkFlag && pendingLen > 0) {
+      txBuffer.consume(pendingLen);
+      txOkFlag   = false;
+      pendingLen = 0;
+      if (txBuffer.available() <= lowWaterMark) generationAllowed = true;
+    }
+
+    // stage a frame if none is pending
+    if (pendingLen == 0) {
+      size_t avail = txBuffer.available();
+      if (avail > 0) {
+        pendingLen = txBuffer.peek(pending, txChunkSize);
+        if (pendingLen > 0) generationAllowed = false;
+      }
+    }
+
+    // If nothing staged, arm a short poll and wait to avoid busy-spin
+    if (pendingLen == 0) {
+      vTaskDelay(pdMS_TO_TICKS(1));
+      nextDue = nowMicros();
+      continue;
+    }
+
+    // Wait until the next send slot. Favor coarse sleeps when far ahead, fine waits when close.
+    uint64_t now = nowMicros();
+    int64_t  delta = (int64_t)(nextDue - now);
+    if (delta > 1500) {
+      // Convert to ms, keep at least 1 tick margin; clamp to avoid zero
+      TickType_t waitTicks = pdMS_TO_TICKS((uint32_t)((delta - 1000) / 1000));
+      if (waitTicks < 1) waitTicks = 1;
+      vTaskDelay(waitTicks);
+      continue;
+    }
+    if (delta > 50) {
+      relax_delay_us((uint32_t)(delta - 25));
+      continue;
+    }
+    if (delta > 0) {
+      // Barely early; yield once to let NimBLE host run before retrying
+      taskYIELD();
+      continue;
+    }
+
+    // queue one notification; onStatus will signal outcome
+    pTxCharacteristic->setValue(reinterpret_cast<uint8_t*>(pending), pendingLen);
+    pTxCharacteristic->notify();
+    lastSend = nowMicros();
+
+    // Schedule the next slot relative to the current send time (avoid drift on long stalls)
+    nextDue = lastSend + (uint64_t)sendInterval;
+
+    // Yield so NimBLE host/stack can advance between notifications
+    taskYIELD();
+  }
+}
+
+// ===============================================================================================================================================================
+// RSSI monitor task: polls RSSI and adjusts PHY with hysteresis
+// ===============================================================================================================================================================
+
+static void RssiTask(void* arg) {
+  const TickType_t pollPeriod = pdMS_TO_TICKS(RSSI_INTERVAL); 
+  int8_t tmp_rssi = 0;
+  for (;;) {
+    if (!deviceConnected || g_connectHandle == BLE_HS_CONN_HANDLE_NONE) {
+      vTaskDelay(pdMS_TO_TICKS(200));
+      continue;
+    }
+
+    if (ble_gap_conn_rssi(g_connectHandle, &tmp_rssi) == 0) {
+      rssi = tmp_rssi;
+      f_rssi = (int8_t)((4 * (int)f_rssi + (int)rssi) / 5); // low pass filter (approx 4.5s)
+
+      // If RSSI is low and we are on 2M or 1M switch to CODED
+
+      if (f_rssi < (RSSI_S8_THRESHOLD - RSSI_HYSTERESIS)) {
+        if (!phyIsCODED || codedScheme != 8) {
+          #if DEBUG_LEVEL >= INFO
+            Serial.printf("Switching to CODED 8 (RSSI: %d)\r\n", f_rssi);
+          #endif
+          desiredCodedScheme = 8; // prefer S=8 for range
+          if (0 != ble_gap_set_prefered_le_phy(
+              g_connectHandle,
+              BLE_GAP_LE_PHY_CODED_MASK,
+              BLE_GAP_LE_PHY_CODED_MASK,
+              BLE_GAP_LE_PHY_CODED_S8)) {
+            #if DEBUG_LEVEL >= WARNING
+              Serial.println("Failed to set preferred PHY");
+            #endif
+          }
+        }
+      } else if (f_rssi < (RSSI_S2_THRESHOLD - RSSI_HYSTERESIS)) {
+        if (!phyIsCODED || codedScheme != 2) {
+          #if DEBUG_LEVEL >= INFO
+            Serial.printf("Switching to CODED 2 (RSSI: %d)\r\n", f_rssi);
+          #endif
+          desiredCodedScheme = 2;
+          if (0 != ble_gap_set_prefered_le_phy(
+              g_connectHandle,
+              BLE_GAP_LE_PHY_CODED_MASK,
+              BLE_GAP_LE_PHY_CODED_MASK,
+              BLE_GAP_LE_PHY_CODED_S2)) {
+            #if DEBUG_LEVEL >= WARNING
+              Serial.println("Failed to set preferred PHY");
+            #endif
+          }
+        }
+
+      // If RSSI is good and we are on CODED switch to 2M/1M
+
+      } else if (f_rssi > (RSSI_FAST_THRESHOLD + RSSI_HYSTERESIS)) {
+        // High RSSI: allow 2M/1M
+        if (phyIsCODED || codedScheme != 0) {
+          #if DEBUG_LEVEL >= INFO
+            Serial.printf("Switching to 2M/1M (RSSI: %d)\r\n", f_rssi);
+          #endif
+          desiredCodedScheme = 0;
+          if (0 != ble_gap_set_prefered_le_phy(
+              g_connectHandle,
+              BLE_GAP_LE_PHY_2M_MASK | BLE_GAP_LE_PHY_1M_MASK,
+              BLE_GAP_LE_PHY_2M_MASK | BLE_GAP_LE_PHY_1M_MASK,
+              0)) {
+            #if DEBUG_LEVEL >= ERROR
+              Serial.println("Failed to set preferred PHY");
+            #endif
+          }
+        }
+      }
+    } else {
+      // error reading RSSI
+      #if DEBUG_LEVEL >= WARNING
+        Serial.println("Error reading RSSI");
+      #endif
+    }
+
+    vTaskDelay(pollPeriod);
+  }
+}
 
 // ===============================================================================================================================================================
 // Helpers for TX sizing & pacing
@@ -366,9 +564,9 @@ static inline uint16_t compute_txChunkSize(uint16_t mtu_val, uint16_t ll_octets)
     // Max payload fitting N LL PDUs: N*ll_octets - (L2CAP 4 + ATT 3)
     const uint16_t one_pdu_max = (ll_octets > 7) ? (uint16_t)(ll_octets - 7) : 20;
     #if defined(SPEED)
-      //const uint32_t two_pdu_calc = (uint32_t)ll_octets * 2u;
-      //const uint16_t two_pdu_max  = (two_pdu_calc > 7u) ? (uint16_t)(two_pdu_calc - 7u) : one_pdu_max;
-      //uint16_t llLimit = (two_pdu_max > one_pdu_max) ? two_pdu_max : one_pdu_max;
+      // const uint32_t two_pdu_calc = (uint32_t)ll_octets * 2u;
+      // const uint16_t two_pdu_max  = (two_pdu_calc > 7u) ? (uint16_t)(two_pdu_calc - 7u) : one_pdu_max;
+      // uint16_t llLimit = (two_pdu_max > one_pdu_max) ? two_pdu_max : one_pdu_max;
       uint16_t llLimit = one_pdu_max;
     #else
       uint16_t llLimit = one_pdu_max;
@@ -394,10 +592,10 @@ static inline uint32_t compute_minSendIntervalUs(uint16_t chunkSize, uint16_t ll
 }
 
 static inline size_t update_lowWaterMark(size_t chunkSize) {
-    size_t lw = 2 * (size_t)chunkSize;    // up to two outbound packets buffered
-    size_t cap = TX_BUFFERSIZE / 4;       // don't let low water exceed 25% of buffer
+    size_t lw = 2 * (size_t)chunkSize;              // up to two outbound packets buffered
+    size_t cap = TX_BUFFERSIZE / 4;                    // don't let low water exceed 25% of buffer
     if (lw > cap) lw = cap;
-    if (lw < chunkSize) lw = chunkSize;   // never below one chunk
+    if (lw < chunkSize) lw = chunkSize;             // never below one chunk
     return lw;
 }
 
@@ -475,9 +673,6 @@ public:
     deviceConnected = true;
     g_connectHandle = connInfo.getConnHandle();
 
-    // Reset EBADDATA fallback budget
-    badDataRetries = 0;
-
     // We can use the connection handle here to ask for different connection parameters.
     pServer->updateConnParams(
       g_connectHandle, 
@@ -533,6 +728,7 @@ public:
       probing = false; probeSuccesses = 0; probeFailures = 0; lkgFailStreak = 0;
       recentlyBackedOff = false; cooldownSuccess = 0; successStreak = 0;
       lkgInterval = sendInterval;
+  badDataRetries = 0;
 
     } else {
       // Fallback: assume 1M timings if we couldn't read
@@ -560,6 +756,10 @@ public:
       NimBLEDevice::startSecurity(g_connectHandle);
     #endif
 
+  // resume background RSSI task; keep TX task suspended until subscribed
+  if (rssiTaskHandle) vTaskResume(rssiTaskHandle);
+  if (txTaskHandle)   vTaskSuspend(txTaskHandle);
+
     #if DEBUG_LEVEL >= INFO
       Serial.printf("Client [%s] is connected.\r\n", connInfo.getAddress().toString().c_str());
     #endif
@@ -580,8 +780,14 @@ public:
     successStreak   = 0;
     sendInterval    = maxSendIntervalUs; // restart conservatively
     NimBLEDevice::startAdvertising();    // Restart advertising immediately
-  badDataRetries  = 0;
-    #if DEBUG_LEVEL >= INFO
+
+  // suspend tasks on disconnect
+  if (txTaskHandle)   vTaskSuspend(txTaskHandle);
+  if (rssiTaskHandle) vTaskSuspend(rssiTaskHandle);
+  txDropPending = false;
+  badDataRetries = 0;
+
+        #if DEBUG_LEVEL >= INFO
       uint8_t hci =  (uint8_t)(reason & 0xFF);
       Serial.printf("Client [%s] is disconnected (raw=%d, %s). Advertising restarted.\r\n",
                     connInfo.getAddress().toString().c_str(), reason, hciDisconnectReasonStr(hci));
@@ -594,8 +800,8 @@ public:
     recompute_tx_timing();
     probing = false; probeSuccesses = 0; probeFailures = 0; lkgFailStreak = 0;
     recentlyBackedOff = false; cooldownSuccess = 0; successStreak = 0;
-    lkgInterval = sendInterval;    
-    badDataRetries = 0;
+    lkgInterval = sendInterval;   
+    badDataRetries = 0; 
     #if DEBUG_LEVEL >= INFO
       Serial.printf("MTU updated: %u (conn=%u), tx chunk size=%u, min send interval=%u\r\n", 
         m, connInfo.getConnHandle(), txChunkSize, minSendIntervalUs);
@@ -677,39 +883,49 @@ public:
 class TxCallback : public NimBLECharacteristicCallbacks {
 public:
 
-  // Best-effort normalization for status codes across NimBLE variants
+  // ---- Status code normalization helpers ----
   static inline bool isOkOrDone(int code) {
-    return (code == 0) || (code == 14); // 0=OK, 14=EDONE
+    return (code == 0 || code == BLE_HS_EDONE || code == 14);
   }
   static inline bool isMsgSize(int code) {
-    return (code == 4); // EMSGSIZE
+    return (code == BLE_HS_EMSGSIZE || code == 4);
   }
   static inline bool isBadData(int code) {
     // EBADDATA observed as 9 and 10 across builds; include both
     return (code == BLE_HS_EBADDATA || code == 9 || code == 10);
   }
   static inline bool isCongestion(int code) {
-    // ENOMEM(6), ENOMEM_EVT(12/20), EBUSY(15), ETIMEOUT(13)
-    return (code == 6) || (code == 12) || (code == 20) || (code == 15) || (code == 13);
+    // Treat ENOMEM/ENOMEM_EVT/EBUSY/TIMEOUT as congestion. Accept observed integers too.
+    return (code == BLE_HS_ENOMEM       || code == 6  ||
+            code == BLE_HS_ENOMEM_EVT   || code == 12 || code == 20 ||
+            code == BLE_HS_EBUSY        || code == 15 ||
+            code == BLE_HS_ETIMEOUT     || code == 13);
   }
   static inline bool isDisconnectedOrEOS(int code) {
-    // ENOTCONN(7), EOS seen as 11 in this build
-    return (code == 7) || (code == 11);
+    // ENOTCONN and EOS; observed EOS sometimes 10/11 in logs
+    return (code == BLE_HS_ENOTCONN || code == 7 || code == BLE_HS_EOS || code == 10 || code == 11);
   }
   static const char* codeName(int code) {
     switch (code) {
-      case 0:  return "OK";
-      case 14: return "EDONE";
-      case 4:  return "EMSGSIZE";
+      case 0:  return "OK(0)";
+      case 2:  return "EINVAL(2)";
+      case 3:  return "EADVSTATE(3)"; // placeholder
+      case 4:  return "EMSGSIZE(4)";
+      case 5:  return "EALREADY(5)";
+      case 6:  return "ENOMEM(6)";
+      case 7:  return "ENOTCONN(7)";
+      case 8:  return "EAPP(8)";
       case 9:  return "EBADDATA(9)";
-      case 10: return "EBADDATA(10)";
-      case 6:  return "ENOMEM";
+      case 10: return "EBADDATA/EOS(10)";
+      case 11: return "EOS(11)";
       case 12: return "ENOMEM_EVT(12)";
-      case 20: return "ENOMEM_EVT(20)";
-      case 15: return "EBUSY";
-      case 13: return "ETIMEOUT";
-      case 7:  return "ENOTCONN";
-      case 11: return "EOS";
+      case 13: return "ETIMEOUT(13)";
+      case 14: return "EDONE(14)";
+      case 15: return "EBUSY(15)";
+      case 16: return "EDISABLED(16)";
+      case 18: return "ENOTSYNCED(18)";
+      case 19: return "EAUTHEN(19)";
+      case 20: return "EAUTHOR/ENOMEM_EVT?(20)";
       default: return "UNKNOWN";
     }
   }
@@ -717,7 +933,6 @@ public:
   // A notification was sent to the client.
   void onStatus(NimBLECharacteristic* pCharacteristic, int code) override {
   /* 
-  Status codes:
     0 → Success (notification queued/sent). 
     1 (BLE_HS_EUNKNOWN) → Unknown error.
    14 (BLE_HS_EDONE)    → Success for indication (confirmation received). 
@@ -729,11 +944,9 @@ public:
     4 (BLE_HS_EMSGSIZE) → Payload too big for context. (For notifies you should already be ≤ MTU−3.)
     5 (BLE_HS_EALREADY) → Operation already in progress.
     8 (BLE_HS_EAPP)     → Application error.
-**    9 (BLE_HS_EBADDATA) → Malformed data.
-** reports as 10
+    9 (BLE_HS_EBADDATA) → Malformed data.
    10 (BLE_HS_EOS)      → Connection closed, end of stream.
-**   12 (BLE_HS_ENOMEM_EVT) → Out of memory for event allocation.
-** reports as 20
+   12 (BLE_HS_ENOMEM_EVT) → Out of memory for event allocation.
    16 (BLE_HS_EDISABLED) → BLE stack not enabled.
    18 (BLE_HS_ENOTSYNCED)→ Host not synced with controller yet.
    19 (BLE_HS_EAUTHEN)   → Authentication failed.
@@ -744,13 +957,6 @@ public:
    24 (BLE_HS_ESTORE_FAIL) → Persistent storage write failed.
    25 (BLE_HS_EHCI)      → Low-level HCI failure.
   */
-
-    // #if DEBUG_LEVEL >= DEBUG
-    //   Serial.printf("TX onStatus code: %d\r\n", code);
-    //   Serial.printf("Status codes: DONE %d, MSGSIZE %d, BADDATA %d\r\n", BLE_HS_EDONE, BLE_HS_EMSGSIZE, BLE_HS_EBADDATA);
-    //   Serial.printf("Status codes: NOMEM %d, NOMEM_EVT %d, BUSY %d, TIMEOUT %d \r\n", BLE_HS_ENOMEM, BLE_HS_ENOMEM_EVT, BLE_HS_EBUSY, BLE_HS_ETIMEOUT);
-    //   Serial.printf("Status codes: NOTCONN %d, EOS %d\r\n", BLE_HS_ENOTCONN, BLE_HS_EOS);
-    // #endif
 
     if (isOkOrDone(code)) 
     {
@@ -821,7 +1027,7 @@ public:
           mtu = currentMtu;
           recompute_tx_timing();
           #if DEBUG_LEVEL >= INFO
-            Serial.printf("EMSGSIZE: MTU adjusted, send interval: %u\r\n", sendInterval);
+            Serial.printf("MTU adjusted, send interval: %u\r\n", sendInterval);
           #endif
         } else {
           uint16_t oldChunk = txChunkSize;
@@ -830,7 +1036,7 @@ public:
           minSendIntervalUs = compute_minSendIntervalUs(txChunkSize, g_ll_tx_octets, llTimeUS);
           if (sendInterval < minSendIntervalUs) sendInterval = minSendIntervalUs;
           #if DEBUG_LEVEL >= INFO
-            Serial.printf("EMSGSIZE: Chunk reduced old=%u new=%u minSendIntervalUs=%u\r\n",
+            Serial.printf("Chunk reduced old=%u new=%u minSendIntervalUs=%u\r\n",
                           oldChunk, txChunkSize, minSendIntervalUs);
           #endif
         }
@@ -841,7 +1047,7 @@ public:
       {
         // We have issues adjusting chunk size, last try effort before disconnect
         #if DEBUG_LEVEL >= WARNING
-          Serial.println("EMSGSIZE: retries exceeded");
+          Serial.println("EMSGSIZE retries exceeded");
         #endif
         if (txChunkSize > 20) {
           // One last fallback before disconnect: force minimum chunk and retry once
@@ -852,7 +1058,7 @@ public:
           mtuRetryCount = 0; // give it another chance
         } else {
           #if DEBUG_LEVEL >= WARNING
-            Serial.println("EMSGSIZE: retries exceeded, disconnecting");
+            Serial.println("EMSGSIZE retries exceeded, disconnecting");
           #endif
           pServer->disconnect(g_connectHandle);
           mtuRetryCount = 0;
@@ -867,7 +1073,7 @@ public:
       static uint32_t lastPrint9Us = 0;
       static uint16_t suppressed9  = 0;
 
-      const uint64_t now = micros();
+      const uint64_t now = nowMicros();
       if ((now - lastPrint9Us) > 500000ULL) { // rate-limit: print at most ~2 Hz
         #if DEBUG_LEVEL >= WARNING
           if (suppressed9 > 0) {
@@ -884,7 +1090,7 @@ public:
       if (badDataRetries < badDataMaxRetries) {
         uint16_t oldChunk = txChunkSize;
         // shrink ~25% per attempt; floor at 20 bytes
-        uint16_t newChunk = (uint16_t)max(20, (int)((oldChunk * 9) / 10));
+        uint16_t newChunk = (uint16_t)max(20, (int)((oldChunk * 3) / 4));
         if (newChunk < oldChunk) {
           txChunkSize = newChunk;
           lowWaterMark = update_lowWaterMark(txChunkSize);
@@ -899,6 +1105,7 @@ public:
       }
       // Restage the same data at the new size; do not change pacing/probe state
       pendingLen    = 0;
+      txDropPending = true;
     }
 
     else if (isCongestion(code)) 
@@ -914,7 +1121,7 @@ public:
         sendInterval = lkgInterval;
         lkgFailStreak = 0;
         #if DEBUG_LEVEL >= INFO
-          Serial.printf("Congestion: Probe failed, revert to LKG=%u\r\n", sendInterval);
+          Serial.printf("Probe failed, revert to LKG=%u\r\n", sendInterval);
         #endif
       } else {
         // failure at LKG; if repeated, relax LKG slightly
@@ -931,13 +1138,13 @@ public:
             lkgInterval  = next;
             sendInterval = next;
             #if DEBUG_LEVEL >= INFO
-              Serial.printf("Congestion: Escalate LKG to %u\r\n", lkgInterval);
+              Serial.printf("Escalate LKG to %u\r\n", lkgInterval);
             #endif
           }
         }
       }
     }
-
+    
     else if (isDisconnectedOrEOS(code)) 
     {
       // Connection dropped
@@ -970,10 +1177,16 @@ public:
       }
     }
   }
-
   // Peer subscribed to notifications/indications
   void onSubscribe(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo, uint16_t subValue) override {
-    clientSubscribed = (bool)(subValue & 0x0001); // enable send data in main loop
+  clientSubscribed = (bool)(subValue & 0x0001); // client subscribed to notifications
+
+    // Start the tranmission task
+  if (clientSubscribed) {
+        if (txTaskHandle) vTaskResume(txTaskHandle);
+    } else {
+        if (txTaskHandle) vTaskSuspend(txTaskHandle);
+    }
 
     #if DEBUG_LEVEL >= INFO
       std::string addr = connInfo.getAddress().toString();
@@ -1019,8 +1232,8 @@ static int myGapHandler(struct ble_gap_event* ev, void* /*arg*/) {
       recompute_tx_timing();
       probing = false; probeSuccesses = 0; probeFailures = 0; lkgFailStreak = 0;
       recentlyBackedOff = false; cooldownSuccess = 0; successStreak = 0;
-      lkgInterval = sendInterval;      
-  badDataRetries = 0;
+  lkgInterval = sendInterval;     
+  badDataRetries = 0; 
       #if DEBUG_LEVEL >= INFO
         Serial.printf("DLE updated: tx=%u octets / %u ll time µs, rx =%u octets / ll time %u µs, tx chunk size=%u, min send interval=%u\r\n",
                       g_ll_tx_octets, g_ll_tx_time_us, g_ll_rx_octets, g_ll_rx_time_us, 
@@ -1051,8 +1264,8 @@ static int myGapHandler(struct ble_gap_event* ev, void* /*arg*/) {
       update_ll_time(); // also recomputes tx timing
       probing = false; probeSuccesses = 0; probeFailures = 0; lkgFailStreak = 0;
       recentlyBackedOff = false; cooldownSuccess = 0; successStreak = 0;
-      lkgInterval = sendInterval;      
-  badDataRetries = 0;
+  lkgInterval = sendInterval;     
+  badDataRetries = 0; 
       #if DEBUG_LEVEL >= INFO
         Serial.printf("PHY updated: tx=%u rx=%u %s ll time=%u, tx chunk size=%u, min send interval=%u\r\n",
                       p.tx_phy, p.rx_phy,
@@ -1256,8 +1469,24 @@ void setup()
   for (char &c : deviceMac) c = (char)toupper((unsigned char)c);
   Serial.printf("MAC: %s\r\n", deviceMac.c_str());
 
-  // ==================================================================
+  // Report pacing backend for clarity during perf testing
+  Serial.println("TX pacing: TxTask timed loop (µs scheduler)");
 
+  // ==================================================================
+  // Create background tasks once; keep them suspended until needed
+  // Create background tasks once; keep them suspended until needed
+  if (!txTaskHandle) {
+    // Move TX to core 0; higher prio than RSSI, but not too high to starve NimBLE
+    xTaskCreatePinnedToCore(TxTask,   "TxTask",   4096, nullptr, 4, &txTaskHandle,   1);
+    vTaskSuspend(txTaskHandle);
+  }
+  if (!rssiTaskHandle) {
+    // Keep RSSI on core 1 to reduce interference with NimBLE host
+    xTaskCreatePinnedToCore(RssiTask, "RssiTask", 3072, nullptr, 2, &rssiTaskHandle, 1);
+    vTaskSuspend(rssiTaskHandle);
+  }
+  
+  // ==================================================================
   // Prints current data generation settings
   Serial.println("==================================================================");
   Serial.println("Current Settings:");
@@ -1273,8 +1502,7 @@ void setup()
   lastDataGenerationTime  = micros();
   lastBLETime = micros();
   lastBlink = micros();
-  lastSend = micros();
-  lastRssiPoll = micros();
+  lastSend = nowMicros();
 
 }
 
@@ -1285,90 +1513,6 @@ void setup()
 void loop()
 {
   currentTime = micros();
-
-  // RSSI Polling to adjust connection parameters: 
-  //   low signal -> go coded for error correction
-  //   high signal -> allow 1M or 2M and turn of error correction
-  // -----------------------------------------------------------------------
-  if (deviceConnected){
-    if ((currentTime - lastRssiPoll) >= RSSI_INTERVAL_US) {
-      lastRssiPoll = currentTime;
-      if (g_connectHandle == BLE_HS_CONN_HANDLE_NONE) return; // safety check
-      int8_t tmp_rssi = 0;
-      if (ble_gap_conn_rssi(g_connectHandle, &tmp_rssi) == 0) {
-        rssi = tmp_rssi;
-        f_rssi = (f_rssi * 4 + rssi) / 5; // low pass filter (4.5sec)
-        #if DEBUG_LEVEL >= DEBUG
-          Serial.printf("RSSI: %d/%d\r\n", rssi,f_rssi);
-        #endif
-      
-        // If RSSI is low and we are on 2M or 1M switch to CODED
-
-        if (f_rssi < (RSSI_S8_THRESHOLD - RSSI_HYSTERESIS)) {
-          if (!phyIsCODED || codedScheme != 8) {
-            #if DEBUG_LEVEL >= INFO
-              Serial.printf("Switching to CODED 8 (RSSI: %d)\r\n", f_rssi);
-            #endif
-            desiredCodedScheme = 8; // prefer S=8 for better range, but S=2 is more robust if we can't read the actual coded scheme
-            if (0 != ble_gap_set_prefered_le_phy(
-                  g_connectHandle,
-                  BLE_GAP_LE_PHY_CODED_MASK,
-                  BLE_GAP_LE_PHY_CODED_MASK,
-                  BLE_GAP_LE_PHY_CODED_S8);
-                ) {
-                  #if DEBUG_LEVEL >= WARNING
-                    Serial.printf("Error setting CODED S8 PHY: %d\r\n", rc);
-                  #endif
-                }
-          }
-        } else if (f_rssi < (RSSI_S2_THRESHOLD - RSSI_HYSTERESIS)) {
-          if (!phyIsCODED || codedScheme != 2) {
-            #if DEBUG_LEVEL >= INFO
-              Serial.printf("Switching to CODED 2 (RSSI: %d)\r\n", f_rssi);
-            #endif
-            desiredCodedScheme = 2; 
-            if (0 != ble_gap_set_prefered_le_phy(
-                  g_connectHandle, 
-                  BLE_GAP_LE_PHY_CODED_MASK, 
-                  BLE_GAP_LE_PHY_CODED_MASK,
-                  BLE_GAP_LE_PHY_CODED_S2);
-                ) {
-                  #if DEBUG_LEVEL >= WARNING
-                    Serial.printf("Error setting CODED S2 PHY: %d\r\n", rc);
-                  #endif
-                }
-          }
-
-        // If RSSI is high switch to 1M/2M
-
-        } else if (f_rssi > (RSSI_FAST_THRESHOLD + RSSI_HYSTERESIS)) {
-          // prefer 2M then 1M fallback for better speed,
-          // but allow fallback to coded if signal is bad
-          if (phyIsCODED || codedScheme != 0) {
-            #if DEBUG_LEVEL >= INFO
-              Serial.printf("Switching to 2M/1M (RSSI: %d)\r\n", f_rssi);
-            #endif
-            desiredCodedScheme = 0;
-            if (0 != ble_gap_set_prefered_le_phy(
-                  g_connectHandle,
-                  BLE_GAP_LE_PHY_2M_MASK | BLE_GAP_LE_PHY_1M_MASK,
-                  BLE_GAP_LE_PHY_2M_MASK | BLE_GAP_LE_PHY_1M_MASK,
-                  0);
-                ) {
-                  #if DEBUG_LEVEL >= WARNING
-                    Serial.printf("Error setting 2M/1M PHY: %d\r\n", rc);
-                  #endif
-                }
-            }
-        }
-      } else {
-        // error reading RSSI
-        #if DEBUG_LEVEL >= WARNING
-          Serial.println("Error reading RSSI");
-        #endif
-      }
-    }
-  }
 
   // Handle Commands (BLE RX via rxBuffer)
   // -----------------------------------------------------------------------
@@ -1414,44 +1558,6 @@ void loop()
         #if DEBUG_LEVEL >= ERROR
           Serial.print(data);
         #endif
-      }
-    }
-  }
-
-  // Send Data
-  // ------------------------------------------------------------------------
-  // If a device is connected, send data in chunks
-
-  if (deviceConnected && clientSubscribed){
-
-    // consume after previous was success
-    if (txOkFlag && pendingLen > 0) {
-      txBuffer.consume(pendingLen);
-      txOkFlag = false;
-      pendingLen = 0;
-      size_t used = txBuffer.available();
-      if (used <= lowWaterMark) {
-        generationAllowed = true;
-      }
-    }
-
-    // time to send next chunk?
-    if ((currentTime - lastSend) >= sendInterval) {
-      lastSend = currentTime;
-
-      if (pendingLen == 0 && txBuffer.available() > 0) {
-        pendingLen = txBuffer.peek(pending, txChunkSize);
-        if (pendingLen > 0) generationAllowed = false;
-      }
-
-      if (pendingLen > 0) {
-        if (pendingLen <= txChunkSize) {
-          pTxCharacteristic->setValue(reinterpret_cast<uint8_t*>(pending), pendingLen);
-          pTxCharacteristic->notify();
-        } else {
-          pendingLen = 0; // staged chunk no longer fits; drop it
-          if (txBuffer.available() <= lowWaterMark) generationAllowed = true;
-        }
       }
     }
   }
@@ -1908,10 +2014,12 @@ static int maxSamplesForBuffer(int scen) {
 }
 
 // Clamp samplerate/interval and, if needed, shrink interval to keep samples per frame in bounds
+// Clamp samplerate/interval and, if needed, shrink interval to keep samples per frame in bounds
 static void sanitizeTiming() {
 
   // Clamp samplerate and interval
   samplerate = constrain(samplerate, MIN_SAMPLERATE_HZ, MAX_SAMPLERATE_HZ);
+  
   // Fast modes (11, 20): do NOT clamp interval; allow 0
   if (scenario == 11 || scenario == 20) {
     return;
