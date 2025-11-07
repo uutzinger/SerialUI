@@ -1020,7 +1020,7 @@ static int myGapHandler(struct ble_gap_event* ev, void* /*arg*/) {
       probing = false; probeSuccesses = 0; probeFailures = 0; lkgFailStreak = 0;
       recentlyBackedOff = false; cooldownSuccess = 0; successStreak = 0;
       lkgInterval = sendInterval;      
-  badDataRetries = 0;
+      b adDataRetries = 0;
       #if DEBUG_LEVEL >= INFO
         Serial.printf("DLE updated: tx=%u octets / %u ll time µs, rx =%u octets / ll time %u µs, tx chunk size=%u, min send interval=%u\r\n",
                       g_ll_tx_octets, g_ll_tx_time_us, g_ll_rx_octets, g_ll_rx_time_us, 
@@ -1052,7 +1052,7 @@ static int myGapHandler(struct ble_gap_event* ev, void* /*arg*/) {
       probing = false; probeSuccesses = 0; probeFailures = 0; lkgFailStreak = 0;
       recentlyBackedOff = false; cooldownSuccess = 0; successStreak = 0;
       lkgInterval = sendInterval;      
-  badDataRetries = 0;
+      badDataRetries = 0;
       #if DEBUG_LEVEL >= INFO
         Serial.printf("PHY updated: tx=%u rx=%u %s ll time=%u, tx chunk size=%u, min send interval=%u\r\n",
                       p.tx_phy, p.rx_phy,

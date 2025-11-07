@@ -828,10 +828,7 @@ class mainWindow(QMainWindow):
             #
             # Format the message
             if level>-1:
-                try:
-                    level_name = logging.getLevelNamesMapping()[level]         # Python 3.11+
-                except AttributeError:
-                    level_name = logging.getLevelName(level)                   # Python < 3.11 fallback
+                level_name = logging.getLevelName(level)                   # Python < 3.11 fallback
             else:
                 level_name = "FORCED"
 

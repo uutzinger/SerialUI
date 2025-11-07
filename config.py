@@ -3,7 +3,7 @@
 ################################################################################################################################
 import logging
 import re
-from colors import color_names_sweet16 as COLORS
+from helpers.colors import color_names_sweet16 as COLORS
 ################################################################################################################################
 # Constants General
 VERSION                 = "1.4.0"                # this version

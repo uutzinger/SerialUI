@@ -240,6 +240,8 @@
         "typeinfo": "cpp",
         "list": "cpp",
         "valarray": "cpp",
-        "format": "cpp"
+        "format": "cpp",
+        "chrono": "cpp",
+        "complex": "cpp"
     },
 }
