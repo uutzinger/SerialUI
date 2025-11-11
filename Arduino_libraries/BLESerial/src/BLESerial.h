@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <inttypes.h>  // for PRIu32 in printf
 #include <cmath>
+#include <functional>
 
 #include <Arduino.h>
 #include "RingBuffer.h"
@@ -29,6 +30,22 @@ extern "C" {
   #include <esp_system.h>   // IDF 4.x / Arduino core 2.x
 #endif
 
+#if defined(ESP32)
+    # include "freertos/FreeRTOS.h"
+    # include "freertos/portmacro.h"
+    # include "freertos/task.h"
+#endif
+
+// Define critical section helpers BEFORE class so they are visible where used.
+// They reference 'this->mux_' which is a per-instance spinlock.
+#ifdef ARDUINO_ARCH_ESP32
+  # define TX_CRITICAL_ENTER() portENTER_CRITICAL(&this->txMux)
+  # define TX_CRITICAL_EXIT()  portEXIT_CRITICAL(&this->txMux)
+#else
+  # define TX_CRITICAL_ENTER()
+  # define TX_CRITICAL_EXIT()
+#endif
+
 /******************************************************************************************************/
 /* Definitions */
 /******************************************************************************************************/
@@ -44,18 +61,19 @@ extern "C" {
 
 #define NONE    0
 #define WANTED  1
-#define ERROR   1 
-#define WARNING 2
-#define INFO    3
-#define DEBUG   4
+#define ERROR   2 
+#define WARNING 3
+#define INFO    4
+#define DEBUG   5
 
 // Max GATT MTU supported (ESP32 max 517); ATT payload per notify is MTU-3
-#define BLE_SERIAL_MAX_MTU        517
-#define BLE_SERIAL_DEFAULT_MTU    247
-#define BLE_SERIAL_MIN_MTU         23
-#define BLE_SERIAL_ATT_HDR_BYTES    3
-#define BLE_SERIAL_L2CAP_HDR_BYTES  4
-#define BLE_SERIAL_MAX_FRAME_SIZE (BLE_SERIAL_MAX_MTU - BLE_SERIAL_ATT_HDR_BYTES)
+#define BLE_SERIAL_MAX_MTU        517u
+#define BLE_SERIAL_MAX_GATT       512u
+#define BLE_SERIAL_DEFAULT_MTU    247u
+#define BLE_SERIAL_MIN_MTU         23u
+#define BLE_SERIAL_ATT_HDR_BYTES    3u
+#define BLE_SERIAL_L2CAP_HDR_BYTES  4u
+#define BLE_SERIAL_ENCRYPT_BYTES    4u
 
 // dBm levels similar to Bluedroid's ESP_PWR_LVL_* names:
 #define BLE_TX_DBN12  ( -12)
@@ -95,19 +113,16 @@ inline constexpr uint32_t       RSSI_ACTION_COOLDOWN_MS         = 4000UL;   // 4
 inline constexpr uint16_t       LL_MIN_OCTETS                   =    27;    // 27..251
 inline constexpr uint16_t       LL_CONS_OCTETS                  =   244;    // 27..251
 inline constexpr uint16_t       LL_MAX_OCTETS                   =   251;    // 27..251
-inline constexpr uint16_t       LL_TIME_LOW_POWER               =   328;    // for low power
-inline constexpr uint16_t       LL_TIME_1US                     =  2120;    // for 1M PHY
-inline constexpr uint16_t       LL_TIME_2US                     =  1060;    // for 2M PHY
-inline constexpr uint16_t       LL_TIME_CODED_S2_US             =  4240;    // for Coded PHY (S2)
-inline constexpr uint16_t       LL_TIME_CODED_S8_US             = 16960;    // for Coded PHY (S8)
 
-// (UUIDs defined above as BLE_SERIAL_* constants)
+inline constexpr uint32_t       LL_DEFAULT_TIME_US              =   2120;
 
 // BLE optimizations
 static constexpr uint16_t itvl_us(uint32_t us)    
     { return (uint16_t)((us * 4) / 5000); } // is in units of 1.25ms
 static constexpr uint16_t tout_ms(uint32_t ms)
     { return (uint16_t)(ms / 10); }         // is in units of 10ms
+
+inline constexpr const uint32_t MAX_SEND_INTERVAL_US            = 1000000u;
 
 // aggressive speed
 inline constexpr const uint16_t MIN_BLE_INTERVAL_SPEED          = itvl_us( 7500);  // Minimum connection interval in microseconds 7.5ms to 4s
@@ -142,7 +157,7 @@ inline constexpr uint16_t       PROBE_CONFIRM_SUCCESSES         = 48;           
 inline constexpr uint32_t       PROBE_STEP_US                   = 10;           // absolute probe step
 inline constexpr uint32_t       PROBE_STEP_PCT                  = 2;            // or % of current interval (use the larger of the two)
 
-inline constexpr uint8_t        LKG_ESCALATE_AFTER_FAILS        = 3;         // if LKG last known good fails this many times in a row, relax it
+inline constexpr uint8_t        LKG_ESCALATE_AFTER_FAILS        = 3;            // if LKG last known good fails this many times in a row, relax it
 inline constexpr uint32_t       LKG_ESCALATE_NUM                = 103;          // ×1.03
 inline constexpr uint32_t       LKG_ESCALATE_DEN                = 100;
 
@@ -170,43 +185,61 @@ class BLESerial : public Stream {
 public:
   // Construction / configuration
   BLESerial() = default;
-  bool begin(Mode mode = Mode::Fast,
-             const char* deviceName = "BLESerialDevice",
-             uint16_t mtu = BLE_SERIAL_MAX_MTU,
-             bool secure = false);  // init stack, create service, start advertising
-  void end();                       // stop advertising, dispose service/server
+  bool     begin(Mode mode = Mode::Fast,
+              const char* deviceName = "BLESerialDevice",
+              bool secure = false);                     // init stack, create service, start advertising
+  void     end();                                       // stop advertising, dispose service/server
 
   // Stream API
-  int available() override;               // RX bytes ready
-  int read() override;                    // 1 byte from RX
-  int peek() override;                    // next byte without consuming
-  void flush() override;                  // drain TX ring to link
-  size_t write(uint8_t b) override;       // enqueue single byte to TX
-  size_t write(const uint8_t* b, size_t n) override;
-
-  // Optional: convenience
-  int readBytes(uint8_t* dst, size_t n);
-  bool readLine(char* dst, size_t maxLen, uint32_t timeoutMs = 0);
+  int      available() override;                        // RX bytes ready
+  int      read() override;                             // 1 byte from RX
+  int      read(uint8_t* dst, size_t n);                // helper: read up to n bytes
+  int      peek() override;                             // next byte without consuming
+  int      peek(uint8_t* dst, size_t n);                // helper: preview up to n bytes
+  size_t   write(uint8_t b) override;                   // enqueue single byte to TX
+  size_t   write(const uint8_t* b, size_t n) override;
+  bool     writeReady() const { return txAvailable; }   // If false you should not write
+  bool     writeAvailable(size_t n = 1) const { return txBuf.capacity() - txBuf.available() >= n; }
+  size_t   writeTimeout(const uint8_t* p, size_t n, uint32_t timeoutMs = 50);
+  void     flush() override;                            // drain TX ring to link
 
   // Pump in polling model
-  void update();
+  void     update();
 
-  // Transport status helpers
-  bool connected() const { return deviceConnected && clientSubscribed; }
-  uint16_t mtu() const { return mtu; }
-  Mode mode() const { return mode; }
+  #ifdef ARDUINO_ARCH_ESP32
+    // TX pump strategy (ESP32 only): Polling (use update()) or Task (background FreeRTOS task)
+    enum class PumpMode { Polling, Task };
+    void     setPumpMode(PumpMode m);
+    PumpMode getPumpMode() const { return pumpMode; }
+  #endif
+
+  // Event hooks (no subclassing required)
+  // These run in NimBLE callback context; keep handlers fast or defer heavy work to your loop/task.
+  void     setOnClientConnect(std::function<void(const std::string& addr)> cb) { onClientConnect = std::move(cb); }
+  void     setOnClientDisconnect(std::function<void(const std::string& addr, uint16_t reason)> cb) { onClientDisconnect = std::move(cb); }
+  void     setOnMtuChanged(std::function<void(uint16_t mtu)> cb) { onMtuChanged = std::move(cb); }
+  void     setOnSubscribeChanged(std::function<void(bool subscribed)> cb) { onSubscribeChanged = std::move(cb); }
+  void     setOnDataReceived(std::function<void(const uint8_t* data, size_t len)> cb) { onDataReceived = std::move(cb); }
+  void     setOnPacingChanged(std::function<void(const struct PacingInfo& info, enum class PacingReason reason)> cb) { onPacingChanged = std::move(cb); }
 
   // Logging / security knobs
-  void setLogLevel(uint8_t lvl) { logLevel = lvl; }
-  void setSecure(bool en) { secure = en; }
+  void     setLogLevel(uint8_t lvl) { logLevel = lvl; }
+  bool     requestMTU(uint16_t newMtu);
 
-  // Static GAP handler
-  static int gapEventHandler(struct ble_gap_event* ev, void* arg);
-  // Active instance used by the static GAP handler
-  static BLESerial* active;
+  // Stats
+  bool     connected()  const { return deviceConnected && clientSubscribed; }
+  uint16_t mtu()        const { return mtu; }
+  Mode     mode()       const { return mode; }
+  uint32_t bytesRx()    const { return bytesRx; }
+  uint32_t bytesTx()    const { return bytesTx; }
+  uint32_t rxDrops()    const { return rxDrops; }
+  uint32_t txDrops()    const { return txDrops; }
+  uint32_t interval()   const { return sendIntervalUs; }
+  int16_t  rssi()       const { return rssiAvg; }
+  const std::string& mac() const { return deviceMac; }
+  size_t   txBuffered() const { return txBuf.available(); }
+  size_t   rxBuffered() const { return rxBuf.available(); }
 
-  // Link adaptation (RSSI/PHY)
-  void adjustLink();
 
 private:
   // ===== BLE primitives =====
@@ -218,6 +251,11 @@ private:
   NimBLEAdvertisementData advData;
   NimBLEAdvertisementData scanData;
 
+  // Static GAP handler
+  static int gapEventHandler(struct ble_gap_event* ev, void* arg);
+  // Active instance used by the static GAP handler
+  static BLESerial* active;
+
   // GAP/GATT state
   volatile bool     deviceConnected   = false;
   volatile bool     clientSubscribed  = false;
@@ -225,12 +263,18 @@ private:
   std::string       deviceMac;
 
   // PHY/DLE
+  volatile uint8_t  phyMask           = BLE_GAP_LE_PHY_1MASK;
+  volatile uint8_t  codedScheme       = 2;   // 2 or 8
+  volatile uint16_t llOctets          = LL_MAX_OCTETS;  // target octets
+  volatile uint16_t llTimeUs          = 2120; // 1M default
   volatile bool     phyIs2M           = false;
   volatile bool     phyIsCoded        = false;
-  volatile uint8_t  desiredCodedScheme= 8;   // 2 or 8 when coded
-  volatile uint8_t  codedScheme       = 8;   // best-effort assumption
-  volatile uint16_t llTimeUs          = 2120; // 1M default
-  volatile uint16_t llOctets          = 251;  // target octets
+
+  // Desired link settings that we request from controller/peer
+  uint8_t           desiredPhyMask    = BLE_GAP_LE_PHY_1MASK;
+  uint8_t           desiredCodedScheme= 0;        // 0, 2, or 8 (desired)
+  uint16_t          desiredLlOctets   = LL_MAX_OCTETS;
+  uint16_t          desiredLlTimeUs   = LL_DEFAULT_TIME_US;     // conservative time cap
 
   // MTU / chunking
   volatile uint16_t mtu               = 23;
@@ -241,7 +285,6 @@ private:
   // TX pacing/backoff
   volatile uint32_t sendIntervalUs    = 200;
   volatile uint32_t minSendIntervalUs = 200;
-  static constexpr uint32_t kMaxSendIntervalUs = 1000000; // 1s ceiling
   volatile uint32_t lkgIntervalUs     = 0;
   volatile bool     probing           = false;
   volatile uint16_t probeSuccesses    = 0;
@@ -252,30 +295,31 @@ private:
   volatile int      cooldownSuccess   = 0;
   volatile int      successStreak     = 0;
 
-  // EBADDATA fallback
-  volatile uint8_t  badDataRetries    = 0;
-  static constexpr uint8_t kBadDataMaxRetries = 8;
-
   // TX book-keeping
-  volatile uint64_t lastTxUs          = 0;
+  volatile uint32_t lastTxUs          = 0;
   volatile size_t   pendingLen        = 0;
   volatile bool     txOk              = false;
   volatile size_t   bytesTx           = 0;
   volatile size_t   txDrops           = 0;
   volatile bool     txAvailable       = true;
-  char              pending[BLE_SERIAL_MAX_FRAME_SIZE]{};
+  char              pending[BLE_SERIAL_MAX_GATT]{};
+  volatile uint8_t  badDataRetries    = 0;   // diagnostic counter for malformed payload incidents
 
   // RX book-keeping
   volatile size_t   bytesRx           = 0;
   volatile size_t   rxDrops           = 0;
-  volatile uint64_t lastRxUs          = 0;
+  volatile uint32_t lastRxUs          = 0;
 
   // Buffers and flow control
   RingBuffer<uint8_t, 4096> rxBuf;
   RingBuffer<uint8_t, 4096> txBuf;
-  size_t           highWater          = (txBuf.capacity() * 3) / 4;
-  size_t           lowWater           = (txBuf.capacity()) / 4;
+  size_t           highWater          = 0;
+  size_t           lowWater           = 0;
   volatile bool    txLocked           = false; // prevent producers when high water reached
+
+  int8             powerAdv           = BLE_TX_DB0;
+  int8             powerScan          = BLE_TX_DB0;
+  int8             powerConn          = BLE_TX_DB0;
 
   // Configuration
   Mode             mode               = Mode::Fast;
@@ -283,7 +327,7 @@ private:
   uint8_t          logLevel           = INFO;
 
   // Security
-  uint32_t          passkey = 0; // stores the currently displayed/generated 6-digit passkey
+  uint32_t          passkey = 0;      // stores the currently displayed/generated 6-digit passkey
 
   // RSSI polling
   int8_t           rssiRaw            = 0;
@@ -291,23 +335,39 @@ private:
   uint32_t         lastRssiMs         = 0;
   uint32_t         lastRssiActionMs   = 0;
 
-  #ifdef ARDUINO_ARCH_ESP32
-    // Create RSSI task if not already
-    static TaskHandle_t rssiTaskHandle;
-  #endif
-
-  // ===== Functions (declarations only; implementations in .cpp) =====
-
   // TX pump and helpers
   void            pumpTx();
+  void            checkTxSuccess();
+  bool            stageTx();  
   size_t          frameSize() const { return (mtu > BLE_SERIAL_ATT_HDR_BYTES) ? (mtu - BLE_SERIAL_ATT_HDR_BYTES) : 20; }
 
-  static uint16_t computeTxChunkSize(uint16_t mtu, uint16_t llOctets, Mode mode);
-  static uint32_t computeMinSendIntervalUs(uint16_t chunkSize, uint16_t llOctets, uint16_t llTimeUs, Mode mode);
+  static uint16_t computeTxChunkSize(uint16_t mtu, uint16_t llOctets, Mode mode, bool encrypted);
+  static uint32_t computeMinSendIntervalUs(uint16_t chunkSize, uint16_t llOctets, uint16_t llTimeUs, Mode mode, bool encrypted);
   size_t          updateLowWaterMark(size_t chunkSize);
   void            resetTxRamp(bool forceToMin);
   void            recomputeTxTiming();
-  void            updateLlTime();
+  uint32_t        computeLlPduTimeUs(uint16_t llOctets, bool phy2M, bool phyCoded, uint8_t codedScheme);
+  void            adjustLink();   // Link adaptation (RSSI/PHY)
+  void            firePacingChanged(enum class PacingReason r); // internal helper to emit pacing/backoff changes
+
+  // Background TX task helpers (ESP32)
+  #ifdef ARDUINO_ARCH_ESP32
+    // Instance spinlock for TX state
+    portMUX_TYPE    txMux = portMUX_INITIALIZER_UNLOCKED;
+    // Create RSSI task if not already
+    static TaskHandle_t rssiTaskHandle;
+    static TaskHandle_t txTaskHandle;
+
+    // Current TX pump mode (ESP32 only, default: Polling)
+    volatile        PumpMode pumpMode = PumpMode::Polling;
+
+    void            startTxTask();
+    void            stopTxTask();
+    void            wakeTxTask();
+    // Sub-ms remainder threshold: below this use microsecond delay and not vTaskDelay
+    static constexpr uint32_t TASK_DELAY_THRESHOLD_US = 800;   // tune (500–1500)
+
+  #endif
 
   // Callbacks
   class ServerCallbacks;
@@ -316,6 +376,37 @@ private:
   friend class ServerCallbacks;
   friend class RxCallbacks;
   friend class TxCallbacks;
+
+  std::function<void(const std::string& addr)> onClientConnect;
+  std::function<void(const std::string& addr, uint16_t reason)> onClientDisconnect;
+  std::function<void(uint16_t mtu)> onMtuChanged;
+  std::function<void(bool subscribed)> onSubscribeChanged;
+  std::function<void(const uint8_t* data, size_t len)> onDataReceived; // raw RX callback
+
+  // Pacing/backoff notification
+  struct PacingInfo {
+    uint32_t sendIntervalUs;
+    uint32_t minSendIntervalUs;
+    uint32_t lkgIntervalUs;
+    uint16_t txChunkSize;
+    uint16_t mtu;
+    uint16_t llOctets;
+    uint16_t llTimeUs;
+    bool     probing;
+  };
+
+  enum class PacingReason {
+    Recompute,
+    ProbeStart,
+    ProbeAccepted,
+    ChunkShrink,
+    MsgSizeFallback,
+    Escalate,
+    Backoff,
+    DisconnectReset
+  };
+  std::function<void(const PacingInfo&, PacingReason)> onPacingChanged;
+
 };
 
 #endif // BLE_SERIAL_H

@@ -1,5 +1,2 @@
 # Changelog
-All notable changes to this project will be documented in this file.
-
-
-## [Unreleased]
+- November 2025 First release

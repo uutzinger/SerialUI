@@ -35,13 +35,13 @@
 #include <type_traits>  // for std::conditional
 
 #if defined(ESP32)
-#  include "freertos/FreeRTOS.h"
-#  include "freertos/portmacro.h"
+    # include "freertos/FreeRTOS.h"
+    # include "freertos/portmacro.h"
 #endif
 
 // Define critical section helpers BEFORE class so they are visible where used.
 // They reference 'this->mux_' which is a per-instance spinlock.
-#if defined(ESP32)
+#ifdef ARDUINO_ARCH_ESP32
 #  define RB_CRITICAL_ENTER() portENTER_CRITICAL(const_cast<portMUX_TYPE*>(&this->mux_))
 #  define RB_CRITICAL_EXIT()  portEXIT_CRITICAL(const_cast<portMUX_TYPE*>(&this->mux_))
 #else

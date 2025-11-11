@@ -40,11 +40,17 @@ Serial BLE extension
 
 ## How to Use This Program
 
+Run the program with `python3 SerialUI.py` or you load the folder into VSCode or Spider and execute it there. Alternatively install it as a desktop application by following the paragraphs below in s instructions.
+
 - [Usage instructions](docs/Instructions.md).
 - [Supplemental instructions](docs/Supplementalinstructions.md).
 - [Helpful readings to learn about QT and qtgraph](docs/Helpful_readings.md).
 
-## Installation Requirements
+## Installation
+
+To run this program you will need to clone this repository into a folder where you store python programs. Either download the zip or `git clone https://github.com/uutzinger/SerialUI.git` to that folder.
+
+This program has dependencies. You can install them with (replace `pip` with `conda` if you use spider):
 
 *One liner Windows:* 
     - `pip3 install pyqt6 pyqtgraph markdown wmi bleak`
@@ -65,7 +71,7 @@ The following python modules are needed:
 - `numba` acceleration of numpy code
 
 To install the optional accelerated text parser you need to navigate in your shell to the `helper` folder and then execute:
-- `python3 setup.py build_ext --inplace -v`
+- `python3 setup.py build_ext --inplace -v`Supplemental
 - `pip install -e .`
 If you are using virtual env for python don't forget to activate it.
 
@@ -74,7 +80,7 @@ If you rebuild, clean the previous build with:
 - `rm -rf build *.egg-info .eggs`
 
  
-This requires a c11 compiler and the python packages `pybind11` and `setuptools` to be available.
+This requires a c compiler and the python packages `pybind11` and `setuptools` to be available.
 
 A future version will also need:
 - `scipy` image decompression (FFT)
