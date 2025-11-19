@@ -6,7 +6,7 @@ import re
 from helpers.colors import color_names_sweet16 as COLORS
 ################################################################################################################################
 # Constants General
-VERSION                 = "1.4.0"                # this version
+VERSION                 = "1.4.1"                # this version
 AUTHOR                  = "Urs Utzinger"         # me
 DATE                    = "2025"                 # year of last update
 ################################################################################################################################

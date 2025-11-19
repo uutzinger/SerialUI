@@ -459,6 +459,17 @@ class QSerial(QObject):
             port_names.append(info.description())
             port_hwids.append(f"{info.vendorIdentifier():04X}:{info.productIdentifier():04X}")
 
+        # Helper: exclude “debug” interfaces from auto-connect offers
+        # ESP port name changes and contains "debug" when uploading firmware
+        # After programming it reverts to normal port name without "debug"
+        def is_debug_port(name: str, desc: str) -> bool:
+            try:
+                name_l = (name or "").lower()
+                desc_l = (desc or "").lower()
+                return ("debug" in name_l) or ("debug" in desc_l)
+            except Exception:
+                return False
+
         if "USB device removed" in message:
             # Check if the device is still there
             if self.serialPort not in ports and self.serialPort != "":
@@ -492,6 +503,13 @@ class QSerial(QObject):
                 if best_score > 0.8:
                     # find the port that matches the previous hwid
                     indx = port_hwids.index(best_match)
+                    # Skip debug-class interfaces (don’t auto-reconnect to them)
+                    if is_debug_port(ports[indx], port_names[indx]):
+                        self.awaitingReconnection = False
+                        self.logSignal.emit(logging.INFO,
+                            f"[{self.instance_name[:15]:<15}]: Skipping auto‑reconnect to debug interface: {ports[indx]} ({port_names[indx]})."
+                        )
+                        return
                     self.serialPort_backup = ports[indx]
                     self.serialPort_previous = ports[indx]
                     QTimer.singleShot(  0, lambda: self.scanPortsRequest.emit()) # request new port list, takes 225ms to complete
@@ -513,10 +531,16 @@ class QSerial(QObject):
             else:
                 # We have new device insertion, connect to it
                 if self.serialPort == "":
-                    # new_ports     = [port for port in ports if port not in self.serialPorts]   # prevents device to be opened that was previously found but not opened
-                    new_ports = [port for port in ports]
-                    new_portnames = [port_names[ports.index(port)] for port in new_ports if port in ports] # Get corresponding names
+                    # Build candidate list excluding debug-class interfaces
+                    candidates = [(p, n) for p, n in zip(ports, port_names) if not is_debug_port(p, n)]
+                    new_ports     = [p for (p, _) in candidates]
+                    new_portnames = [n for (_, n) in candidates]
 
+                    if not new_ports:
+                        self.logSignal.emit(logging.INFO,
+                            f"[{self.instance_name[:15]:<15}]: No eligible (non‑debug) USB serial device to offer for auto‑connect."
+                        )
+                        return
                     # Figure out if useable port
                     if new_ports:
                         new_port      = new_ports[0]                           # Consider first found new port

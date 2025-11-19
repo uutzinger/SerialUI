@@ -569,7 +569,7 @@ class mainWindow(QMainWindow):
         # end/RX wiring follows transport readiness
         # ----------------------------------------
 
-        self.txrxReady_wired_to_ble = False
+        self.txrxReady_wired_to_ble    = False
         self.txrxReady_wired_to_serial = False
 
         # combined throughput stats
@@ -961,7 +961,10 @@ class mainWindow(QMainWindow):
         if USE_FASTPLOTLIB:
             QTimer.singleShot(200, self.chart.fpl_figure_init)
         else:
-            QTimer.singleShot(200, self.chart.pg_figure_init)   
+            QTimer.singleShot(200, self.chart.pg_figure_init)
+        
+        # Start the Monitoring by default
+        QTimer.singleShot(0, lambda: self.runMonitoringRequest.emit(True))
 
     @pyqtSlot()
     def closeEvent(self, event):
