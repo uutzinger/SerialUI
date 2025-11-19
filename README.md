@@ -60,25 +60,24 @@ This program has dependencies. You can install them with (replace `pip` with `co
 
 The following python modules are needed:
 
-- `pyqt5` or `pyqt6` user interface
-- `pyqtgraph` plotting
+- `pyqt6` or `pyqt5` for user interface (pyqt6 is tested)
+- `pyqtgraph` for plotting
 - `fastplotlib` for high throughput plotting
-- `numpy` data gathering and manipulation
-- `markdown` help file
+- `numpy` for data gathering and manipulation
+- `markdown` to display help file
 - `wmi` on Windows for USB device notifications
 - `pyudev` on Linux  for USB device notifications
 - `bleak` for bluetooth communication
-- `numba` acceleration of numpy code
+- `numba` for accelerating numpy code
 
 To install the optional accelerated text parser you need to navigate in your shell to the `helper` folder and then execute:
-- `python3 setup.py build_ext --inplace -v`Supplemental
+- `python3 setup.py build_ext --inplace -v`
 - `pip install -e .`
 If you are using virtual env for python don't forget to activate it.
 
 If you rebuild, clean the previous build with:
 - `python3 setup.py clean --all || true`
 - `rm -rf build *.egg-info .eggs`
-
  
 This requires a c compiler and the python packages `pybind11` and `setuptools` to be available.
 
