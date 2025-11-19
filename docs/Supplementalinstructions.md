@@ -1,10 +1,12 @@
 ## Supplemental Instructions
 
 ### Use in Conjunction with Arduino IDE
-- Click close serial port.
+- To program your microcontroller while this program is running, click close serial port.
 - Program the microcontroller.
-- Click open serial port. 
-- You can not open the serial port when it is in use by Arduino IDE serial monitor or serial plotter.
+- Make sure the Arduino IDE has the Serial Monitor or Serial Plotter closed.
+- Click open serial port.
+
+You can not open the serial port when it is in use by Arduino IDE serial monitor or serial plotter.
 
 ### Issues with Microcontroller Response
 SerialUI attempts to reconnect when microcontroller is unplugged and reattached. Otherwise try to resolve issues in the following order:
