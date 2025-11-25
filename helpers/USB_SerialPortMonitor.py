@@ -211,6 +211,17 @@ class USBMonitorWorker(QObject):
 
     def ensure_debugger_attached(self) -> None:
         """Enable debugpy tracing for this QThread (idempotent)."""
+        
+        # If running as a PyInstaller EXE → disable debugpy entirely
+        import sys
+        if getattr(sys, "frozen", False):
+            return
+
+        # Only enable when developer explicitly requests it
+        import os
+        if os.getenv("SERIALUI_DEBUGPY", "0") != "1":
+            return
+            
         if self.debug_initialized:
             return
         try:
