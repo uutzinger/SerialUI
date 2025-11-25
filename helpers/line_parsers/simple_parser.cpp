@@ -67,7 +67,7 @@ void split_channels(std::string_view sv,
 //   split on whitespace, parse doubles, optionally strict
 //------------------------------------------------------------------------
 static FORCE_INLINE
-split_numbers(std::string_view sv,
+void split_numbers(std::string_view sv,
               std::vector<double> &out,
               bool strict,
               bool gil_release)
