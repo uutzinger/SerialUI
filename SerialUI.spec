@@ -5,7 +5,7 @@ from PyInstaller.building.build_main import Analysis, PYZ, EXE, COLLECT, Tree
 block_cipher = None
 
 # Path to project root (where this spec file lives)
-proj_root = os.path.abspath(os.path.dirname(__file__))
+proj_root = os.path.abspath(os.getcwd())
 
 # Entry point of your app:
 entry_script = os.path.join(proj_root, "SerialUI.py")
