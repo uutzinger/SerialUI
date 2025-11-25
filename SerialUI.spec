@@ -19,7 +19,7 @@ a = Analysis(
         Tree('assets',  prefix='assets'),
         Tree('docs',    prefix='docs'),
         Tree('helpers', prefix='helpers'),
-    ]
+    ],
     hiddenimports=[
         # Add any modules here that PyInstaller might miss, e.g.:
         # "pkg_resources.py2_warn",
