@@ -74,6 +74,14 @@
 #include <sstream> 
 #include "unordered_dense.h"
 
+#if defined(_MSC_VER)
+    #define FORCE_INLINE __forceinline
+#elif defined(__GNUC__) || defined(__clang__)
+    #define FORCE_INLINE inline __attribute__((always_inline))
+#else
+    #define FORCE_INLINE inline
+#endif
+
 namespace py = pybind11;
 
 static constexpr double NAN_VAL = std::numeric_limits<double>::quiet_NaN();
@@ -85,8 +93,8 @@ static constexpr char UNNAMED_BASE[] = "__unnamed";
 //    by moving 'lo' forward past spaces, and 'hi' backward past spaces.
 //   After calling this function, either lo >= hi (empty) or the substring [lo..hi) is “cleaned.”
 //------------------------------------------------------------------------
-static inline __attribute__((always_inline)) void
-trim_range(std::string_view sv, size_t &lo, size_t &hi)
+static FORCE_INLINE
+void trim_range(std::string_view sv, size_t &lo, size_t &hi)
 {
     // Trim leading whitespace
     while (lo < hi && std::isspace(static_cast<unsigned char>(sv[lo]))) {
@@ -119,7 +127,8 @@ trim_range(std::string_view sv, size_t &lo, size_t &hi)
 //  [[  1, 2, 4]
 //   [Nan, 3, Nan]]
 //------------------------------------------------------------------------
-static inline __attribute__((always_inline)) std::vector<std::pair<std::string_view,std::string_view>>
+static FORCE_INLINE
+std::vector<std::pair<std::string_view,std::string_view>>
 split_headers(std::string_view sv)
 {
     size_t len = sv.size();
@@ -249,7 +258,8 @@ split_headers(std::string_view sv)
 //   split on comma 
 //   preserving empty tokens
 //------------------------------------------------------------------------
-static inline __attribute__((always_inline)) void split_channels(
+static FORCE_INLINE  
+void split_channels(
     std::string_view sv,
     std::vector<std::string_view> &out) {
 
@@ -277,8 +287,8 @@ static inline __attribute__((always_inline)) void split_channels(
 //
 // the strings provided to this function should not include commas or colons
 //------------------------------------------------------------------------
-static inline __attribute__((always_inline)) void 
-split_numbers(std::string_view sv,
+static FORCE_INLINE
+void split_numbers(std::string_view sv,
               std::vector<double> &out,
               bool strict,
               bool gil_release)

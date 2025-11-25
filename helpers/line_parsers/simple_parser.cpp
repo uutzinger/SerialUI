@@ -28,6 +28,15 @@
 #include <string_view>
 #include <cstring>   // memchr
 
+// Add this block:
+#if defined(_MSC_VER)
+    #define FORCE_INLINE __forceinline
+#elif defined(__GNUC__) || defined(__clang__)
+    #define FORCE_INLINE inline __attribute__((always_inline))
+#else
+    #define FORCE_INLINE inline
+#endif
+
 namespace py = pybind11;
 
 static constexpr double NAN_VAL = std::numeric_limits<double>::quiet_NaN();
@@ -36,7 +45,7 @@ static constexpr double NAN_VAL = std::numeric_limits<double>::quiet_NaN();
 // Split Channels: 
 //   split on comma, preserving empty tokens
 //------------------------------------------------------------------------
-static inline __attribute__((always_inline)) 
+static FORCE_INLINE
 void split_channels(std::string_view sv,
                     std::vector<std::string_view> &out) {
     out.clear();
@@ -57,7 +66,7 @@ void split_channels(std::string_view sv,
 // Split Numbers: 
 //   split on whitespace, parse doubles, optionally strict
 //------------------------------------------------------------------------
-static inline __attribute__((always_inline)) void 
+static FORCE_INLINE
 split_numbers(std::string_view sv,
               std::vector<double> &out,
               bool strict,
