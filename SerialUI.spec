@@ -15,10 +15,10 @@ a = Analysis(
     [entry_script],
     pathex=[proj_root],
     binaries=[],
-    datas = [
-        Tree('assets',  prefix='assets'),
-        Tree('docs',    prefix='docs'),
-        Tree('helpers', prefix='helpers'),
+    datas=[
+        ("assets",  "assets"),
+        ("docs",    "docs"),
+        ("helpers", "helpers"),
     ],
     hiddenimports=[
         # Add any modules here that PyInstaller might miss, e.g.:
@@ -51,8 +51,8 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=True,  # set False if you want a pure GUI app (no console window)
-    icon=os.path.join("SerialUI", "assets", "icon_96.ico"),
+    console=False,  # set False if you want a pure GUI app (no console window)
+    icon=os.path.join("assets", "icon_96.ico"),
 )
 
 coll = COLLECT(
