@@ -20,6 +20,26 @@
 ############################################################################################################################################
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
+
+# ==============================================================================
+# pyinstaller resource path handling
+# ==============================================================================
+import sys
+import os
+def resource_path(relative_path: str) -> str:
+    """
+    Get absolute path to resource, works in dev and in PyInstaller bundle.
+    """
+    if hasattr(sys, "_MEIPASS"):
+        # In a PyInstaller bundle, this is the temp / _internal dir
+        base_path = sys._MEIPASS
+    else:
+        # When running from source
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
+# ==============================================================================
+
 # ==============================================================================
 # Config
 # ==============================================================================
@@ -250,7 +270,8 @@ class mainWindow(QMainWindow):
 
         # User Interface
         # ----------------------------------------
-        self.ui = uic.loadUi("assets/serialUI.ui", self)
+        ui_file = resource_path(os.path.join("assets", "serialUI.ui"))
+        self.ui = uic.loadUi(ui_file, self)
         self.setWindowTitle("Serial GUI")
 
         # Log Display
