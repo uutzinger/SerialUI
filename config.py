@@ -12,8 +12,9 @@ DATE                    = "2025"                 # year of last update
 ################################################################################################################################
 # Enable Features
 USE_FASTPLOTLIB         = False                  # use fastplotlib instead of pyqtgraph
+USE_PARSERACCEL         = True                  # use compiled C parsers when available (disable to force Python parser)
 USE_BLE                 = True                   # enable bleak for BLE communication
-USE_BLUETOOTHCTL        = True                   # enable bluetoothctl for bluetoothctl functions on Linux
+USE_BLUETOOTHCTL        = False                  # enable bluetoothctl for bluetoothctl functions on Linux
 USE_3DPLOT              = False                  # use the 3D vector display in indicator, not implemented yet
 ################################################################################################################################
 # Debug and Profiling
@@ -28,7 +29,7 @@ DEBUGRECEIVER           = False                  # enable/disable receiver debug
 MAX_ROWS                = 131072                # data history length
 MAX_COLS                = len(COLORS)           # maximum number of data traces [available colors]
 DEF_COLS                = 2                     # default number of data traces at startup
-UPDATE_INTERVAL         = 40                    # [ms] 25 Hz plot update, visualization does not improve with higher rate
+UPDATE_INTERVAL         = 40                    # [ms] 40ms = 25 Hz plot update, visualization does not improve with higher rate
 MAX_ROWS_LINEDATA       = 512                   # maximum number of rows for temporary array when parsing line data
 MAJOR_TICKS             = 5                     # major ticks on the y-axis
 MINOR_TICKS             = 4                     # minor ticks on the y-axis
@@ -76,7 +77,7 @@ BACKGROUNDCOLOR_TABS    = "#f0f0ff"
 # Remove ANSI escape sequences
 ANSI_ESCAPE             = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 ENCODING                = "utf-8"               # default encoding for text display
-FLUSH_INTERVAL_MS       = 100                   # [ms] 10 Hz update of the text display (received data is buffered)
+FLUSH_INTERVAL_MS       = 100                   # [ms] 100ms = 10 Hz update of the text display (received data is buffered)
 DEFAULT_TEXT_LINES      = 500                   # number of lines in display window (less is faster,
                                                 # but with fast transfer rates, some data might be skipped 
                                                 # when data is streamed to file, no data is skipped

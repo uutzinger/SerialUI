@@ -25,7 +25,7 @@ from config import ( USE_3DPLOT,
 # ----------------------------------------
 
 import logging
-IMPORT time
+import time
 
 try:
     from PyQt5.QtCore import (

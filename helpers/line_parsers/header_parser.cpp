@@ -168,20 +168,72 @@ split_headers(std::string_view sv)
                 } // If we didn’t find a matching quote, fall through to the unquoted logic.
             }
 
-            // Otherwise use "unquoted" case: back up over [A-Za-z0-9_] to find where header name begins
-            size_t start = pos;
-            while (start > 0) {
-                unsigned char c = static_cast<unsigned char>(sv[start - 1]);
+            // Unquoted header case:
+            //   allow multi-word headers like "Blood Pressure:" as long as each word
+            //   starts with [A-Za-z_] and then [A-Za-z0-9_]*.
+            //   This avoids consuming numeric data prefixes such as "1 2 A:".
+            size_t end = pos;
+            while (end > 0 && std::isspace(static_cast<unsigned char>(sv[end - 1]))) {
+                --end;
+            }
+            if (end == 0) {
+                continue;
+            }
+
+            // Rightmost token before ':'.
+            size_t tok_end = end;
+            size_t tok_start = tok_end;
+            while (tok_start > 0) {
+                unsigned char c = static_cast<unsigned char>(sv[tok_start - 1]);
                 if (std::isalnum(c) || c == '_') {
-                    --start;
+                    --tok_start;
                 } else {
                     break;
                 }
             }
-            if (start < pos) {
-                // We did see at least one valid header character before ':'
-                hdrs.push_back({ start, pos, false });
+            if (tok_start == tok_end) {
+                continue;
             }
+            unsigned char first = static_cast<unsigned char>(sv[tok_start]);
+            if (!(std::isalpha(first) || first == '_')) {
+                continue;
+            }
+
+            size_t start = tok_start;
+            size_t scan = tok_start;
+            // Extend left across "<spaces><token>" where token also starts with [A-Za-z_].
+            while (scan > 0) {
+                size_t ws_end = scan;
+                while (ws_end > 0 && std::isspace(static_cast<unsigned char>(sv[ws_end - 1]))) {
+                    --ws_end;
+                }
+                if (ws_end == scan) {
+                    break;
+                }
+
+                size_t prev_end = ws_end;
+                size_t prev_start = prev_end;
+                while (prev_start > 0) {
+                    unsigned char c = static_cast<unsigned char>(sv[prev_start - 1]);
+                    if (std::isalnum(c) || c == '_') {
+                        --prev_start;
+                    } else {
+                        break;
+                    }
+                }
+                if (prev_start == prev_end) {
+                    break;
+                }
+                unsigned char prev_first = static_cast<unsigned char>(sv[prev_start]);
+                if (!(std::isalpha(prev_first) || prev_first == '_')) {
+                    break;
+                }
+
+                start = prev_start;
+                scan = prev_start;
+            }
+
+            hdrs.push_back({ start, pos, false });
         }
     }
 
@@ -221,8 +273,13 @@ split_headers(std::string_view sv)
         // a) Extract “header” 
         //  - if quoted, that range is exactly the inner-quote text
         //  - if unquoted, that range is the  run[A-Za-z0-9_]+
-        std::string_view header_sv = 
-            sv.substr(H.hdr_start, H.colon_pos - H.hdr_start);
+        size_t hlo = H.hdr_start;
+        size_t hhi = H.colon_pos;
+        if (!H.quoted) {
+            trim_range(sv, hlo, hhi);
+        }
+        std::string_view header_sv =
+            (hlo < hhi) ? sv.substr(hlo, hhi - hlo) : std::string_view("");
 
         // If it was quoted, we already skipped the surrounding quotes. 
         // If it was unquoted, this is exactly the name.
@@ -486,19 +543,14 @@ py::tuple parse_lines(
         }
         #endif
 
-        // We collect, for each header in this line:
-        //     - base_name   (std::string, e.g. "myheader" or "")
-        //     - n_subs      (int)
-        //     - channel_len (how many rows that header will occupy = max parsed-vector length, or 1)
-        //     - parsed      (a vector<vector<double>>, one per sub)
-        //     - col_indices (vector<size_t>, indices into channel_index for each sub)
-        //
-        //    We store these in a small temporary struct so that we can 
-        //    (a) discover all channel counts & update channel_index, and 
-        //    (b) only after that grow buffer, fill data in one shot.
+        // Collect all parsed segments for this line first, then assign columns.
+        // This prevents repeated headers in a line from overwriting each other:
+        // e.g. "A:1 2 A:3 4" -> A_1 and A_2, not overwrite in A.
         struct HeaderData {
             std::string                base_name;
             int                        n_subs;
+            int                        sub_start;   // 0-based offset within the base header for this line
+            int                        total_subs;  // total subchannels for this base in this line
             size_t                     channel_len;
             std::vector<std::vector<double>> parsed;
             std::vector<size_t>        col_indices;
@@ -509,14 +561,13 @@ py::tuple parse_lines(
 
         size_t n_new_rows = 1;   // at least one row per line, even if no data
 
-        // First pass over segs: split channels & numbers, discover sub channel counts,
-        //    compute channel_len per header, and update channel_index/channel_names on the fly.
+        // First pass: parse into per-segment buffers.
         for (auto &sp : segs) {
             std::string_view hdr_sv  = sp.first;  // header name (or "")
             std::string_view data_sv = sp.second; // raw text after colon
 
             // Convert hdr_sv to an owning std::string for key manipulation:
-             std::string base;
+            std::string base;
             if (hdr_sv.empty()) {
                 base = std::string(UNNAMED_BASE); // default header name for headerless
             } else {
@@ -542,8 +593,7 @@ py::tuple parse_lines(
 
             int n_subs = (int)subs.size();
 
-            // No data in this header segment, we still need at create least one subcolumn
-
+            // No data in this header segment, still create one empty subchannel.
             if (n_subs <= 0) {
                 n_subs = 1; 
                 subs.resize(1); // one empty sub
@@ -551,12 +601,9 @@ py::tuple parse_lines(
             }
             hd.n_subs = n_subs;  // number of subcolumns for this header
 
-            // Parse the subs into numbers
-
-            // Resize parsed so that parsed[i] is available
+            // Parse subchannels into numeric vectors.
             parsed.clear();
             parsed.resize(n_subs);
-            // For each subs[i], split into numbers
             size_t sub_len = 0;
             for (int i = 0; i < n_subs; ++i) {
                 split_numbers(subs[i], parsed[i], strict, gil_release);
@@ -565,6 +612,8 @@ py::tuple parse_lines(
             if (sub_len == 0) sub_len = 1;  // force at least one row of NaN
             hd.channel_len = sub_len;
             hd.parsed = parsed;
+            hd.sub_start = 0;
+            hd.total_subs = n_subs;
 
             #ifdef DEBUG_LOG
             if (debug) {
@@ -574,149 +623,79 @@ py::tuple parse_lines(
             }
             #endif
 
-            // Now ensure that subcolumns "hdr_1 .. hdr_n_subs" exists in channel_index
-            //
-            //    - If “hdr” itself already existed (with no “_i”), that means the user gave a
-            //      channel name “hdr” in channel_ names. In that case, we want to treat that as “hdr_1”.
-            //      We do this by: (a) look up index_of["hdr"], (b) rename it to index_of["hdr_1"], 
-            //      and erase index_of["hdr"].
-            //
-            //    - Next, for i = 1..n_subs, if “hdr_i” is not yet in index_of, we assign it a new index:
-            //      new_idx = channel_names.size(); channel_names.push_back("hdr_i"); channel_index["hdr_i"] = new_idx;
-
-            size_t single_channel_colidx; // for the n_subs == 1 case
-
-            if (n_subs == 1) {
-                // One sub‐column: (special case) ------------------------------------------------
-                // we check if base or base+"_1" already exists.
-
-                // First, see if "base_1" is already in the index (from a prior multi-sub use).
-                std::string base1 = base + "_1";
-
-                if (channel_index.count(base1)) {
-                    // We already have "base_1" as the correct column.  Use that.
-                    single_channel_colidx = channel_index[base1];
-                    // hd.col_indices.push_back(single_channel_colidx);
-
-                    #ifdef DEBUG_LOG
-                    if (debug) log << "    reusing existing sub-column '"
-                                << base1 << "' at index " << single_channel_colidx << "\n";
-                    #endif
-                }                
-
-                else if (channel_index.count(base)) {
-                    // We already had exactly "base" (no suffix).  Reuse that index:
-                    single_channel_colidx = channel_index[base];
-                    // hd.col_indices.push_back(single_channel_colidx);
-
-                    #ifdef DEBUG_LOG
-                    if (debug) log << "    reusing existing column '"
-                                << base << "' at index " << single_channel_colidx << "\n";
-                    #endif
-                }                
-                
-                else {
-                    // Neither "base_1" nor "base" exists → make a new "base" column:
-                    single_channel_colidx = channel_names.size();
-                    channel_names.push_back(base);
-                    channel_index.emplace(base, single_channel_colidx);
-                    // hd.col_indices.push_back(new_col);
-
-                    #ifdef DEBUG_LOG
-                    if (debug) log << "    created column '"
-                                << base << "' at index " << single_channel_colidx << "\n";
-                    #endif
-                }
-            } else {
-                // More than one sub channel → we must create "base_1", "base_2", ..., "base_n_subs"
-
-                // If channel_index already had exactly “base” (no suffix), convert it into “base_1”:
-                if (channel_index.count(base)) {
-                    // This means user‐provided channel_names included “header” exactly once. We want to re‐label it as “header_1”.
-                    size_t old_idx = channel_index[base];
-                    channel_index.erase(base);
-
-                    std::string base1 = base + "_1";
-                    channel_names[old_idx] = base1;
-                    channel_index.emplace(base1, old_idx);
-                    
-                    #ifdef DEBUG_LOG
-                    if (debug) log << "    renamed column '" << base << "' to " << base1 << "\n";
-                    #endif
-
-                    // Now create base_2..base_n_subs
-                    for (int i = 2; i <= n_subs; ++i) {
-                        std::string hi = base + "_" + std::to_string(i);
-                        if (!channel_index.count(hi)) {
-                            size_t new_col = channel_names.size();
-                            channel_names.push_back(hi);
-                            channel_index.emplace(hi, new_col);
-
-                            #ifdef DEBUG_LOG
-                            if (debug) log << "    created column '" << hi << "' at index " << new_col << "\n";
-                            #endif
-
-                        }
-                    }
-                }
-                else {
-                    // “base” not in index yet; create base_1..base_n_subs from scratch
-                    for (int i = 1; i <= n_subs; ++i) {
-                        std::string hi = base + "_" + std::to_string(i);
-                        if (!channel_index.count(hi)) {
-                            size_t new_col = channel_names.size();
-                            channel_names.push_back(hi);
-                            channel_index.emplace(hi, new_col);
-
-                            #ifdef DEBUG_LOG
-                            if (debug) log << "    created column '" << hi << "' at index " << new_col << "\n";
-                            #endif
-
-                        }
-                    }
-                }
-            }
-
-            // Store col_indices for each sub, keep name as is if only one channel
-            hd.col_indices.clear();
-            hd.col_indices.reserve(n_subs);
-            if (n_subs == 1) {
-                // hd.col_indices.push_back(channel_index[base]);
-                hd.col_indices.push_back(single_channel_colidx);
-            } else {
-                for (int i = 1; i <= n_subs; ++i) {
-                    std::string hi = base + "_" + std::to_string(i);
-                    hd.col_indices.push_back(channel_index[hi]);
-                }
-            }
-
-            #ifdef DEBUG_LOG
-            if (debug) {
-                log << "    header '" << hd.base_name << "' has " << hd.n_subs 
-                    << " subcolumns, max rows = " << hd.channel_len << "\n";
-                for (int i = 0; i < hd.n_subs; ++i) {
-                    log << "      sub[" << i << "] has " << hd.parsed[i].size() 
-                        << " values: ";
-                    for (double v : hd.parsed[i]) {
-                        log << v << " ";
-                    }
-                    log << "\n";
-                }
-                for (size_t i = 0; i < hd.col_indices.size(); ++i) {
-                    log << "      col_indices[" << i << "] = " << hd.col_indices[i] << "\n";
-                }
-            }
-            #endif
-
             n_new_rows = std::max(n_new_rows, sub_len);
-
             line_headers.push_back(std::move(hd));
 
         } // end for each seg
 
-        // Now that we have discovered all sub channel counts for every header in this line,
-        //    n_new_rows is the maximum “height” we need for row‐blocks of this line.
-        //    Also, channel_index.size() == total columns needed so far.
+        // Determine total subchannels per base in this line and each segment's offset.
+        ankerl::unordered_dense::map<std::string, int> totals_by_base;
+        totals_by_base.reserve(line_headers.size() * 2 + 8);
+        for (auto const& hd : line_headers) {
+            totals_by_base[hd.base_name] += hd.n_subs;
+        }
+
+        ankerl::unordered_dense::map<std::string, int> next_sub_offset;
+        next_sub_offset.reserve(totals_by_base.size() * 2 + 8);
+        for (auto &hd : line_headers) {
+            int start = next_sub_offset[hd.base_name];
+            hd.sub_start = start;
+            hd.total_subs = totals_by_base[hd.base_name];
+            next_sub_offset[hd.base_name] = start + hd.n_subs;
+        }
+
+        // Ensure channel names exist for each base with canonical rules.
+        for (auto const& kv : totals_by_base) {
+            const std::string& base = kv.first;
+            int total_subs = kv.second;
+            std::string base1 = base + "_1";
+
+            if (total_subs > 1) {
+                if (channel_index.count(base)) {
+                    size_t old_idx = channel_index[base];
+                    channel_index.erase(base);
+                    if (!channel_index.count(base1)) {
+                        channel_names[old_idx] = base1;
+                        channel_index.emplace(base1, old_idx);
+                    }
+                }
+                for (int i = 1; i <= total_subs; ++i) {
+                    std::string hi = base + "_" + std::to_string(i);
+                    if (!channel_index.count(hi)) {
+                        size_t new_col = channel_names.size();
+                        channel_names.push_back(hi);
+                        channel_index.emplace(hi, new_col);
+                    }
+                }
+            } else {
+                if (!channel_index.count(base1) && !channel_index.count(base)) {
+                    size_t new_col = channel_names.size();
+                    channel_names.push_back(base);
+                    channel_index.emplace(base, new_col);
+                }
+            }
+        }
+
+        // Resolve concrete column indices for each segment's subchannels.
+        for (auto &hd : line_headers) {
+            hd.col_indices.clear();
+            hd.col_indices.reserve(hd.n_subs);
+            std::string base1 = hd.base_name + "_1";
+
+            if (hd.total_subs == 1) {
+                if (channel_index.count(base1)) {
+                    hd.col_indices.push_back(channel_index[base1]);
+                } else {
+                    hd.col_indices.push_back(channel_index[hd.base_name]);
+                }
+            } else {
+                for (int j = 0; j < hd.n_subs; ++j) {
+                    int global_sub_idx = hd.sub_start + j + 1;
+                    std::string hi = hd.base_name + "_" + std::to_string(global_sub_idx);
+                    hd.col_indices.push_back(channel_index[hi]);
+                }
+            }
+        }
 
         // Grow rows and cols if needed --------------------------------
         n_cols_used = channel_names.size();

@@ -12,7 +12,7 @@
 # Configuration
 # ==============================================================================
 from config import ( MAX_ROWS, MAX_COLS, MAX_ROWS_LINEDATA,
-                     USE_FASTPLOTLIB, CACHE_FILE,
+                     USE_FASTPLOTLIB, USE_PARSERACCEL, CACHE_FILE,
                      DEBUGCHART, PROFILEME, DEBUG_LEVEL, DEBUGFASTPLOTLIB,
                      COLORS, AXIS_FONT_COLOR, AXIS_COLOR, GRID_COLOR, GRID_MINOR_COLOR,
                      FRAME_PLANE_COLOR, FRAME_TITLE_COLOR, LEGEND_FONT_COLOR,
@@ -120,6 +120,7 @@ try:
     hasFastParser = True
 except Exception:
     hasFastParser = False
+useFastParser = hasFastParser and USE_PARSERACCEL
 #
 from helpers.Circular_Buffer import CircularBuffer
 #
@@ -2285,7 +2286,43 @@ class QChart(QObject):
     #
     # "1 2 3 4, 4 5 6 7"      > ["1 2 3 4", " 4 5 6 7"] 
     # " , 1 2 3 4, 4 5 6 7, " > [' ', ' 1 2 3 4', ' 4 5 6 7', ' ']
-    SEG_SPLIT = lambda s: s.split(',')
+    SEG_SPLIT = staticmethod(lambda s: s.split(','))
+    NUM_PREFIX = re.compile(r'^[+\-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+\-]?\d+)?')
+
+    @staticmethod
+    def parse_segment_numbers(segment: str) -> np.ndarray:
+        """
+        Parse one comma-separated segment into numbers.
+        Matches C parser behavior:
+        - split on whitespace
+        - invalid token -> NaN
+        - numeric prefix + trailing junk -> parse numeric prefix
+        """
+        tokens = segment.split()
+        if not tokens:
+            return np.empty(0, dtype=np.float64)
+
+        out = np.empty(len(tokens), dtype=np.float64)
+        for i, tok in enumerate(tokens):
+            low = tok.lower()
+            if low.startswith("nan"):
+                out[i] = np.nan
+                continue
+            if low.startswith("inf") or low.startswith("+inf") or low.startswith("-inf"):
+                try:
+                    out[i] = float(tok)
+                except Exception:
+                    out[i] = np.nan
+                continue
+            m = QChart.NUM_PREFIX.match(tok)
+            if m:
+                try:
+                    out[i] = float(m.group(0))
+                except Exception:
+                    out[i] = np.nan
+            else:
+                out[i] = np.nan
+        return out
 
     # Python implementation 
     @profile
@@ -2314,9 +2351,10 @@ class QChart(QObject):
         # Acceleration
         data_array = self.data_array
         push       = self.buffer.push
-        thread_id  = self.thread_id
         seg_split  = self.SEG_SPLIT
+        parse_numbers = self.parse_segment_numbers
         ensure_capacity = self.ensure_capacity
+        channel_names_dict = self.channel_names_dict
         
         row = 0                                                                # Tracks row position in data_array
         max_len_segment = 0                                                    # Track longest segment
@@ -2342,14 +2380,9 @@ class QChart(QObject):
                 if segment == '':
                     segment_data = np.array([np.nan], dtype=np.float64)
                 else:
-                    segment_data = np.fromstring(segment, dtype=np.float64, sep=' ')
+                    segment_data = parse_numbers(segment)
                     if segment_data.size == 0:
-                        # parser failed, treat as NaN
                         segment_data = np.array([np.nan], dtype=np.float64)
-                        self.logSignal.emit(
-                            logging.WARNING,
-                            f"[{thread_id}]: Could not parse '{seg}' on line '{decoded_line}'"
-                        )
 
                 len_segment = len(segment_data)
                 row_end     = row + len_segment
@@ -2368,8 +2401,17 @@ class QChart(QObject):
 
             num_columns = max(len(segments), num_columns)                      # keep track of columns used
 
-        # Update variable names
-        self.channel_names_dict = {str(i + 1): i for i in range(num_columns)}
+        # Keep existing names (C behavior) and only append missing channels.
+        n_channel_names = len(channel_names_dict)
+        if n_channel_names < num_columns:
+            for col_idx in range(n_channel_names, num_columns):
+                candidate = col_idx + 1
+                key = str(candidate)
+                while key in channel_names_dict:
+                    candidate += 1
+                    key = str(candidate)
+                channel_names_dict[key] = col_idx
+        self.channel_names_dict = channel_names_dict
 
         # Push only the valid portion of data_array to the buffer
         push(data_array[:new_samples, :num_columns])
@@ -2422,26 +2464,105 @@ class QChart(QObject):
     #
     # "1 2 3 4, 4 5 6 7"      > ["1 2 3 4", " 4 5 6 7"] 
     # " , 1 2 3 4, 4 5 6 7, " > [' ', ' 1 2 3 4', ' 4 5 6 7', ' ']
-    SEG_SPLIT = lambda s: s.split(',')
+    SEG_SPLIT = staticmethod(lambda s: s.split(','))
 
-    # - Separate headers from data
-    #
-    # "Power: 1 2 3 4"                          > "Power" , "1 2 3 4"
-    # "Power: 1 2 3 4; 4 5 6 7"                 > "Power" , "1 2 3 4; 4 5 6 7"
-    # "Power: 1 2 3 4, 4 5 6 7"                 > "Power" , "1 2 3 4, 4 5 6 7"
-    # "Speed: 1 2 3 4, Power: 1 2 3 4"          > "Speed", "1 2 3 4, ", "Power" , "1 2 3 4"
-    # "Speed: 1 2 3 4, 5 6 7 8, Power: 1 2 3 4" > "Speed", "1 2 3 4, 5 6 7 8,", "Power" , "1 2 3 4"
-    #
-    HEADER_REGEX = re.compile(
-        r'([A-Za-z][\w ]*):\s*'                                                #  <header>: starts with a letter, then any combination of word-chars (\w = letters, digits, underscore) or spaces
-        r'(.*?)'                                                               #  <data> (non-greedy)
-        r'(?=\s*[A-Za-z][\w ]*:\s*|$)'                                         #  up to next <header>: or end
-    )
-    HEADER_SPLIT = HEADER_REGEX.findall
-    # NAMED_SEGMENT_REGEX = re.compile(r'([A-Za-z ]+):([\d\s;,]+)')
-    # NAMED_SEGMENT_REGEX = re.compile(r'(\w+):([\d\s;,]+)')         # No spaces in variable names allowed, will truncate the name
-    # NAMED_SEGMENT_REGEX = re.compile(r'\s*,?(\w+):\s*([\d\s;,]+)')
-    # NAMED_SEGMENT_REGEX = re.compile(r'(\w+):([\d\s;,]+?)(?=\s*\w+:|$)')
+    @staticmethod
+    def split_headers_line(line: str):
+        """
+        Split one line into (header, data) pairs.
+        Mirrors C parser behavior:
+        - supports spaced headers: "Blood Pressure: 120"
+        - preserves headerless prefix before first header
+        - requires each unquoted header word to start with [A-Za-z_]
+        """
+        hdrs = []  # (header_start, colon_pos, quoted)
+        n = len(line)
+
+        pos = 0
+        while pos < n:
+            if line[pos] != ':':
+                pos += 1
+                continue
+
+            # Quoted header support.
+            if pos >= 1 and line[pos - 1] in ("'", '"'):
+                quote = line[pos - 1]
+                start = pos - 2
+                found = False
+                while start >= 0:
+                    if line[start] == quote:
+                        found = True
+                        break
+                    start -= 1
+                if found and start < (pos - 1):
+                    hdrs.append((start + 1, pos, True))
+                    pos += 1
+                    continue
+
+            # Unquoted header support with optional spaces between words.
+            end = pos
+            while end > 0 and line[end - 1].isspace():
+                end -= 1
+            if end == 0:
+                pos += 1
+                continue
+
+            tok_end = end
+            tok_start = tok_end
+            while tok_start > 0 and (line[tok_start - 1].isalnum() or line[tok_start - 1] == '_'):
+                tok_start -= 1
+            if tok_start == tok_end:
+                pos += 1
+                continue
+            if not (line[tok_start].isalpha() or line[tok_start] == '_'):
+                pos += 1
+                continue
+
+            start = tok_start
+            scan = tok_start
+            while scan > 0:
+                ws_end = scan
+                while ws_end > 0 and line[ws_end - 1].isspace():
+                    ws_end -= 1
+                if ws_end == scan:
+                    break
+
+                prev_end = ws_end
+                prev_start = prev_end
+                while prev_start > 0 and (line[prev_start - 1].isalnum() or line[prev_start - 1] == '_'):
+                    prev_start -= 1
+                if prev_start == prev_end:
+                    break
+                if not (line[prev_start].isalpha() or line[prev_start] == '_'):
+                    break
+
+                start = prev_start
+                scan = prev_start
+
+            hdrs.append((start, pos, False))
+            pos += 1
+
+        if not hdrs:
+            trimmed = line.strip()
+            return [("", trimmed)]
+
+        out = []
+
+        # Headerless prefix before first header.
+        if hdrs[0][0] > 0:
+            prefix = line[:hdrs[0][0]].strip()
+            if prefix:
+                out.append(("", prefix))
+
+        for i, (hdr_start, colon_pos, quoted) in enumerate(hdrs):
+            raw_header = line[hdr_start:colon_pos]
+            header = raw_header if quoted else raw_header.strip()
+            dlo = colon_pos + 1
+            dhi = hdrs[i + 1][0] if i + 1 < len(hdrs) else n
+            data = line[dlo:dhi].strip()
+            out.append((header, data))
+
+        return out if out else [("", "")]
 
     # Python implementation
     @profile
@@ -2525,101 +2646,127 @@ class QChart(QObject):
 
         # Acceleration
         data_array = self.data_array
-        push       = self.buffer.push
-        thread_id  = self.thread_id
+        push = self.buffer.push
         seg_split = self.SEG_SPLIT
         ensure_capacity = self.ensure_capacity
-        header_split = self.HEADER_SPLIT
-        
-        channel_names_dict = self.channel_names_dict
-        name_cache = {}
+        parse_numbers = self.parse_segment_numbers
+        split_headers_line = self.split_headers_line
 
-        row = 0                                                                # time axis into data array
-        num_columns = 0                                                        # Track maximum column index
-        new_samples = 0                                                        # Track number of new samples
-        rows, cols = data_array.shape                                          # Size of temporary array to organize data
+        channel_names_dict = self.channel_names_dict
+        index_to_name = {idx: name for name, idx in channel_names_dict.items()}
+        next_col = (max(index_to_name.keys()) + 1) if index_to_name else 0
+
+        def ensure_column(name: str) -> int:
+            nonlocal next_col
+            if name in channel_names_dict:
+                return channel_names_dict[name]
+            col_idx = next_col
+            next_col += 1
+            channel_names_dict[name] = col_idx
+            index_to_name[col_idx] = name
+            return col_idx
+
+        row = 0
+        new_samples = 0
+        rows, cols = data_array.shape
 
         for line in lines:
-            # Decode the line if it's a byte object
             if isinstance(line, (bytes, bytearray)):
                 decoded_line = line.decode(encoding, errors='replace')
             else:
                 decoded_line = line
 
-            # Extract list of header and data segments (e.g., "Power: 1 2 3 4")
-            named_segments = header_split(decoded_line)
+            named_segments = split_headers_line(decoded_line)
 
-            # handle a headerless prefix if nobody matched
-            if not named_segments:
-                named_segments = [("", decoded_line)]
+            line_segments = []
+            line_rows = 1
 
-            name_counts = {}
-            prev_block_length = 0
-
-            # For each header data segment pair:
             for name, data in named_segments:
-
-                # track repeats of the same header in this line
-                cnt = name_counts[name] = name_counts.get(name, 0) + 1
-
-                # if repeated, we advance time by the previous block length
-                if cnt > 1:
-                    row         += prev_block_length
-                    new_samples += prev_block_length
-                    prev_block_length = 0
-
-                # Split data by comma for multiple components
+                base_name = name.strip() if name.strip() else "__unnamed"
                 segments = seg_split(data)
+                if not segments:
+                    segments = [""]
 
-                # Convert segments to NumPy arrays
-                for i, seg in enumerate(segments):
-                    segment = seg.strip()                                      # Remove leading/trailing whitespace 
-
+                parsed_subs = []
+                channel_len = 1
+                for seg in segments:
+                    segment = seg.strip()
                     if segment == '':
                         segment_data = np.array([np.nan], dtype=np.float64)
                     else:
-                        segment_data = np.fromstring(segment, dtype=np.float64, sep=' ')
+                        segment_data = parse_numbers(segment)
                         if segment_data.size == 0:
-                            # parser failed, treat as NaN
                             segment_data = np.array([np.nan], dtype=np.float64)
-                            self.logSignal.emit(
-                                logging.WARNING,
-                                f"[{thread_id}]: Could not parse '{seg}' on line '{segment}'"
-                            )
 
-                    len_segment = segment_data.size
-                    row_end = row + len_segment
-                    prev_block_length = max(prev_block_length, len_segment)
+                    parsed_subs.append(segment_data)
+                    channel_len = max(channel_len, int(segment_data.size))
 
-                    # Pick column name: add _1, _2 if multiple parts
-                    base_name = name.strip() or str(i)                         # fallback to channel-index string
-                    col_name = (
-                        f"{base_name}_{i+1}"
-                        if len(segments) > 1
-                        else base_name
-                    )
-                    
-                    if col_name in name_cache:
-                        # If we have seen this name before, we use the cached index
-                        col = name_cache[col_name]
+                line_rows = max(line_rows, channel_len)
+                line_segments.append({
+                    "base": base_name,
+                    "n_subs": len(parsed_subs),
+                    "parsed": parsed_subs,
+                    "sub_start": 0,
+                    "total_subs": len(parsed_subs),
+                })
+
+            totals_by_base = {}
+            for seg in line_segments:
+                base = seg["base"]
+                totals_by_base[base] = totals_by_base.get(base, 0) + seg["n_subs"]
+
+            next_sub_offset = {}
+            for seg in line_segments:
+                base = seg["base"]
+                seg["sub_start"] = next_sub_offset.get(base, 0)
+                seg["total_subs"] = totals_by_base[base]
+                next_sub_offset[base] = seg["sub_start"] + seg["n_subs"]
+
+            # Canonicalize and create channel names like the C parser.
+            for base, total_subs in totals_by_base.items():
+                base1 = f"{base}_1"
+                if total_subs > 1:
+                    if base in channel_names_dict:
+                        old_idx = channel_names_dict.pop(base)
+                        if base1 not in channel_names_dict:
+                            channel_names_dict[base1] = old_idx
+                            index_to_name[old_idx] = base1
+                    for i in range(1, total_subs + 1):
+                        ensure_column(f"{base}_{i}")
+                else:
+                    if base1 not in channel_names_dict and base not in channel_names_dict:
+                        ensure_column(base)
+
+            row_base = row
+            for seg in line_segments:
+                base = seg["base"]
+                n_subs = seg["n_subs"]
+                sub_start = seg["sub_start"]
+                total_subs = seg["total_subs"]
+
+                if total_subs == 1:
+                    base1 = f"{base}_1"
+                    if base1 in channel_names_dict:
+                        col_indices = [channel_names_dict[base1]]
                     else:
-                        # Assign column index
-                        col = channel_names_dict.setdefault(col_name, len(channel_names_dict))
-                        name_cache[col_name] = col
+                        col_indices = [channel_names_dict[base]]
+                else:
+                    col_indices = [
+                        channel_names_dict[f"{base}_{sub_start + j + 1}"]
+                        for j in range(n_subs)
+                    ]
 
-                    # check capacity
+                for col, segment_data in zip(col_indices, seg["parsed"]):
+                    row_end = row_base + segment_data.size
                     data_array, rows, cols = ensure_capacity(
                         data_array, rows, cols, row_end, col
                     )
+                    data_array[row_base:row_end, col] = segment_data
 
-                    # Store the values in `data_array`
-                    data_array[row:row_end, col] = segment_data
+            new_samples += line_rows
+            row += line_rows
 
-            new_samples += prev_block_length
-            row         += prev_block_length
-
-        # Update buffer and variable index
-        num_columns = max(channel_names_dict.values(), default=0) + 1
+        num_columns = max(channel_names_dict.values(), default=-1) + 1
 
         # Push only the valid portion of `data_array`
         push(data_array[:new_samples, :num_columns])
@@ -2680,16 +2827,16 @@ class QChart(QObject):
         # lines_copy = [item[:] for item in lines]
 
         if self.textDataSeparator == 'simple':
-            if hasFastParser:
+            if useFastParser:
                 self.fast_process_lines_simple(lines, encoding = self.encoding)
             else:
                 self.process_lines_simple(     lines, encoding = self.encoding)
 
         elif self.textDataSeparator == 'header':
-            if hasFastParser:
+            if useFastParser:
                 self.fast_process_lines_header(lines, encoding = self.encoding)
             else:
-                self.process_lines_header(     lines, encoding = self.encoding)
+                self.process_lines_header(     lines, encoding = self.encoding) # THIS HAS ERROR also.
         elif self.textDataSeparator == 'binary':
             self.logSignal.emit(
                 logging.WARNING,
