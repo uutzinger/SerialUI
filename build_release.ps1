@@ -19,7 +19,7 @@ function Run {
     Write-Host "+ $Exe $($Args -join ' ')"
     & $Exe @Args
     if ($LASTEXITCODE -ne 0) {
-        throw "Command failed with exit code $LASTEXITCODE: $Exe $($Args -join ' ')"
+        throw "Command failed with exit code ${LASTEXITCODE}: $Exe $($Args -join ' ')"
     }
 }
 
