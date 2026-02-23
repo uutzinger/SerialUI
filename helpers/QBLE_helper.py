@@ -256,6 +256,7 @@ class QBLESerial(QObject):
         self.ui = ui
 
         self.display = True                                                    # display incoming data
+        self.plot = True                                                       # feed incoming data to chart
         self.ui.checkBox_DisplayBLE.setUpdatesEnabled(False)
         self.ui.checkBox_DisplayBLE.setChecked(self.display)
         self.ui.checkBox_DisplayBLE.setUpdatesEnabled(True)

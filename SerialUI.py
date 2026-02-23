@@ -697,6 +697,8 @@ class mainWindow(QMainWindow):
         self.ui.checkBox_ReceiverRecord.toggled.connect(    self.on_receiverRecord) # record incoming data to file
         self.ui.checkBox_DisplayBLE.toggled.connect(        self.on_displayBLE) # record incoming data to file
         self.ui.checkBox_DisplaySerial.toggled.connect(     self.on_displaySerial) # record incoming data to file
+        self.ui.checkBox_PlotSerial.toggled.connect(        self.on_plotSerial)
+        self.ui.checkBox_PlotBLE.toggled.connect(           self.on_plotBLE)
 
         # Serial ComboBoxes
         self.ui.comboBoxDropDown_SerialPorts.currentIndexChanged.connect(    self.serial.on_comboBoxDropDown_SerialPorts) # user changed serial port
@@ -728,6 +730,15 @@ class mainWindow(QMainWindow):
         self.handle_log(logging.INFO,
             f"[{self.instance_name[:15]:<15}]: Slider signals connected."
         )
+
+        # Plot source selectors
+        self.ui.checkBox_PlotSerial.setChecked(self.serial.plot)
+        if USE_BLE:
+            self.ui.checkBox_PlotBLE.setChecked(self.ble.plot)
+            self.ui.checkBox_PlotBLE.setEnabled(True)
+        else:
+            self.ui.checkBox_PlotBLE.setChecked(False)
+            self.ui.checkBox_PlotBLE.setEnabled(False)
 
         # Text Input
         # ----------------------------------------
@@ -1437,6 +1448,42 @@ class mainWindow(QMainWindow):
         """Toggle wether to display incoming Serial data in the text window"""
         self.serial.display = self.ui.checkBox_DisplaySerial.isChecked()
 
+    @pyqtSlot()
+    def on_plotBLE(self) -> None:
+        """Toggle whether BLE data should feed the chart."""
+        if not USE_BLE or not hasattr(self, "ble"):
+            return
+        self.ble.plot = self.ui.checkBox_PlotBLE.isChecked()
+        if self.isPlotting:
+            try:
+                if self.ble.plot:
+                    self.ble.connect_receivedLines(self.chart.on_receivedLines)
+                    self.ble.connect_receivedData(self.chart.on_receivedData)
+                else:
+                    self.ble.disconnect_receivedLines(self.chart.on_receivedLines)
+                    self.ble.disconnect_receivedData(self.chart.on_receivedData)
+            except Exception as e:
+                self.handle_log(logging.ERROR,
+                    f"[{self.instance_name[:15]:<15}]: BLE plot toggle routing failed: {e}"
+                )
+
+    @pyqtSlot()
+    def on_plotSerial(self) -> None:
+        """Toggle whether Serial data should feed the chart."""
+        self.serial.plot = self.ui.checkBox_PlotSerial.isChecked()
+        if self.isPlotting:
+            try:
+                if self.serial.plot:
+                    self.serial.connect_receivedLines(self.chart.on_receivedLines)
+                    self.serial.connect_receivedData(self.chart.on_receivedData)
+                else:
+                    self.serial.disconnect_receivedLines(self.chart.on_receivedLines)
+                    self.serial.disconnect_receivedData(self.chart.on_receivedData)
+            except Exception as e:
+                self.handle_log(logging.ERROR,
+                    f"[{self.instance_name[:15]:<15}]: Serial plot toggle routing failed: {e}"
+                )
+
     @pyqtSlot(int)
     def on_HistorySliderValueChanged(self, value: int):
         """
@@ -1673,66 +1720,73 @@ class mainWindow(QMainWindow):
         if sender == self.chart:
             if runIt and not self.isPlotting:
                 # Start plotting data
-                #if self.serialUseSerial:
-                try:
-                    self.serial.connect_receivedLines(  self.chart.on_receivedLines) # connect chart display to serial receiver signal
-                    self.serial.connect_receivedData(   self.chart.on_receivedData) # connect chart display to serial receiver signal
-                    self.ui.pushButton_ChartStartStop.setText("Stop")
-                    self.isPlotting = runIt
-                    if DEBUGRECEIVER:
-                        self.handle_log(logging.DEBUG,
-                            f"[{self.instance_name[:15]:<15}]: Connected signals from serial for charting at {time.perf_counter()}."
-                        )
-                except Exception as e:
-                    self.handle_log(logging.ERROR,
-                        f"[{self.instance_name[:15]:<15}]: Connect to signals for charting failed: {e}"
-                    )
-                if USE_BLE:
-                    # if self.serialUseBLE:
+                self.serial.plot = self.ui.checkBox_PlotSerial.isChecked()
+                if self.serial.plot:
                     try:
-                        self.ble.connect_receivedLines( self.chart.on_receivedLines) # connect chart display to ble receiver signal
-                        self.ble.connect_receivedData(  self.chart.on_receivedData) # connect chart display to ble receiver signal                            
-                        self.ui.pushButton_ChartStartStop.setText("Stop")
-                        self.isPlotting = runIt
+                        self.serial.connect_receivedLines(self.chart.on_receivedLines) # connect chart display to serial receiver signal
+                        self.serial.connect_receivedData(self.chart.on_receivedData) # connect chart display to serial receiver signal
                         if DEBUGRECEIVER:
                             self.handle_log(logging.DEBUG,
-                                f"[{self.instance_name[:15]:<15}]: Connected signals from BLE for charting at {time.perf_counter()}."
+                                f"[{self.instance_name[:15]:<15}]: Connected signals from serial for charting at {time.perf_counter()}."
                             )
                     except Exception as e:
                         self.handle_log(logging.ERROR,
-                            f"[{self.instance_name[:15]:<15}]: Connect to signals for charting failed: {e}"
+                            f"[{self.instance_name[:15]:<15}]: Connect to serial chart signals failed: {e}"
                         )
+                else:
+                    # Ensure serial source is disconnected from chart
+                    self.serial.disconnect_receivedLines(self.chart.on_receivedLines)
+                    self.serial.disconnect_receivedData(self.chart.on_receivedData)
+
+                if USE_BLE:
+                    self.ble.plot = self.ui.checkBox_PlotBLE.isChecked()
+                    if self.ble.plot:
+                        try:
+                            self.ble.connect_receivedLines(self.chart.on_receivedLines) # connect chart display to ble receiver signal
+                            self.ble.connect_receivedData(self.chart.on_receivedData) # connect chart display to ble receiver signal
+                            if DEBUGRECEIVER:
+                                self.handle_log(logging.DEBUG,
+                                    f"[{self.instance_name[:15]:<15}]: Connected signals from BLE for charting at {time.perf_counter()}."
+                                )
+                        except Exception as e:
+                            self.handle_log(logging.ERROR,
+                                f"[{self.instance_name[:15]:<15}]: Connect to BLE chart signals failed: {e}"
+                            )
+                    else:
+                        # Ensure BLE source is disconnected from chart
+                        self.ble.disconnect_receivedLines(self.chart.on_receivedLines)
+                        self.ble.disconnect_receivedData(self.chart.on_receivedData)
+
+                self.ui.pushButton_ChartStartStop.setText("Stop")
+                self.isPlotting = runIt
+
             elif not runIt and self.isPlotting:
                 # Stop plotting data
-                # if self.serialUseSerial:
                 try:
                     self.serial.disconnect_receivedLines(self.chart.on_receivedLines) # disconnect chart display to serial receiver signal
                     self.serial.disconnect_receivedData(self.chart.on_receivedData) # disconnect chart display to serial receiver signal
-                    self.ui.pushButton_ChartStartStop.setText("Start")
-                    self.isPlotting = runIt
                     if DEBUGRECEIVER:
                         self.handle_log(logging.DEBUG,
                             f"[{self.instance_name[:15]:<15}]: Disconnected signals for charting from serial."
                         )
                 except Exception as e:
                     self.handle_log(logging.ERROR,
-                        f"[{self.instance_name[:15]:<15}]: Disconnect to signals for charting failed: {e}"
+                        f"[{self.instance_name[:15]:<15}]: Disconnect serial chart signals failed: {e}"
                     )
                 if USE_BLE: 
-                    # if self.serialUseBLE:
                     try:
                         self.ble.disconnect_receivedLines(self.chart.on_receivedLines) # disconnect chart display to ble receiver signal
                         self.ble.disconnect_receivedData(self.chart.on_receivedData) # disconnect chart display to ble receiver signal
-                        self.ui.pushButton_ChartStartStop.setText("Start")
-                        self.isPlotting = runIt
                         if DEBUGRECEIVER:
                             self.handle_log(logging.DEBUG,
                                 f"[{self.instance_name[:15]:<15}]: Disconnected signals for charting from BLE."
                             )
                     except Exception as e:
                         self.handle_log(logging.ERROR,
-                            f"[{self.instance_name[:15]:<15}]: Disconnect to signals for charting failed: {e}"
+                            f"[{self.instance_name[:15]:<15}]: Disconnect BLE chart signals failed: {e}"
                         )
+                self.ui.pushButton_ChartStartStop.setText("Start")
+                self.isPlotting = runIt
             else:
                 self.handle_log( logging.WARNING,
                     f"[{self.instance_name[:15]:<15}]: Should not end up here when starting/stopping charting."

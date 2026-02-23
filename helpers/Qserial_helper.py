@@ -296,6 +296,7 @@ class QSerial(QObject):
         self.ui = ui
 
         self.display = True                                                    # display incoming data
+        self.plot = True                                                       # feed incoming data to chart
         self.ui.checkBox_DisplaySerial.setUpdatesEnabled(False)
         self.ui.checkBox_DisplaySerial.setChecked(self.display)
         self.ui.checkBox_DisplaySerial.setUpdatesEnabled(True)

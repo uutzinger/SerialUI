@@ -612,7 +612,7 @@
          </widget>
         </item>
         <item>
-         <layout class="QHBoxLayout" name="horizontalLayout_bottom_Plotter" stretch="0,0,1,0">
+         <layout class="QHBoxLayout" name="horizontalLayout_bottom_Plotter" stretch="0,0,0,0,1,0">
           <item>
            <layout class="QHBoxLayout" name="horizontalLayout_bottom_left">
             <property name="spacing">
@@ -853,6 +853,32 @@
             </property>
             <property name="text">
              <string>fastplotlib</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QCheckBox" name="checkBox_PlotBLE">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Minimum" vsizetype="Fixed">
+              <horstretch>1</horstretch>
+              <verstretch>1</verstretch>
+             </sizepolicy>
+            </property>
+            <property name="text">
+             <string>BLE</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QCheckBox" name="checkBox_PlotSerial">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Minimum" vsizetype="Fixed">
+              <horstretch>1</horstretch>
+              <verstretch>1</verstretch>
+             </sizepolicy>
+            </property>
+            <property name="text">
+             <string>Serial</string>
             </property>
            </widget>
           </item>

@@ -1844,6 +1844,7 @@ void handleBLECommands(const String& cmd)
     "   4 Medical,        5 Power,                6 Stereo Sinewave,\r\n"
     "   7 Mono Sinewave,  8 Mono Sinewave Header, 9 Mono Sawtooth,\r\n"
     "  10 Squarewave,    11 64 Chars,            20 BLE Speed Tester (34)\r\n";
+    "  21 BLE Speed Tester no counts\r\n";
     txBuffer.push(HELP_TEXT, strlen(HELP_TEXT), false);
     #if DEBUG_LEVEL >= DEBUG
       Serial.print(HELP_TEXT);
@@ -1894,6 +1895,9 @@ size_t generateData()
       break;
     case 20:
       return(generateStoffregen());
+      break;
+    case 21:
+      return(generateStoffregenNoCounts());
       break;
     default:
     {
@@ -2000,7 +2004,7 @@ static int avgCharsPerSample(int s) {
     case 9:  return   8; // Mono: "-1024\r\n" ~ 6–7 → use 8
     case 10: return   8; // Mono: "-1024\r\n" ~ 6–7 → use 8
     case 11: return  64; // 64 chars + newline
-    case 20: return  36; // Speed test: count=%9lu, lines/sec=%6lu\r\n
+    case 20: return  36; // Speed test: count:%9lu  lines/sec:%6lu\r\n
     default: return  64; // Other CSV scenarios build one line per call; keep generous
   }
 }
@@ -2183,7 +2187,24 @@ size_t generate64Chars() {
 size_t generateStoffregen() {
 
   // 34 characters
-  size_t n = snprintf(data, sizeof(data), "count=%9lu, lines/sec=%6lu\r\n", currentCounts, countsPerSecond);
+  size_t n = snprintf(data, sizeof(data), "count:%9lu  lines/sec:%6lu\r\n", currentCounts, countsPerSecond);
+
+  currentCounts++;
+
+  // update every second
+  if (currentTime - lastBLETime > 1000000) {
+    countsPerSecond = currentCounts - lastCounts;
+    lastCounts = currentCounts;
+    lastBLETime = currentTime;
+  }
+
+  return txBuffer.push(data, n, false);
+}
+
+size_t generateStoffregenNoCounts() {
+
+  // 22 characters
+  size_t n = snprintf(data, sizeof(data), "lines_per_sec:%6lu\r\n", countsPerSecond);
 
   currentCounts++;
 
