@@ -8,7 +8,7 @@ from helpers.colors import color_names_sweet16 as COLORS
 # Constants General
 VERSION                 = "1.4.3"                # this version
 AUTHOR                  = "Urs Utzinger"         # me
-DATE                    = "2025"                 # year of last update
+DATE                    = "2026"                 # year of last update
 ################################################################################################################################
 # Enable Features
 USE_FASTPLOTLIB         = False                  # use fastplotlib instead of pyqtgraph
