@@ -13,13 +13,15 @@ function Log {
 
 function Run {
     param(
+        [Parameter(Mandatory = $true, Position = 0)]
         [string]$Exe,
-        [string[]]$Args
+        [Parameter(ValueFromRemainingArguments = $true)]
+        [string[]]$CmdArgs
     )
-    Write-Host "+ $Exe $($Args -join ' ')"
-    & $Exe @Args
+    Write-Host "+ $Exe $($CmdArgs -join ' ')"
+    & $Exe @CmdArgs
     if ($LASTEXITCODE -ne 0) {
-        throw "Command failed with exit code ${LASTEXITCODE}: $Exe $($Args -join ' ')"
+        throw "Command failed with exit code ${LASTEXITCODE}: $Exe $($CmdArgs -join ' ')"
     }
 }
 
@@ -31,7 +33,7 @@ if (-not (Test-Path -Path $SpecFile -PathType Leaf)) {
 }
 
 Log "Installing/upgrading PyInstaller tooling"
-Run $PythonBin @("-m", "pip", "install", "--upgrade", "pip", "pyinstaller")
+Run $PythonBin "-m" "pip" "install" "--upgrade" "pip" "pyinstaller"
 
 Log "Building standalone executable with PyInstaller"
 Push-Location $RootDir
@@ -39,7 +41,7 @@ try {
     $oldNoUserSite = $env:PYTHONNOUSERSITE
     $env:PYTHONNOUSERSITE = "1"
     try {
-        Run $PythonBin @("-m", "PyInstaller", "--clean", "--noconfirm", "SerialUI.spec")
+        Run $PythonBin "-m" "PyInstaller" "--clean" "--noconfirm" "SerialUI.spec"
     }
     finally {
         if ($null -eq $oldNoUserSite) {
