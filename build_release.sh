@@ -59,6 +59,24 @@ require_dir "${HELPERS_DIR}"
 require_file "${ROOT_DIR}/SerialUI.spec"
 require_file "${HELPERS_DIR}/setup.py"
 
+log "Checking Python environment isolation"
+if "${PYTHON_BIN}" - <<'PY'
+import site, sys
+prefix = sys.prefix.rstrip("/")
+base = getattr(sys, "base_prefix", "").rstrip("/")
+paths = [p for p in sys.path if "site-packages" in p or "dist-packages" in p]
+uses_system = any(
+    p.startswith("/usr/lib") or p.startswith("/usr/local/lib")
+    for p in paths
+)
+raise SystemExit(0 if uses_system else 1)
+PY
+then
+    echo "WARNING: Python environment includes system site-packages."
+    echo "         This can make PyInstaller bundles very large by pulling unrelated packages."
+    echo "         Recommended: build in a clean venv with include-system-site-packages = false."
+fi
+
 log "Installing/upgrading build tools"
 run "${PYTHON_BIN}" -m pip install --upgrade pip build twine pyinstaller pybind11 setuptools wheel
 

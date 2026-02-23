@@ -34,6 +34,7 @@ import time
 import re
 import textwrap
 import sys
+import importlib
 from math import pi, floor, ceil, isfinite, floor, log10, isclose
 from typing import Optional
 import numpy as np
@@ -83,13 +84,17 @@ except Exception:
 #
 # Fastplotlib
 # ----------------------------------------
+fpl = None
+Legend = None
+pygfx = None
 if USE_FASTPLOTLIB:
     if DEBUGFASTPLOTLIB:
         tic = time.perf_counter()
     try:
-        import fastplotlib as fpl
-        from   fastplotlib.legends import Legend
-        import pygfx
+        # Keep optional fastplotlib stack dynamic to avoid freezing unused heavy deps.
+        fpl = importlib.import_module("fastplotlib")
+        Legend = importlib.import_module("fastplotlib.legends").Legend
+        pygfx = importlib.import_module("pygfx")
     except Exception:
         USE_FASTPLOTLIB = False
     if DEBUGFASTPLOTLIB:
@@ -101,7 +106,8 @@ if not USE_FASTPLOTLIB:
     tic = time.perf_counter()
     import pyqtgraph                               as     pg
     from   pyqtgraph                               import PlotWidget
-    import pyqtgraph.exporters                     as     pgxr
+    from   pyqtgraph.exporters.ImageExporter       import ImageExporter
+    from   pyqtgraph.exporters.SVGExporter         import SVGExporter
     from   pyqtgraph.graphicsItems.PlotDataItem    import PlotDataItem
     from    pyqtgraph.graphicsItems.GraphicsObject import GraphicsObject
     VALID_PG_LEGENDITEM = (PlotDataItem, GraphicsObject)
@@ -3397,9 +3403,9 @@ class QChart(QObject):
                 # PyQtGraph: choose vector vs raster exporter
                 ext = file_path.suffix.lower()
                 if ext == ".svg":
-                    exporter = pgxr.SVGExporter(self.chartWidgetPG.getPlotItem())
+                    exporter = SVGExporter(self.chartWidgetPG.getPlotItem())
                 else:
-                    exporter = pgxr.ImageExporter(self.chartWidgetPG.getPlotItem())
+                    exporter = ImageExporter(self.chartWidgetPG.getPlotItem())
                 exporter.export(str(file_path))
             else:
                 # Use FastPlotLib exporter, needs imageio
