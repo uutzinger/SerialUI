@@ -1,0 +1,7 @@
+include pyproject.toml
+include setup.py
+
+recursive-include line_parsers *.py
+recursive-include line_parsers *.cpp *.cc *.cxx
+recursive-include line_parsers *.h *.hpp
+recursive-include line_parsers *.txt *.md LICENSE

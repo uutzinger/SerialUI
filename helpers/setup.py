@@ -12,7 +12,9 @@ import os
 DEBUG = False                                                                  # Set to True for debugging flags, False for production flags
 BUILD_PROFILE = False                                                          # Set to True to generate profiling data, then include it with -fprofile-use in follow up build
 
-this_dir = os.path.dirname(__file__)
+this_dir = os.path.dirname(os.path.abspath(__file__))
+# Ensure relative source paths behave the same no matter where setup.py is invoked from.
+os.chdir(this_dir)
 
 is_windows = sys.platform.startswith('win')
 is_macos = sys.platform == "darwin"
@@ -179,13 +181,13 @@ common = dict(
 
 simple_ext = Extension(
     "line_parsers.simple_parser",
-    sources=[os.path.join("line_parsers", "simple_parser.cpp")],
+    sources=[os.path.join(this_dir, "line_parsers", "simple_parser.cpp")],
     **common,
 )
 
 header_ext = Extension(
     "line_parsers.header_parser",
-    sources=[os.path.join("line_parsers", "header_parser.cpp")],
+    sources=[os.path.join(this_dir, "line_parsers", "header_parser.cpp")],
     **common,
 )
 
