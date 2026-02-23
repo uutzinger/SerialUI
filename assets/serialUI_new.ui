@@ -410,7 +410,7 @@
               </property>
              </widget>
             </item>
-            <item>
+            <item row="0" column="1">
              <widget class="QComboBox" name="comboBoxDropDown_LogLevel">
               <property name="minimumSize">
                <size>
