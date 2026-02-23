@@ -547,8 +547,11 @@ else:
 if __name__ == "__main__":
     import time
     import math
-    import matplotlib.pyplot as plt
-    from matplotlib.ticker import ScalarFormatter
+    import importlib
+
+    # Keep matplotlib imports dynamic so packagers do not pull it into the app.
+    plt = importlib.import_module("matplotlib.pyplot")
+    ScalarFormatter = importlib.import_module("matplotlib.ticker").ScalarFormatter
 
     def benchmark_push(buffer, data_list):
         """Push Benchmark"""

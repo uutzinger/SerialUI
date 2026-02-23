@@ -26,9 +26,37 @@ a = Analysis(
         # "some_dynamic_imported_module",
     ],
     hookspath=[],
-    hooksconfig={},
+    hooksconfig={
+        # Prevent matplotlib hook from selecting GTK/Tk backends on Linux.
+        "matplotlib": {"backends": "QtAgg"},
+        # If Gtk is pulled in indirectly, do not recurse through /usr/share/icons and themes.
+        "gi": {"icons": [], "themes": [], "languages": []},
+    },
     runtime_hooks=[],
-    excludes=[],
+    # Ensure only PyQt6 is collected. The source contains PyQt5 fallback imports,
+    # but frozen builds should ship exactly one Qt binding.
+    excludes=[
+        "PyQt5",
+        "PyQt5.sip",
+        "PySide2",
+        "PySide6",
+        # Exclude GUI stacks not used by this Qt app.
+        "IPython",
+        "ipykernel",
+        "gi",
+        "gi.repository",
+        "tkinter",
+        "PIL.ImageTk",
+        # Avoid GTK backend pull-in from matplotlib in frozen Qt app.
+        "matplotlib.backends.backend_gtk3",
+        "matplotlib.backends.backend_gtk3agg",
+        "matplotlib.backends.backend_gtk3cairo",
+        "matplotlib.backends.backend_gtk4",
+        "matplotlib.backends.backend_gtk4agg",
+        "matplotlib.backends.backend_gtk4cairo",
+        "matplotlib.backends.backend_tkagg",
+        "matplotlib.backends.backend_tkcairo",
+    ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
