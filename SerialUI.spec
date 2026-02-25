@@ -110,8 +110,10 @@ exe = EXE(
     name="SerialUI",
     debug=False,
     bootloader_ignore_signals=False,
-    strip=True,
-    upx=True,
+    # Stripping/UPX can corrupt some native extension dependencies
+    # (notably OpenBLAS/Numpy libs on Linux), causing runtime loader errors.
+    strip=False,
+    upx=False,
     console=False,  # set False if you want a pure GUI app (no console window)
     icon=os.path.join("assets", "icon_96.ico"),
 )
@@ -121,8 +123,8 @@ coll = COLLECT(
     a.binaries,
     a.zipfiles,
     a.datas,
-    strip=True,
-    upx=True,
+    strip=False,
+    upx=False,
     upx_exclude=[],
     name="SerialUI",
 )

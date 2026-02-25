@@ -96,6 +96,7 @@ Examples:
 - Build standalone executable: `./scripts/release.sh --build-executable`
 - Build, commit, tag, and push: `./scripts/release.sh --build-executable --build-c-accelerated --commit --tag --push`
 - Build/push and create GitHub release with executable + source assets: `./scripts/release.sh --build-c-accelerated --commit -release`
+- Upload existing archives in `dist/` (`*.tar.gz`, `*.zip`) to an existing release: `./scripts/release.sh --upload-assets`
 
 ## Enabling / Disabling Features
 

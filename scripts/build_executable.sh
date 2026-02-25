@@ -15,12 +15,14 @@ set -euo pipefail
 # Optional environment variables:
 #   PYTHON_BIN=python3
 #   BUILD_C_ACCEL=1
+#   BUILD_PYTHONPATH=/home/uutzinger/Build/fastplotlib
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 HELPERS_DIR="${ROOT_DIR}/helpers"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 BUILD_C_ACCEL="${BUILD_C_ACCEL:-1}"
+BUILD_PYTHONPATH="${BUILD_PYTHONPATH:-}"
 
 log() {
     printf '\n[%s] %s\n' "$(date +'%H:%M:%S')" "$*"
@@ -88,7 +90,12 @@ popd >/dev/null
 log "Building standalone executable with PyInstaller"
 pushd "${ROOT_DIR}" >/dev/null
 # Ignore user-site packages (e.g. obsolete pathlib backport in ~/.local).
-run env PYTHONNOUSERSITE=1 "${PYTHON_BIN}" -m PyInstaller --clean --noconfirm SerialUI.spec
+if [[ -n "${BUILD_PYTHONPATH}" ]]; then
+    log "Using custom PYTHONPATH for PyInstaller build"
+    run env PYTHONNOUSERSITE=1 PYTHONPATH="${BUILD_PYTHONPATH}" "${PYTHON_BIN}" -m PyInstaller --clean --noconfirm SerialUI.spec
+else
+    run env PYTHONNOUSERSITE=1 PYTHONPATH= "${PYTHON_BIN}" -m PyInstaller --clean --noconfirm SerialUI.spec
+fi
 run ls -lh dist
 popd >/dev/null
 

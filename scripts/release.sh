@@ -106,6 +106,36 @@ create_github_release() {
   echo "  asset: ${src_archive}"
 }
 
+upload_release_assets() {
+  local version="$1"
+  local tag="${version}"
+  local assets=()
+
+  require_cmd gh
+  require_dir "dist"
+
+  if ! gh auth status >/dev/null 2>&1; then
+    echo "Error: gh is not authenticated. Run: gh auth login" >&2
+    exit 2
+  fi
+
+  if ! gh release view "${tag}" >/dev/null 2>&1; then
+    echo "Error: GitHub release ${tag} does not exist." >&2
+    exit 2
+  fi
+
+  shopt -s nullglob
+  assets=(dist/*.tar.gz dist/*.zip)
+  shopt -u nullglob
+  if [[ "${#assets[@]}" -eq 0 ]]; then
+    echo "Error: no uploadable assets found in dist/ (expected *.tar.gz or *.zip)." >&2
+    exit 2
+  fi
+
+  gh release upload "${tag}" "${assets[@]}" --clobber
+  echo "Uploaded ${#assets[@]} asset(s) to release ${tag}"
+}
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -120,6 +150,7 @@ Options:
   --push                   Push commit and tags.
   --release, -release      Create GitHub release with executable and source assets.
                            Implies --build-executable, --tag, and --push.
+  --upload-assets          Upload dist/*.tar.gz and dist/*.zip to existing GitHub release.
   --clean                  Remove build artifacts before build.
   -h, --help               Show this help.
 
@@ -128,6 +159,7 @@ Notes:
   - Release version is read from config.py (VERSION).
   - --build-executable delegates to scripts/build_executable.sh.
   - --release requires GitHub CLI (gh) authentication.
+  - --upload-assets uses tag "<version>" and replaces same-name assets (--clobber).
 EOF
 }
 
@@ -138,6 +170,7 @@ DO_COMMIT=0
 DO_TAG=0
 DO_PUSH=0
 DO_RELEASE=0
+DO_UPLOAD_ASSETS=0
 DO_CLEAN=0
 
 while [[ $# -gt 0 ]]; do
@@ -149,6 +182,7 @@ while [[ $# -gt 0 ]]; do
     --tag) DO_TAG=1; shift ;;
     --push) DO_PUSH=1; shift ;;
     --release|-release) DO_RELEASE=1; shift ;;
+    --upload-assets) DO_UPLOAD_ASSETS=1; shift ;;
     --clean) DO_CLEAN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1"; usage; exit 2 ;;
@@ -176,6 +210,14 @@ if [[ "${DO_CLEAN}" -eq 1 ]]; then
   rm -rf helpers/build helpers/dist helpers/*.egg-info helpers/.eggs
 fi
 
+DO_BUILD_HELPERS=1
+if [[ "${DO_BUILD_EXECUTABLE}" -eq 1 ]]; then
+  DO_BUILD_HELPERS=0
+elif [[ "${DO_UPLOAD_ASSETS}" -eq 1 && "${DO_BUILD_C_ACCELERATED}" -eq 0 && "${DO_RELEASE}" -eq 0 ]]; then
+  # Asset upload-only mode: no local build required.
+  DO_BUILD_HELPERS=0
+fi
+
 if [[ "${DO_BUILD_EXECUTABLE}" -eq 1 ]]; then
   require_file "scripts/build_executable.sh"
   BUILD_EXEC_ARGS=(PYTHON_BIN="${PYTHON_BIN}" BUILD_C_ACCEL=0)
@@ -183,7 +225,7 @@ if [[ "${DO_BUILD_EXECUTABLE}" -eq 1 ]]; then
     BUILD_EXEC_ARGS=(PYTHON_BIN="${PYTHON_BIN}" BUILD_C_ACCEL=1)
   fi
   env "${BUILD_EXEC_ARGS[@]}" "${SCRIPT_DIR}/build_executable.sh"
-else
+elif [[ "${DO_BUILD_HELPERS}" -eq 1 || "${DO_BUILD_C_ACCELERATED}" -eq 1 ]]; then
   require_file "helpers/setup.py"
   pushd "helpers" >/dev/null
 
@@ -232,6 +274,10 @@ fi
 
 if [[ "${DO_RELEASE}" -eq 1 ]]; then
   create_github_release "${PACKAGE_VERSION}"
+fi
+
+if [[ "${DO_UPLOAD_ASSETS}" -eq 1 ]]; then
+  upload_release_assets "${PACKAGE_VERSION}"
 fi
 
 echo "Release script completed."
