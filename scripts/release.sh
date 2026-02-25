@@ -1,0 +1,237 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+cd "${REPO_ROOT}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+
+require_file() {
+  local path="$1"
+  if [[ ! -f "${path}" ]]; then
+    echo "Error: required file missing: ${path}" >&2
+    exit 2
+  fi
+}
+
+require_dir() {
+  local path="$1"
+  if [[ ! -d "${path}" ]]; then
+    echo "Error: required directory missing: ${path}" >&2
+    exit 2
+  fi
+}
+
+require_cmd() {
+  local name="$1"
+  if ! command -v "${name}" >/dev/null 2>&1; then
+    echo "Error: required command not found: ${name}" >&2
+    exit 2
+  fi
+}
+
+validate_version_format() {
+  local version="$1"
+  if [[ ! "${version}" =~ ^[0-9]+(\.[0-9]+){2}([a-zA-Z0-9._-]*)?$ ]]; then
+    echo "Error: config.py VERSION must provide X.Y.Z (PEP 440-compatible suffixes allowed)." >&2
+    exit 2
+  fi
+}
+
+project_version() {
+  "${PYTHON_BIN}" - <<'PY'
+import ast
+from pathlib import Path
+
+config_file = Path("config.py")
+module = ast.parse(config_file.read_text(encoding="utf-8"), filename=str(config_file))
+for node in module.body:
+    value = None
+    if isinstance(node, ast.Assign):
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == "VERSION":
+                value = node.value
+                break
+    elif isinstance(node, ast.AnnAssign):
+        if isinstance(node.target, ast.Name) and node.target.id == "VERSION":
+            value = node.value
+
+    if isinstance(value, ast.Constant) and isinstance(value.value, str):
+        print(value.value)
+        raise SystemExit(0)
+
+raise SystemExit("VERSION was not found as a string literal in config.py")
+PY
+}
+
+create_github_release() {
+  local version="$1"
+  local tag="${version}"
+  local os_name arch exe_archive src_archive
+
+  require_cmd gh
+  require_dir "dist/SerialUI"
+
+  if ! gh auth status >/dev/null 2>&1; then
+    echo "Error: gh is not authenticated. Run: gh auth login" >&2
+    exit 2
+  fi
+
+  if ! git rev-parse -q --verify "refs/tags/${tag}" >/dev/null 2>&1; then
+    echo "Error: tag ${tag} does not exist locally." >&2
+    exit 2
+  fi
+
+  if gh release view "${tag}" >/dev/null 2>&1; then
+    echo "Error: GitHub release ${tag} already exists." >&2
+    exit 2
+  fi
+
+  os_name="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  arch="$(uname -m)"
+  exe_archive="dist/SerialUI-${version}-${os_name}-${arch}.tar.gz"
+  src_archive="dist/SerialUI-source-${version}.tar.gz"
+
+  tar -czf "${exe_archive}" -C dist SerialUI
+  git archive --format=tar.gz --output "${src_archive}" "${tag}"
+
+  gh release create "${tag}" \
+    "${exe_archive}" \
+    "${src_archive}" \
+    --title "${tag}" \
+    --generate-notes
+
+  echo "Created GitHub release ${tag}"
+  echo "  asset: ${exe_archive}"
+  echo "  asset: ${src_archive}"
+}
+
+usage() {
+  cat <<'EOF'
+Usage:
+  scripts/release.sh [options]
+
+Options:
+  --build-executable       Build executable/package via scripts/build_executable.sh.
+  --build-c-accelerated    Build C-accelerated helpers parser extension in-place.
+  --commit-msg "message"   Commit message (default: "release: <version>").
+  --commit                 Stage + commit build/release files.
+  --tag                    Create git tag "<version>".
+  --push                   Push commit and tags.
+  --release, -release      Create GitHub release with executable and source assets.
+                           Implies --build-executable, --tag, and --push.
+  --clean                  Remove build artifacts before build.
+  -h, --help               Show this help.
+
+Notes:
+  - Runs from repository root.
+  - Release version is read from config.py (VERSION).
+  - --build-executable delegates to scripts/build_executable.sh.
+  - --release requires GitHub CLI (gh) authentication.
+EOF
+}
+
+COMMIT_MSG=""
+DO_BUILD_EXECUTABLE=0
+DO_BUILD_C_ACCELERATED=0
+DO_COMMIT=0
+DO_TAG=0
+DO_PUSH=0
+DO_RELEASE=0
+DO_CLEAN=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --build-executable) DO_BUILD_EXECUTABLE=1; shift ;;
+    --build-c-accelerated) DO_BUILD_C_ACCELERATED=1; shift ;;
+    --commit-msg) COMMIT_MSG="${2:-}"; shift 2 ;;
+    --commit) DO_COMMIT=1; shift ;;
+    --tag) DO_TAG=1; shift ;;
+    --push) DO_PUSH=1; shift ;;
+    --release|-release) DO_RELEASE=1; shift ;;
+    --clean) DO_CLEAN=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown option: $1"; usage; exit 2 ;;
+  esac
+done
+
+if [[ "${DO_RELEASE}" -eq 1 ]]; then
+  DO_BUILD_EXECUTABLE=1
+  DO_TAG=1
+  DO_PUSH=1
+fi
+
+require_file "config.py"
+
+PACKAGE_VERSION="$(project_version)"
+if [[ -z "${PACKAGE_VERSION}" ]]; then
+  echo "Error: config.py did not provide VERSION." >&2
+  exit 2
+fi
+validate_version_format "${PACKAGE_VERSION}"
+echo "Release version: ${PACKAGE_VERSION}"
+
+if [[ "${DO_CLEAN}" -eq 1 ]]; then
+  rm -rf build dist ./*.egg-info ./*.egg .pytest_cache
+  rm -rf helpers/build helpers/dist helpers/*.egg-info helpers/.eggs
+fi
+
+if [[ "${DO_BUILD_EXECUTABLE}" -eq 1 ]]; then
+  require_file "scripts/build_executable.sh"
+  BUILD_EXEC_ARGS=(PYTHON_BIN="${PYTHON_BIN}" BUILD_C_ACCEL=0)
+  if [[ "${DO_BUILD_C_ACCELERATED}" -eq 1 ]]; then
+    BUILD_EXEC_ARGS=(PYTHON_BIN="${PYTHON_BIN}" BUILD_C_ACCEL=1)
+  fi
+  env "${BUILD_EXEC_ARGS[@]}" "${SCRIPT_DIR}/build_executable.sh"
+else
+  require_file "helpers/setup.py"
+  pushd "helpers" >/dev/null
+
+  if [[ "${DO_BUILD_C_ACCELERATED}" -eq 1 ]]; then
+    echo "Building C-accelerated parser extension in helpers/..."
+    rm -rf build ./*.egg-info .eggs
+    PYTHONWARNINGS="${PYTHONWARNINGS:-ignore::FutureWarning}" "${PYTHON_BIN}" setup.py build_ext --inplace -v
+  fi
+
+  if ! "${PYTHON_BIN}" -m build --help >/dev/null 2>&1; then
+    echo "Error: python build package not found. Install with: ${PYTHON_BIN} -m pip install build" >&2
+    exit 2
+  fi
+
+  PYTHONWARNINGS="${PYTHONWARNINGS:-ignore::FutureWarning}" "${PYTHON_BIN}" -m build --no-isolation
+
+  shopt -s nullglob
+  WHEELS=(dist/*.whl)
+  shopt -u nullglob
+  if [[ "${#WHEELS[@]}" -eq 0 ]]; then
+    echo "Error: build completed but no wheel found in helpers/dist/." >&2
+    exit 2
+  fi
+  WHEEL_PATH="$(ls -t dist/*.whl | head -n1)"
+  echo "Built wheel: helpers/${WHEEL_PATH}"
+
+  popd >/dev/null
+fi
+
+if [[ "${DO_COMMIT}" -eq 1 ]]; then
+  if [[ -z "${COMMIT_MSG}" ]]; then
+    COMMIT_MSG="release: ${PACKAGE_VERSION}"
+  fi
+  git add -A
+  git commit -m "${COMMIT_MSG}"
+fi
+
+if [[ "${DO_TAG}" -eq 1 ]]; then
+  git tag "${PACKAGE_VERSION}"
+fi
+
+if [[ "${DO_PUSH}" -eq 1 ]]; then
+  git push
+  git push --tags
+fi
+
+if [[ "${DO_RELEASE}" -eq 1 ]]; then
+  create_github_release "${PACKAGE_VERSION}"
+fi
+
+echo "Release script completed."

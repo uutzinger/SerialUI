@@ -25,7 +25,8 @@ function Run {
     }
 }
 
-$RootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RootDir = Split-Path -Parent $ScriptDir
 $SpecFile = Join-Path $RootDir "SerialUI.spec"
 
 if (-not (Test-Path -Path $SpecFile -PathType Leaf)) {

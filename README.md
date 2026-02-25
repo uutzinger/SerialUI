@@ -70,9 +70,8 @@ The following python modules are needed:
 - `bleak` for bluetooth communication
 - `numba` for accelerating numpy code
 
-To install the optional accelerated text parser you need to navigate in your shell to the `helper` folder and then execute:
+To build the optional accelerated text parser navigate in your shell to the `helper` folder and execute:
 - `python3 setup.py build_ext --inplace -v`
-- `pip install -e .`
 If you are using virtual env for python don't forget to activate it.
 
 If you rebuild, clean the previous build with:
@@ -85,6 +84,18 @@ A future version will also need:
 - `scipy` image decompression (FFT)
 - `cobs` serial data encoding (byte stuffing)
 - `tamp` for compression (lightweight for microcontrollers)
+
+## Release Script
+
+Use `scripts/release.sh` from the repository root to build and publish release artifacts.
+The release version is read from `VERSION` in `config.py`.
+
+Examples:
+- Show options: `./scripts/release.sh --help`
+- Build C-accelerated parser extension before packaging: `./scripts/release.sh --build-c-accelerated`
+- Build standalone executable: `./scripts/release.sh --build-executable`
+- Build, commit, tag, and push: `./scripts/release.sh --build-executable --build-c-accelerated --commit --tag --push`
+- Build/push and create GitHub release with executable + source assets: `./scripts/release.sh --build-c-accelerated --commit -release`
 
 ## Enabling / Disabling Features
 

@@ -1,7 +1,8 @@
 include pyproject.toml
 include setup.py
+include README.md
 
 recursive-include line_parsers *.py
-recursive-include line_parsers *.cpp *.cc *.cxx
-recursive-include line_parsers *.h *.hpp
-recursive-include line_parsers *.txt *.md LICENSE
+recursive-include line_parsers *.cpp
+recursive-include line_parsers *.h
+recursive-include line_parsers *.md LICENSE

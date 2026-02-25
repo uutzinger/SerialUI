@@ -244,4 +244,5 @@
         "chrono": "cpp",
         "complex": "cpp"
     },
+    "python-envs.pythonProjects": [],
 }

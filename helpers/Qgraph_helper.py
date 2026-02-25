@@ -125,7 +125,13 @@ try:
     from line_parsers import header_parser
     hasFastParser = True
 except Exception:
-    hasFastParser = False
+    try:
+        # Source-tree fallback: use local compiled extensions in helpers/line_parsers
+        from helpers.line_parsers import simple_parser
+        from helpers.line_parsers import header_parser
+        hasFastParser = True
+    except Exception:
+        hasFastParser = False
 useFastParser = hasFastParser and USE_PARSERACCEL
 #
 from helpers.Circular_Buffer import CircularBuffer
