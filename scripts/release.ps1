@@ -67,7 +67,7 @@ Usage:
 Options:
   -PythonBin <python>          Python interpreter (default: python)
   -BuildExecutable             Build standalone app via scripts/build_executable.ps1
-                               Also creates dist\SerialUI.zip
+                               Also creates dist\SerialUI-<version>-windows-<arch>.zip
   -BuildCAccelerated           Build C-accelerated helpers (default: off)
   -BuildPythonPath <path>      Custom PYTHONPATH for executable build
   -CommitMsg <message>         Commit message (default: "release: <version>")

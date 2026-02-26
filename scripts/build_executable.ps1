@@ -42,15 +42,51 @@ function Require-File {
     }
 }
 
+function Get-ProjectVersion {
+    param([string]$Python)
+
+    $script = @"
+import ast
+from pathlib import Path
+
+config_file = Path('config.py')
+module = ast.parse(config_file.read_text(encoding='utf-8'), filename=str(config_file))
+for node in module.body:
+    value = None
+    if isinstance(node, ast.Assign):
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == 'VERSION':
+                value = node.value
+                break
+    elif isinstance(node, ast.AnnAssign):
+        if isinstance(node.target, ast.Name) and node.target.id == 'VERSION':
+            value = node.value
+
+    if isinstance(value, ast.Constant) and isinstance(value.value, str):
+        print(value.value)
+        raise SystemExit(0)
+
+raise SystemExit('VERSION was not found as a string literal in config.py')
+"@
+
+    $version = & $Python -c $script
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to read VERSION from config.py"
+    }
+    return $version.Trim()
+}
+
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RootDir = Split-Path -Parent $ScriptDir
 $HelpersDir = Join-Path $RootDir "helpers"
 $SpecFile = Join-Path $RootDir "SerialUI.spec"
 $HelpersSetup = Join-Path $HelpersDir "setup.py"
+$ConfigFile = Join-Path $RootDir "config.py"
 
 Require-Dir $HelpersDir
 Require-File $SpecFile
 Require-File $HelpersSetup
+Require-File $ConfigFile
 
 Log "Checking Python environment isolation"
 $usesSystemSite = & $PythonBin -c "import sys; p=[x for x in sys.path if 'site-packages' in x or 'dist-packages' in x]; print('1' if any(x.startswith('/usr/lib') or x.startswith('/usr/local/lib') for x in p) else '0')"
@@ -151,7 +187,13 @@ finally {
 if (-not $NoZip) {
     $bundleDir = Join-Path $RootDir "dist\SerialUI"
     Require-Dir $bundleDir
-    $zipPath = Join-Path $RootDir "dist\SerialUI.zip"
+    $version = Get-ProjectVersion -Python $PythonBin
+    if ([string]::IsNullOrWhiteSpace($version)) {
+        throw "config.py did not provide VERSION"
+    }
+    $arch = if ($env:PROCESSOR_ARCHITECTURE) { $env:PROCESSOR_ARCHITECTURE.ToLower() } else { "unknown" }
+    $zipName = "SerialUI-$version-windows-$arch.zip"
+    $zipPath = Join-Path $RootDir ("dist\" + $zipName)
     if (Test-Path -Path $zipPath -PathType Leaf) {
         Remove-Item -Force $zipPath
     }

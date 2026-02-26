@@ -187,7 +187,7 @@ Linux examples (`scripts/release.sh`):
 
 Windows examples (`scripts/release.ps1`):
 - Show options: `.\scripts\release.ps1 -Help`
-- Build standalone executable (also creates `dist\SerialUI.zip`): `.\scripts\release.ps1 -BuildExecutable`
+- Build standalone executable (also creates `dist\SerialUI-<version>-windows-<arch>.zip`): `.\scripts\release.ps1 -BuildExecutable`
 - Build standalone executable + C-accelerated parser: `.\scripts\release.ps1 -BuildExecutable -BuildCAccelerated`
 - Upload existing archives in `dist\` to an existing release: `.\scripts\release.ps1 -UploadAssets`
 
