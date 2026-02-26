@@ -9,7 +9,9 @@ param(
     [switch]$Push,
     [switch]$Release,
     [switch]$UploadAssets,
-    [switch]$Clean
+    [switch]$Clean,
+    [Alias("h")]
+    [switch]$Help
 )
 
 $ErrorActionPreference = "Stop"
@@ -54,6 +56,42 @@ function Require-Command {
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
         throw "Required command not found: $Name"
     }
+}
+
+function Show-Usage {
+    $scriptName = if ($PSCommandPath) { Split-Path -Leaf $PSCommandPath } else { "release.ps1" }
+    Write-Host @"
+Usage:
+  .\scripts\$scriptName [options]
+
+Options:
+  -PythonBin <python>          Python interpreter (default: python)
+  -BuildExecutable             Build standalone app via scripts/build_executable.ps1
+  -BuildCAccelerated <bool>    Build C-accelerated helpers (default: false)
+  -BuildPythonPath <path>      Custom PYTHONPATH for executable build
+  -CommitMsg <message>         Commit message (default: "release: <version>")
+  -Commit                      Stage and commit changes
+  -Tag                         Create git tag "<version>"
+  -Push                        Push commit and tags
+  -Release                     Create GitHub release for tag "<version>"
+                               If tag is missing, implies build executable + tag + push
+                               If tag exists, runs release-only mode unless overridden
+  -UploadAssets                Upload dist\*.zip and dist\*.tar.gz to existing release
+  -Clean                       Remove build artifacts before build
+  -Help, -h                    Show this help
+
+Notes:
+  - Version/tag is read from config.py (VERSION).
+  - Run from repository root.
+  - GitHub actions require: gh auth login
+
+Examples:
+  .\scripts\release.ps1 -BuildExecutable
+  .\scripts\release.ps1 -BuildExecutable -BuildCAccelerated:$true
+  .\scripts\release.ps1 -Commit -Tag -Push
+  .\scripts\release.ps1 -Release
+  .\scripts\release.ps1 -UploadAssets
+"@
 }
 
 function Get-ProjectVersion {
@@ -186,6 +224,11 @@ function Upload-ReleaseAssets {
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RootDir = Split-Path -Parent $ScriptDir
 Set-Location $RootDir
+
+if ($Help) {
+    Show-Usage
+    exit 0
+}
 
 Require-File (Join-Path $RootDir "config.py")
 
