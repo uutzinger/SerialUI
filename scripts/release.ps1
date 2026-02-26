@@ -73,11 +73,11 @@ Options:
   -CommitMsg <message>         Commit message (default: "release: <version>")
   -Commit                      Stage and commit changes
   -Tag                         Create git tag "<version>"
-  -Push                        Push commit and tags
-  -Release                     Create GitHub release for tag "<version>"
+  -Push                        Push commit and current release tag only
+  -Release                     Create GitHub release for tag "<version>" and upload compressed assets from dist\ (*.zip, *.tar.gz)
                                If tag is missing, implies build executable + tag + push
                                If tag exists, runs release-only mode unless overridden
-  -UploadAssets                Upload dist\*.zip and dist\*.tar.gz to existing release
+  -UploadAssets                Upload additional dist\*.zip and dist\*.tar.gz to existing release
   -Clean                       Remove build artifacts before build
   -Help, -h                    Show this help
 
@@ -148,6 +148,19 @@ function Test-GitHubReleaseExists {
     return ($LASTEXITCODE -eq 0)
 }
 
+function Get-DistArchives {
+    param([string]$RootDir)
+
+    $distDir = Join-Path $RootDir "dist"
+    Require-Dir $distDir
+    $assets = Get-ChildItem -Path $distDir -File | Where-Object {
+        $name = $_.Name.ToLowerInvariant()
+        $name.EndsWith('.zip') -or $name.EndsWith('.tar.gz')
+    } | Sort-Object Name
+
+    return @($assets)
+}
+
 function Create-GitHubRelease {
     param(
         [string]$Version,
@@ -156,7 +169,6 @@ function Create-GitHubRelease {
 
     $tag = $Version
     Require-Command gh
-    Require-Dir (Join-Path $RootDir "dist\SerialUI")
 
     & gh auth status *> $null
     if ($LASTEXITCODE -ne 0) {
@@ -171,21 +183,18 @@ function Create-GitHubRelease {
         throw "GitHub release $tag already exists."
     }
 
-    $arch = if ($env:PROCESSOR_ARCHITECTURE) { $env:PROCESSOR_ARCHITECTURE.ToLower() } else { "unknown" }
-    $exeArchive = Join-Path $RootDir "dist\SerialUI-$Version-windows-$arch.zip"
-    $srcArchive = Join-Path $RootDir "dist\SerialUI-source-$Version.zip"
+    $assets = Get-DistArchives -RootDir $RootDir
+    if (-not $assets -or $assets.Count -eq 0) {
+        throw "No release assets found in dist\ (expected *.zip or *.tar.gz)."
+    }
 
-    if (Test-Path $exeArchive) { Remove-Item $exeArchive -Force }
-    if (Test-Path $srcArchive) { Remove-Item $srcArchive -Force }
-
-    Compress-Archive -Path (Join-Path $RootDir "dist\SerialUI") -DestinationPath $exeArchive -Force
-    Run git "archive" "--format=zip" "--output" $srcArchive $tag
-
-    Run gh "release" "create" $tag $exeArchive $srcArchive "--title" $tag "--generate-notes"
+    $args = @("release", "create", $tag) + ($assets | ForEach-Object { $_.FullName }) + @("--title", $tag, "--generate-notes")
+    Run gh @args
 
     Write-Host "Created GitHub release $tag"
-    Write-Host "  asset: $exeArchive"
-    Write-Host "  asset: $srcArchive"
+    foreach ($asset in $assets) {
+        Write-Host "  asset: $($asset.FullName)"
+    }
 }
 
 function Upload-ReleaseAssets {
@@ -196,8 +205,6 @@ function Upload-ReleaseAssets {
 
     $tag = $Version
     Require-Command gh
-    $distDir = Join-Path $RootDir "dist"
-    Require-Dir $distDir
 
     & gh auth status *> $null
     if ($LASTEXITCODE -ne 0) {
@@ -208,16 +215,12 @@ function Upload-ReleaseAssets {
         throw "GitHub release $tag does not exist."
     }
 
-    $assets = Get-ChildItem -Path $distDir -File | Where-Object {
-        $name = $_.Name.ToLowerInvariant()
-        $name.EndsWith('.zip') -or $name.EndsWith('.tar.gz')
-    }
-
-    if (-not $assets) {
+    $assets = Get-DistArchives -RootDir $RootDir
+    if ($assets.Count -eq 0) {
         throw "No uploadable assets found in dist/ (expected *.zip or *.tar.gz)."
     }
 
-    $args = @("release", "upload", $tag) + ($assets | ForEach-Object { $_.FullName }) + @("--clobber")
+    $args = @("release", "upload", $tag) + ($assets | ForEach-Object { $_.FullName })
     Run gh @args
     Write-Host "Uploaded $($assets.Count) asset(s) to release $tag"
 }
@@ -362,8 +365,17 @@ if ($Tag) {
 }
 
 if ($Push) {
+    $currentBranch = (& git "branch" "--show-current").Trim()
+    $pushRemote = (& git "config" "--get" "branch.$currentBranch.remote" 2>$null)
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($pushRemote)) {
+        $pushRemote = "origin"
+    }
+    else {
+        $pushRemote = $pushRemote.Trim()
+    }
+
     Run git "push"
-    Run git "push" "--tags"
+    Run git "push" $pushRemote "refs/tags/$version"
 }
 
 if ($Release) {

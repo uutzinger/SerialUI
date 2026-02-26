@@ -67,10 +67,10 @@ PY
 create_github_release() {
   local version="$1"
   local tag="${version}"
-  local os_name arch exe_archive src_archive
+  local assets=()
 
   require_cmd gh
-  require_dir "dist/SerialUI"
+  require_dir "dist"
 
   if ! gh auth status >/dev/null 2>&1; then
     echo "Error: gh is not authenticated. Run: gh auth login" >&2
@@ -87,23 +87,23 @@ create_github_release() {
     exit 2
   fi
 
-  os_name="$(uname -s | tr '[:upper:]' '[:lower:]')"
-  arch="$(uname -m)"
-  exe_archive="dist/SerialUI-${version}-${os_name}-${arch}.tar.gz"
-  src_archive="dist/SerialUI-source-${version}.tar.gz"
-
-  tar -czf "${exe_archive}" -C dist SerialUI
-  git archive --format=tar.gz --output "${src_archive}" "${tag}"
+  shopt -s nullglob
+  assets=(dist/*.tar.gz dist/*.zip)
+  shopt -u nullglob
+  if [[ "${#assets[@]}" -eq 0 ]]; then
+    echo "Error: no release assets found in dist/ (expected *.tar.gz or *.zip)." >&2
+    exit 2
+  fi
 
   gh release create "${tag}" \
-    "${exe_archive}" \
-    "${src_archive}" \
+    "${assets[@]}" \
     --title "${tag}" \
     --generate-notes
 
   echo "Created GitHub release ${tag}"
-  echo "  asset: ${exe_archive}"
-  echo "  asset: ${src_archive}"
+  for asset in "${assets[@]}"; do
+    echo "  asset: ${asset}"
+  done
 }
 
 upload_release_assets() {
@@ -132,7 +132,7 @@ upload_release_assets() {
     exit 2
   fi
 
-  gh release upload "${tag}" "${assets[@]}" --clobber
+  gh release upload "${tag}" "${assets[@]}"
   echo "Uploaded ${#assets[@]} asset(s) to release ${tag}"
 }
 
@@ -152,12 +152,12 @@ Options:
                            Alias: -commit
   --tag                    Create git tag "<version>".
                            Alias: -tag
-  --push                   Push commit and tags.
+  --push                   Push commit and current release tag only.
                            Alias: -push
-  --release, -release      Create GitHub release with executable and source assets.
+  --release, -release      Create GitHub release and upload compressed assets from dist/ (*.zip, *.tar.gz).
                            If tag "<version>" is missing: implies --build-executable, --tag, --push.
                            If tag "<version>" exists: release-only mode (no rebuild/tag/push).
-  --upload-assets          Upload dist/*.tar.gz and dist/*.zip to existing GitHub release.
+  --upload-assets          Upload additional dist/*.tar.gz and dist/*.zip to existing GitHub release.
                            Alias: -upload-assets
   --clean                  Remove build artifacts before build.
                            Alias: -clean
@@ -167,9 +167,9 @@ Notes:
   - Runs from repository root.
   - Release version is read from config.py (VERSION).
   - --build-executable delegates to scripts/build_executable.sh.
-    and also creates dist/SerialUI.zip.
+    and creates dist/SerialUI-<version>-<os>-<arch>.zip.
   - --release requires GitHub CLI (gh) authentication.
-  - --upload-assets uses tag "<version>" and replaces same-name assets (--clobber).
+  - --release and --upload-assets only use compressed files already present in dist/.
   - Linux convention is --long-option; single-dash aliases are accepted for parity with PowerShell.
 EOF
 }
@@ -301,8 +301,14 @@ if [[ "${DO_TAG}" -eq 1 ]]; then
 fi
 
 if [[ "${DO_PUSH}" -eq 1 ]]; then
+  CURRENT_BRANCH="$(git branch --show-current)"
+  PUSH_REMOTE="$(git config --get "branch.${CURRENT_BRANCH}.remote" || true)"
+  if [[ -z "${PUSH_REMOTE}" ]]; then
+    PUSH_REMOTE="origin"
+  fi
+
   git push
-  git push --tags
+  git push "${PUSH_REMOTE}" "refs/tags/${PACKAGE_VERSION}"
 fi
 
 if [[ "${DO_RELEASE}" -eq 1 ]]; then

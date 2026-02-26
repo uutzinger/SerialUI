@@ -54,6 +54,33 @@ run() {
 require_dir "${HELPERS_DIR}"
 require_file "${ROOT_DIR}/SerialUI.spec"
 require_file "${HELPERS_DIR}/setup.py"
+require_file "${ROOT_DIR}/config.py"
+
+project_version() {
+    "${PYTHON_BIN}" - <<'PY'
+import ast
+from pathlib import Path
+
+config_file = Path("config.py")
+module = ast.parse(config_file.read_text(encoding="utf-8"), filename=str(config_file))
+for node in module.body:
+    value = None
+    if isinstance(node, ast.Assign):
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == "VERSION":
+                value = node.value
+                break
+    elif isinstance(node, ast.AnnAssign):
+        if isinstance(node.target, ast.Name) and node.target.id == "VERSION":
+            value = node.value
+
+    if isinstance(value, ast.Constant) and isinstance(value.value, str):
+        print(value.value)
+        raise SystemExit(0)
+
+raise SystemExit("VERSION was not found as a string literal in config.py")
+PY
+}
 
 log "Checking Python environment isolation"
 if "${PYTHON_BIN}" - <<'PY'
@@ -107,15 +134,23 @@ if [[ "${NO_ZIP}" != "1" ]]; then
         echo "Expected executable directory not found: ${ROOT_DIR}/dist/SerialUI" >&2
         exit 1
     fi
-    rm -f "${ROOT_DIR}/dist/SerialUI.zip"
-    ROOT_DIR="${ROOT_DIR}" "${PYTHON_BIN}" - <<'PY'
+    VERSION="$(project_version)"
+    if [[ -z "${VERSION}" ]]; then
+        echo "Error: config.py did not provide VERSION." >&2
+        exit 1
+    fi
+    OS_NAME="$(uname -s | tr '[:upper:]' '[:lower:]')"
+    ARCH="$(uname -m)"
+    ZIP_BASE="${ROOT_DIR}/dist/SerialUI-${VERSION}-${OS_NAME}-${ARCH}"
+    rm -f "${ZIP_BASE}.zip"
+    ROOT_DIR="${ROOT_DIR}" ZIP_BASE="${ZIP_BASE}" "${PYTHON_BIN}" - <<'PY'
 import os
 import shutil
 from pathlib import Path
 
 root = Path(os.environ["ROOT_DIR"])
 src = root / "dist" / "SerialUI"
-dst_base = root / "dist" / "SerialUI"
+dst_base = Path(os.environ["ZIP_BASE"])
 archive = shutil.make_archive(str(dst_base), "zip", root_dir=str(src.parent), base_dir=src.name)
 print(f"Executable zip: {archive}")
 PY
