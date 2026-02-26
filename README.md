@@ -168,19 +168,28 @@ The following libraries are used:
 [`***`] needed if fastplotlib is enabled
 [`***`] future version
 
-## Release Script
+## Release Scripts
 
-Use `scripts/release.sh` from the repository root to build and publish release artifacts.
-The release version is read from `VERSION` in `config.py`.
+Use release scripts from the repository root. The release version is read from `VERSION` in `config.py`.
 
-Examples:
+Option style:
+- Linux shell convention uses `--long-option` (for example `--build-executable`).
+- PowerShell convention uses `-Parameter` (for example `-BuildExecutable`).
+- `scripts/release.sh` accepts both styles for parity (`--build-executable` and `-build-executable`).
+
+Linux examples (`scripts/release.sh`):
 - Show options: `./scripts/release.sh --help`
 - Build C-accelerated parser extension before packaging: `./scripts/release.sh --build-c-accelerated`
-- Build standalone executable: `./scripts/release.sh --build-executable`
+- Build standalone executable (also creates `dist/SerialUI.zip`): `./scripts/release.sh --build-executable`
 - Build, commit, tag, and push: `./scripts/release.sh --build-executable --build-c-accelerated --commit --tag --push`
-- Build/push and create GitHub release with executable + source assets: `./scripts/release.sh --build-c-accelerated --commit -release`
-- Create GitHub release for an existing version tag without rebuilding: `./scripts/release.sh -release`
+- Create GitHub release for an existing version tag without rebuilding: `./scripts/release.sh --release`
 - Upload existing archives in `dist/` (`*.tar.gz`, `*.zip`) to an existing release: `./scripts/release.sh --upload-assets`
+
+Windows examples (`scripts/release.ps1`):
+- Show options: `.\scripts\release.ps1 -Help`
+- Build standalone executable (also creates `dist\SerialUI.zip`): `.\scripts\release.ps1 -BuildExecutable`
+- Build standalone executable + C-accelerated parser: `.\scripts\release.ps1 -BuildExecutable -BuildCAccelerated`
+- Upload existing archives in `dist\` to an existing release: `.\scripts\release.ps1 -UploadAssets`
 
 ## Contributors
 

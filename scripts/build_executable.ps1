@@ -1,7 +1,8 @@
 param(
     [string]$PythonBin = "python",
     [switch]$BuildCAccelerated,
-    [string]$BuildPythonPath = ""
+    [string]$BuildPythonPath = "",
+    [switch]$NoZip
 )
 
 $ErrorActionPreference = "Stop"
@@ -145,6 +146,18 @@ try {
 }
 finally {
     Pop-Location
+}
+
+if (-not $NoZip) {
+    $bundleDir = Join-Path $RootDir "dist\SerialUI"
+    Require-Dir $bundleDir
+    $zipPath = Join-Path $RootDir "dist\SerialUI.zip"
+    if (Test-Path -Path $zipPath -PathType Leaf) {
+        Remove-Item -Force $zipPath
+    }
+    Log "Creating executable zip archive"
+    Compress-Archive -Path $bundleDir -DestinationPath $zipPath -Force
+    Write-Host "Executable zip: $zipPath"
 }
 
 Log "Done"

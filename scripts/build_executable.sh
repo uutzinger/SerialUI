@@ -16,6 +16,7 @@ set -euo pipefail
 #   PYTHON_BIN=python3
 #   BUILD_C_ACCEL=1
 #   BUILD_PYTHONPATH=/home/uutzinger/Build/fastplotlib
+#   NO_ZIP=1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -23,6 +24,7 @@ HELPERS_DIR="${ROOT_DIR}/helpers"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 BUILD_C_ACCEL="${BUILD_C_ACCEL:-1}"
 BUILD_PYTHONPATH="${BUILD_PYTHONPATH:-}"
+NO_ZIP="${NO_ZIP:-0}"
 
 log() {
     printf '\n[%s] %s\n' "$(date +'%H:%M:%S')" "$*"
@@ -98,6 +100,26 @@ else
 fi
 run ls -lh dist
 popd >/dev/null
+
+if [[ "${NO_ZIP}" != "1" ]]; then
+    log "Creating executable zip archive"
+    if [[ ! -d "${ROOT_DIR}/dist/SerialUI" ]]; then
+        echo "Expected executable directory not found: ${ROOT_DIR}/dist/SerialUI" >&2
+        exit 1
+    fi
+    rm -f "${ROOT_DIR}/dist/SerialUI.zip"
+    ROOT_DIR="${ROOT_DIR}" "${PYTHON_BIN}" - <<'PY'
+import os
+import shutil
+from pathlib import Path
+
+root = Path(os.environ["ROOT_DIR"])
+src = root / "dist" / "SerialUI"
+dst_base = root / "dist" / "SerialUI"
+archive = shutil.make_archive(str(dst_base), "zip", root_dir=str(src.parent), base_dir=src.name)
+print(f"Executable zip: {archive}")
+PY
+fi
 
 log "Done"
 echo "Wheel artifacts: ${HELPERS_DIR}/dist"

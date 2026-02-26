@@ -143,24 +143,34 @@ Usage:
 
 Options:
   --build-executable       Build executable/package via scripts/build_executable.sh.
+                           Alias: -build-executable
   --build-c-accelerated    Build C-accelerated helpers parser extension in-place.
+                           Alias: -build-c-accelerated
   --commit-msg "message"   Commit message (default: "release: <version>").
+                           Alias: -commit-msg "message"
   --commit                 Stage + commit build/release files.
+                           Alias: -commit
   --tag                    Create git tag "<version>".
+                           Alias: -tag
   --push                   Push commit and tags.
+                           Alias: -push
   --release, -release      Create GitHub release with executable and source assets.
                            If tag "<version>" is missing: implies --build-executable, --tag, --push.
                            If tag "<version>" exists: release-only mode (no rebuild/tag/push).
   --upload-assets          Upload dist/*.tar.gz and dist/*.zip to existing GitHub release.
+                           Alias: -upload-assets
   --clean                  Remove build artifacts before build.
+                           Alias: -clean
   -h, --help               Show this help.
 
 Notes:
   - Runs from repository root.
   - Release version is read from config.py (VERSION).
   - --build-executable delegates to scripts/build_executable.sh.
+    and also creates dist/SerialUI.zip.
   - --release requires GitHub CLI (gh) authentication.
   - --upload-assets uses tag "<version>" and replaces same-name assets (--clobber).
+  - Linux convention is --long-option; single-dash aliases are accepted for parity with PowerShell.
 EOF
 }
 
@@ -180,16 +190,16 @@ RELEASE_ONLY_MODE=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --build-executable) DO_BUILD_EXECUTABLE=1; USER_SET_BUILD_EXECUTABLE=1; shift ;;
-    --build-c-accelerated) DO_BUILD_C_ACCELERATED=1; shift ;;
-    --commit-msg) COMMIT_MSG="${2:-}"; shift 2 ;;
-    --commit) DO_COMMIT=1; shift ;;
-    --tag) DO_TAG=1; USER_SET_TAG=1; shift ;;
-    --push) DO_PUSH=1; USER_SET_PUSH=1; shift ;;
-    --release|-release) DO_RELEASE=1; shift ;;
-    --upload-assets) DO_UPLOAD_ASSETS=1; shift ;;
-    --clean) DO_CLEAN=1; shift ;;
-    -h|--help) usage; exit 0 ;;
+    --build-executable|-build-executable|-BuildExecutable) DO_BUILD_EXECUTABLE=1; USER_SET_BUILD_EXECUTABLE=1; shift ;;
+    --build-c-accelerated|-build-c-accelerated|-BuildCAccelerated) DO_BUILD_C_ACCELERATED=1; shift ;;
+    --commit-msg|-commit-msg|-CommitMsg) COMMIT_MSG="${2:-}"; shift 2 ;;
+    --commit|-commit|-Commit) DO_COMMIT=1; shift ;;
+    --tag|-tag|-Tag) DO_TAG=1; USER_SET_TAG=1; shift ;;
+    --push|-push|-Push) DO_PUSH=1; USER_SET_PUSH=1; shift ;;
+    --release|-release|-Release) DO_RELEASE=1; shift ;;
+    --upload-assets|-upload-assets|-UploadAssets) DO_UPLOAD_ASSETS=1; shift ;;
+    --clean|-clean|-Clean) DO_CLEAN=1; shift ;;
+    -h|--help|-help|-Help) usage; exit 0 ;;
     *) echo "Unknown option: $1"; usage; exit 2 ;;
   esac
 done
