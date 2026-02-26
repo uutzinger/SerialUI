@@ -1,12 +1,61 @@
 ## Data Parsing
 This document defines the expected behavior for SerialUI text parsing.
-Both implementations must match this spec:
 
-- Python parser in `helpers/Qgraph_helper.py`
-- C parser in `helpers/line_parsers/simple_parser.cpp` and `helpers/line_parsers/header_parser.cpp`
+The C accelerate implementation `helpers/line_parsers/simple_parser.cpp` and `helpers/line_parsers/header_parser.cpp` as well as the python version `helpers/Qgraph_helper.py` must match these specifications.
 
 Binary parsing is not covered here yet.
 
+### Examples No Header
+
+```text
+Line: "1 2 3, 4"
+```
+Produces 2 channels and 3 rows:
+
+- ch1 = [1, 2, 3]
+- ch2 = [4, NaN, NaN]
+
+```text
+Line 1: "1, 2"
+Line 2: "1, 2, 3"
+```
+Produces 3 channels, where:
+- ch1 = [1, 1]
+- ch2 = [2, 2]
+- ch3 = [NaN, 3]
+  
+### Examples With Header
+
+```text
+Line: "HeaderA: 1 2 HeaderB: 10"
+```
+
+Rows = 2
+
+- HeaderA = [1, 2]
+- HeaderB = [10, NaN]
+
+```text
+Line: "HeaderA: 1, 2 HeaderB: 10"
+```
+
+Creates:
+
+- HeaderA_1 = [1]
+- HeaderA_2 = [2]
+- HeaderB = [10]
+
+```text
+Line: "1 2, HeaderA: 3 4"
+```
+
+Creates:
+
+- __unnamed_1 = [1, 2]
+- HeaderA = [3, 4]
+
+Variable names can include `[A-Za-z0-9_/]` and include spaces such as `Blood Pressure:`
+ 
 ## Core Concepts
 - A **line** is the atomic input unit.
 - A **channel** is one plotted data trace (one output column).
@@ -35,21 +84,6 @@ Simple mode treats each line as comma-separated channels.
 - If later lines introduce more channels, new columns are added.
 - Existing channel names are preserved when provided; missing names are appended numerically (`"1"`, `"2"`, ...).
 
-### Examples
-```text
-Line: "1 2 3, 4"
-```
-Produces 2 channels and 3 rows:
-
-- ch1 = [1, 2, 3]
-- ch2 = [4, NaN, NaN]
-
-```text
-Line 1: "1, 2"
-Line 2: "1, 2, 3"
-```
-Produces 3 channels, where channel 3 is NaN for line 1 rows.
-
 ## Header Mode
 Header mode parses `<header>: <data>` segments within each line.
 
@@ -57,6 +91,9 @@ Header mode parses `<header>: <data>` segments within each line.
 - Colon (`:`) separates header from data.
 - Unquoted headers support multi-word names (for example `Blood Pressure:`).
 - For unquoted headers, each header word must start with `[A-Za-z_]`.
+- For unquoted headers, the remaining characters in each word may be `[A-Za-z0-9_/]`.
+  Examples: `frame/s`, `m/s`, `rpm_1`.
+- Delimiters are still reserved and not part of unquoted names: `:`, `,`, and whitespace.
 - Quoted headers are also supported before `:` using matching quotes.
 
 ### Headerless data
@@ -80,32 +117,6 @@ Header mode parses `<header>: <data>` segments within each line.
 - For one input line, rows added = maximum value count across all sub-channels from all header segments in that line.
 - All segments in the line align to the same row block.
 - Missing entries are `NaN`.
-
-### Examples
-```text
-Line: "HeaderA: 1 2 HeaderB: 10"
-```
-Rows = 2
-
-- HeaderA = [1, 2]
-- HeaderB = [10, NaN]
-
-```text
-Line: "HeaderA: 1, 2 HeaderB: 10"
-```
-Creates:
-
-- HeaderA_1 = [1]
-- HeaderA_2 = [2]
-- HeaderB = [10]
-
-```text
-Line: "1 2, HeaderA: 3 4"
-```
-Creates:
-
-- __unnamed_1 = [1, 2]
-- HeaderA = [3, 4]
 
 ## Strict vs Non-Strict
 - Default mode is non-strict: unparseable tokens become `NaN`.

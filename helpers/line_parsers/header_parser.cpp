@@ -109,7 +109,7 @@ void trim_range(std::string_view sv, size_t &lo, size_t &hi)
 //------------------------------------------------------------------------
 // Split Headers and Data Segments:
 //   split segment into header, data
-//   header can contain (A–Z or a–z) or a digit (0–9) or underscore (_)
+//   header tokens can contain (A–Z or a–z) or a digit (0–9) or underscore (_) or slash (/)
 //   header can also be enclosed in quotes '' or "" to allow any character (not yet supported)
 //   headerless chunk can ocur at beginning when header with colon is not present
 // Example
@@ -170,7 +170,7 @@ split_headers(std::string_view sv)
 
             // Unquoted header case:
             //   allow multi-word headers like "Blood Pressure:" as long as each word
-            //   starts with [A-Za-z_] and then [A-Za-z0-9_]*.
+            //   starts with [A-Za-z_] and then [A-Za-z0-9_/]*.
             //   This avoids consuming numeric data prefixes such as "1 2 A:".
             size_t end = pos;
             while (end > 0 && std::isspace(static_cast<unsigned char>(sv[end - 1]))) {
@@ -185,7 +185,7 @@ split_headers(std::string_view sv)
             size_t tok_start = tok_end;
             while (tok_start > 0) {
                 unsigned char c = static_cast<unsigned char>(sv[tok_start - 1]);
-                if (std::isalnum(c) || c == '_') {
+                if (std::isalnum(c) || c == '_' || c == '/') {
                     --tok_start;
                 } else {
                     break;
@@ -215,7 +215,7 @@ split_headers(std::string_view sv)
                 size_t prev_start = prev_end;
                 while (prev_start > 0) {
                     unsigned char c = static_cast<unsigned char>(sv[prev_start - 1]);
-                    if (std::isalnum(c) || c == '_') {
+                    if (std::isalnum(c) || c == '_' || c == '/') {
                         --prev_start;
                     } else {
                         break;

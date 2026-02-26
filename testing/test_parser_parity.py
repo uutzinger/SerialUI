@@ -116,6 +116,7 @@ def main():
         ("header/headerless-prefix", ["1 2, A:3 4"], None),
         ("header/repeated-header", ["A:1 2 A:3 4"], None),
         ("header/spaces-in-name", ["Blood Pressure:121 122"], None),
+        ("header/slash-in-name", ["framew/s:1 2 m/s:3 4"], None),
         ("header/invalid-token-mid", ["A:1 bad 2"], None),
         ("header/unnamed", ["1 2,3", "A:4"], None),
         ("header/single-to-multi", ["A:1 2", "A:3,4"], None),

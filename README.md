@@ -40,15 +40,22 @@ Serial BLE extension
 
 ## How to Use This Program
 
-Run the program with `python3 SerialUI.py` or you load the folder into VSCode or Spider and execute it there. Alternatively install it as a desktop application by following the paragraphs below in s instructions.
+Either use the executable from the release assets or run the program with `python3 SerialUI.py` 
 
 - [Usage instructions](docs/Instructions.md).
 - [Supplemental instructions](docs/Supplementalinstructions.md).
-- [Helpful readings to learn about QT and qtgraph](docs/Helpful_readings.md).
 
 ## Installation
 
-To run this program you will need to clone this repository into a folder where you store python programs. Either download the zip or `git clone https://github.com/uutzinger/SerialUI.git` to that folder.
+### Executable
+
+Use the executable from the release assets. No packages will need to be installed.
+
+### Source
+
+Clone this repository into a folder where you store python programs and install the packages described below.
+
+To work of the source code either download the zip or `git clone https://github.com/uutzinger/SerialUI.git` to that folder.
 
 This program has dependencies. You can install them with (replace `pip` with `conda` if you use spider):
 
@@ -70,7 +77,7 @@ The following python modules are needed:
 - `bleak` for bluetooth communication
 - `numba` for accelerating numpy code
 
-To build the optional accelerated text parser navigate in your shell to the `helper` folder and execute:
+There is build script in scripts/release.sh or release.ps1 to activate the C accelerated text parser. You can also build the optional accelerated text parser navigate in your shell to the `helper` folder and execute:
 - `python3 setup.py build_ext --inplace -v`
 If you are using virtual env for python don't forget to activate it.
 
@@ -78,7 +85,7 @@ If you rebuild, clean the previous build with:
 - `python3 setup.py clean --all || true`
 - `rm -rf build *.egg-info .eggs`
  
-This requires a c compiler and the python packages `pybind11` and `setuptools` to be available.
+This requires a Cpp compiler and the python packages `pybind11` and `setuptools` to be available.
 
 A future version will also need:
 - `scipy` image decompression (FFT)
@@ -92,13 +99,16 @@ The programs configuration is stored in `config.py` (main folder). Here you can 
 - USE_BLE: enable serial communication over BLE
 - USE_BLUETOOTHCTL: enable pairing and trusting of BLE devices (available on Unix like systems)
 
+The standalone executable does not provide access to the configuration file.
+
 ## Modules
 
-The program is organized into these [modules](docs/Module_Organization.md).
+The program is organized into [modules](docs/Module_Organization.md).
 
 ## Nordic UART Service - BLE
 
 The NUS provides a serial interface similar to regular USB interface for microcontrollers.
+
 The implementation on a microcontroller requires more programming effort than a simple `Serial.print` especially if secure connections and automatic reconnection is considered. BLE connections can be optimized for low power, extended distance or high throughput.
 
 A detailed example is the [BLE test program](./Arduino_programs/testBLESerial/testBLESerial.ino) which was used to test SerialUI.
@@ -115,7 +125,7 @@ Indicating data is not implemented yet: [Feature not implemented yet](docs/Indic
 
 ## fastplotlib
 
-Fastplotlib itself is under development. There is a cusom legend.py in python libraries folder that is needed when you enable fastplotlib in the config file. The file replaces the legends.py of the creators. It needs more work.
+Fastplotlib itself is under development. There is a cusom legend.py in python libraries folder that is needed when you enable fastplotlib in the config file. The file replaces the legend.py of the creators. It needs more work.
 
 During program startup the library and the chart widget are initialized. This requires building the pipeline for the GPU which takes 5-10 seconds. During that time the program might be sluggish.
 
@@ -165,12 +175,12 @@ The following libraries are used:
 
 [`*`] not required but will accelerate the program, 
 [`**`] needed if BLE is enabled, 
-[`***`] needed if fastplotlib is enabled
+[`***`] needed if fastplotlib is enabled,
 [`***`] future version
 
 ## Release Scripts
 
-Use release scripts from the repository root. The release version is read from `VERSION` in `config.py`.
+Use of release scripts from the repository root. The release version is read from `VERSION` in `config.py`.
 
 Option style:
 - Linux shell convention uses `--long-option` (for example `--build-executable`).

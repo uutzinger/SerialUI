@@ -2486,6 +2486,7 @@ class QChart(QObject):
         - supports spaced headers: "Blood Pressure: 120"
         - preserves headerless prefix before first header
         - requires each unquoted header word to start with [A-Za-z_]
+          and continue with [A-Za-z0-9_/]*
         """
         hdrs = []  # (header_start, colon_pos, quoted)
         n = len(line)
@@ -2521,7 +2522,11 @@ class QChart(QObject):
 
             tok_end = end
             tok_start = tok_end
-            while tok_start > 0 and (line[tok_start - 1].isalnum() or line[tok_start - 1] == '_'):
+            while tok_start > 0 and (
+                line[tok_start - 1].isalnum()
+                or line[tok_start - 1] == '_'
+                or line[tok_start - 1] == '/'
+            ):
                 tok_start -= 1
             if tok_start == tok_end:
                 pos += 1
@@ -2541,7 +2546,11 @@ class QChart(QObject):
 
                 prev_end = ws_end
                 prev_start = prev_end
-                while prev_start > 0 and (line[prev_start - 1].isalnum() or line[prev_start - 1] == '_'):
+                while prev_start > 0 and (
+                    line[prev_start - 1].isalnum()
+                    or line[prev_start - 1] == '_'
+                    or line[prev_start - 1] == '/'
+                ):
                     prev_start -= 1
                 if prev_start == prev_end:
                     break
