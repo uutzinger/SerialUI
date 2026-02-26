@@ -149,7 +149,8 @@ Options:
   --tag                    Create git tag "<version>".
   --push                   Push commit and tags.
   --release, -release      Create GitHub release with executable and source assets.
-                           Implies --build-executable, --tag, and --push.
+                           If tag "<version>" is missing: implies --build-executable, --tag, --push.
+                           If tag "<version>" exists: release-only mode (no rebuild/tag/push).
   --upload-assets          Upload dist/*.tar.gz and dist/*.zip to existing GitHub release.
   --clean                  Remove build artifacts before build.
   -h, --help               Show this help.
@@ -172,15 +173,19 @@ DO_PUSH=0
 DO_RELEASE=0
 DO_UPLOAD_ASSETS=0
 DO_CLEAN=0
+USER_SET_BUILD_EXECUTABLE=0
+USER_SET_TAG=0
+USER_SET_PUSH=0
+RELEASE_ONLY_MODE=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --build-executable) DO_BUILD_EXECUTABLE=1; shift ;;
+    --build-executable) DO_BUILD_EXECUTABLE=1; USER_SET_BUILD_EXECUTABLE=1; shift ;;
     --build-c-accelerated) DO_BUILD_C_ACCELERATED=1; shift ;;
     --commit-msg) COMMIT_MSG="${2:-}"; shift 2 ;;
     --commit) DO_COMMIT=1; shift ;;
-    --tag) DO_TAG=1; shift ;;
-    --push) DO_PUSH=1; shift ;;
+    --tag) DO_TAG=1; USER_SET_TAG=1; shift ;;
+    --push) DO_PUSH=1; USER_SET_PUSH=1; shift ;;
     --release|-release) DO_RELEASE=1; shift ;;
     --upload-assets) DO_UPLOAD_ASSETS=1; shift ;;
     --clean) DO_CLEAN=1; shift ;;
@@ -188,12 +193,6 @@ while [[ $# -gt 0 ]]; do
     *) echo "Unknown option: $1"; usage; exit 2 ;;
   esac
 done
-
-if [[ "${DO_RELEASE}" -eq 1 ]]; then
-  DO_BUILD_EXECUTABLE=1
-  DO_TAG=1
-  DO_PUSH=1
-fi
 
 require_file "config.py"
 
@@ -205,6 +204,28 @@ fi
 validate_version_format "${PACKAGE_VERSION}"
 echo "Release version: ${PACKAGE_VERSION}"
 
+if [[ "${DO_RELEASE}" -eq 1 ]]; then
+  if git rev-parse -q --verify "refs/tags/${PACKAGE_VERSION}" >/dev/null 2>&1; then
+    if [[ "${USER_SET_BUILD_EXECUTABLE}" -eq 0 && "${USER_SET_TAG}" -eq 0 && "${USER_SET_PUSH}" -eq 0 ]]; then
+      RELEASE_ONLY_MODE=1
+      DO_BUILD_EXECUTABLE=0
+      DO_TAG=0
+      DO_PUSH=0
+      echo "Tag ${PACKAGE_VERSION} already exists; running release-only mode."
+    fi
+  else
+    if [[ "${USER_SET_BUILD_EXECUTABLE}" -eq 0 ]]; then
+      DO_BUILD_EXECUTABLE=1
+    fi
+    if [[ "${USER_SET_TAG}" -eq 0 ]]; then
+      DO_TAG=1
+    fi
+    if [[ "${USER_SET_PUSH}" -eq 0 ]]; then
+      DO_PUSH=1
+    fi
+  fi
+fi
+
 if [[ "${DO_CLEAN}" -eq 1 ]]; then
   rm -rf build dist ./*.egg-info ./*.egg .pytest_cache
   rm -rf helpers/build helpers/dist helpers/*.egg-info helpers/.eggs
@@ -212,6 +233,8 @@ fi
 
 DO_BUILD_HELPERS=1
 if [[ "${DO_BUILD_EXECUTABLE}" -eq 1 ]]; then
+  DO_BUILD_HELPERS=0
+elif [[ "${DO_RELEASE}" -eq 1 && "${RELEASE_ONLY_MODE}" -eq 1 && "${DO_BUILD_C_ACCELERATED}" -eq 0 ]]; then
   DO_BUILD_HELPERS=0
 elif [[ "${DO_UPLOAD_ASSETS}" -eq 1 && "${DO_BUILD_C_ACCELERATED}" -eq 0 && "${DO_RELEASE}" -eq 0 ]]; then
   # Asset upload-only mode: no local build required.
