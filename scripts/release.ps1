@@ -1,7 +1,7 @@
 param(
     [string]$PythonBin = "python",
     [switch]$BuildExecutable,
-    [bool]$BuildCAccelerated = $false,
+    [switch]$BuildCAccelerated,
     [string]$BuildPythonPath = "",
     [string]$CommitMsg = "",
     [switch]$Commit,
@@ -67,7 +67,7 @@ Usage:
 Options:
   -PythonBin <python>          Python interpreter (default: python)
   -BuildExecutable             Build standalone app via scripts/build_executable.ps1
-  -BuildCAccelerated <bool>    Build C-accelerated helpers (default: false)
+  -BuildCAccelerated           Build C-accelerated helpers (default: off)
   -BuildPythonPath <path>      Custom PYTHONPATH for executable build
   -CommitMsg <message>         Commit message (default: "release: <version>")
   -Commit                      Stage and commit changes
@@ -87,7 +87,7 @@ Notes:
 
 Examples:
   .\scripts\release.ps1 -BuildExecutable
-  .\scripts\release.ps1 -BuildExecutable -BuildCAccelerated:$true
+  .\scripts\release.ps1 -BuildExecutable -BuildCAccelerated
   .\scripts\release.ps1 -Commit -Tag -Push
   .\scripts\release.ps1 -Release
   .\scripts\release.ps1 -UploadAssets
@@ -280,17 +280,17 @@ $doBuildHelpers = $true
 if ($BuildExecutable) {
     $doBuildHelpers = $false
 }
-elseif ($UploadAssets -and (-not $BuildCAccelerated) -and (-not $Release)) {
+elseif ($UploadAssets -and (-not $BuildCAccelerated.IsPresent) -and (-not $Release)) {
     $doBuildHelpers = $false
 }
-elseif ($Release -and $releaseOnlyMode -and (-not $BuildCAccelerated)) {
+elseif ($Release -and $releaseOnlyMode -and (-not $BuildCAccelerated.IsPresent)) {
     $doBuildHelpers = $false
 }
 
 if ($BuildExecutable) {
     $buildScript = Join-Path $ScriptDir "build_executable.ps1"
     Require-File $buildScript
-    & $buildScript -PythonBin $PythonBin -BuildCAccelerated:$BuildCAccelerated -BuildPythonPath $BuildPythonPath
+    & $buildScript -PythonBin $PythonBin -BuildCAccelerated:$($BuildCAccelerated.IsPresent) -BuildPythonPath $BuildPythonPath
     if ($LASTEXITCODE -ne 0) {
         throw "build_executable.ps1 failed with exit code $LASTEXITCODE"
     }

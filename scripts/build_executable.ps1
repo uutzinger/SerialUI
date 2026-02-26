@@ -1,6 +1,6 @@
 param(
     [string]$PythonBin = "python",
-    [bool]$BuildCAccelerated = $false,
+    [switch]$BuildCAccelerated,
     [string]$BuildPythonPath = ""
 )
 
@@ -86,7 +86,7 @@ try {
         }
     }
     else {
-        Log "Skipping in-place C-accelerated parser build (BuildCAccelerated=$BuildCAccelerated)"
+        Log "Skipping in-place C-accelerated parser build (BuildCAccelerated=$($BuildCAccelerated.IsPresent))"
     }
 
     Log "Building wheel and source distribution"
