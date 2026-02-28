@@ -1,0 +1,48 @@
+name: Build Raspbian Executable
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-raspbian:
+    runs-on:
+      - self-hosted
+      - linux
+      - arm64
+      - raspbian
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install app dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyqt6 pyqtgraph markdown bleak numpy scipy numba fastplotlib PyOpenGL pybind11 setuptools cobs tamp pyudev
+
+      - name: Build executable archive via release.sh (with C-accelerated line parser)
+        shell: bash
+        env:
+          PYTHON_BIN: python
+        run: |
+          bash scripts/release.sh --build-c-executable --build-c-accelerated
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: SerialUI-raspbian-${{ github.ref_name }}-${{ github.run_number }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            dist/SerialUI-*.zip
+            dist/SerialUI
