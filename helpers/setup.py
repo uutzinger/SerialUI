@@ -72,10 +72,6 @@ elif is_macos:
 
             # macOS LTO (thin LTO is recommended)
             "-flto=thin",
-
-            # Apple Clang *does* support -march=native on Apple Silicon,
-            # but does NOT support -mtune on Intel Macs. Safest is:
-            "-march=native",
         ]
         extra_link_args = [
             "-flto=thin",
