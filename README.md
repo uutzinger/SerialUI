@@ -49,7 +49,7 @@ Either use the executable from the release assets or run the program with `pytho
 
 ### From Executable
 
-Use the executable from the release assets. No packages will need to be installed.
+Use the executable from the release assets on Github. No packages will need to be installed and no source code needs to be downloaded.
 
 ### From Source
 
@@ -57,33 +57,9 @@ Clone this repository into a folder where you store python programs and install 
 
 To work of the source code either download the zip or `git clone https://github.com/uutzinger/SerialUI.git` to that folder.
 
-This program has dependencies. You can install them with (replace `pip` with `conda` if you use spider):
+This program has dependencies. You can install them with `scripts/setup.sh` on Linux and MacOS and `scripts\setup.ps1` on Windows.
 
-*One liner Windows:* 
-    - `pip3 install pyqt6 pyqtgraph markdown wmi bleak`
-
-*One liner Linux:* 
-    - `pip3 install pyqt6 pyqtgraph markdown pyudev bleak`
-
-The following python modules are needed:
-
-- `pyqt6` or `pyqt5` for user interface (pyqt6 is tested)
-- `pyqtgraph` for plotting
-- `fastplotlib` for high throughput plotting
-- `numpy` for data gathering and manipulation
-- `markdown` to display help file
-- `wmi` on Windows for USB device notifications
-- `pyudev` on Linux  for USB device notifications
-- `bleak` for bluetooth communication
-- `numba` for accelerating numpy code
-
-There is build script in scripts/release.sh or release.ps1 to activate the C accelerated text parser. You can also build the optional accelerated text parser navigate in your shell to the `helper` folder and execute:
-- `python3 setup.py build_ext --inplace -v`
-If you are using virtual env for python don't forget to activate it.
-
-If you rebuild, clean the previous build with:
-- `python3 setup.py clean --all || true`
-- `rm -rf build *.egg-info .eggs`
+There is build script in `scripts/release.sh` or `release.ps1` to activate the C accelerated text parser with `./scripts/release.sh --build-c-accelerated` or `./scripts/release.ps1 -build-c-accelerated`
  
 This requires a Cpp compiler and the python packages `pybind11` and `setuptools` to be available.
 
@@ -125,13 +101,17 @@ Indicating data is not implemented yet: [Feature not implemented yet](docs/Indic
 
 ## fastplotlib
 
-Fastplotlib itself is under development. There is a cusom legend.py in python libraries folder that is needed when you enable fastplotlib in the config file. The file replaces the legend.py of the creators. It needs more work.
+Fastplotlib itself is under development. There is a custom legend.py in python libraries folder that is needed when you enable fastplotlib in the config file. The file replaces the legend.py of the creators. It needs more work.
 
 During program startup the library and the chart widget are initialized. This requires building the pipeline for the GPU which takes 5-10 seconds. During that time the program might be sluggish.
 
+fastplotlib is not available in the standalone executable and requires customizations. It is useful if you have GPU and need to display large data sets.
+
 ## Arduino Test Programs
 
-In the `Arduino_programs` folder are example programs that simulate data for serial UART and BLE connection.
+In the `Arduino_programs` folder are example programs that simulate data for serial UART and BLE connection. 
+
+To create your own application remove all the simulations except one and replace it with your code.
 
 ## Efficiency
 
@@ -178,7 +158,13 @@ The following libraries are used:
 [`***`] needed if fastplotlib is enabled,
 [`***`] future version
 
-## Release Scripts
+## Scripts
+
+### Setup
+
+A setup script creates a vritual python environment to run the application. It includes all required dependencies.
+
+### Release
 
 Use of release scripts from the repository root. The release version is read from `VERSION` in `config.py`.
 
@@ -200,6 +186,10 @@ Windows examples (`scripts/release.ps1`):
 - Build standalone executable (also creates `dist\SerialUI-<version>-windows-<arch>.zip`): `.\scripts\release.ps1 -BuildExecutable`
 - Build standalone executable + C-accelerated parser: `.\scripts\release.ps1 -BuildExecutable -BuildCAccelerated`
 - Upload existing archives in `dist\` to an existing release: `.\scripts\release.ps1 -UploadAssets`
+
+### Github workflows
+
+There are scripts that create my Github workflows to create executables on different platforms.
 
 ## Contributors
 

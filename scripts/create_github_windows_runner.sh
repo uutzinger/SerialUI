@@ -86,7 +86,7 @@ fi
 mkdir -p "$(dirname "${WORKFLOW_FILE}")"
 
 cat > "${WORKFLOW_FILE}" <<EOF
-name: Build Windows Executable
+name: Build Windows Executables (AMD64 + ARM64)
 
 on:
   workflow_dispatch:

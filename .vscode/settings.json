@@ -244,5 +244,7 @@
         "chrono": "cpp",
         "complex": "cpp"
     },
-    "python-envs.pythonProjects": [],
+    "python-envs.defaultEnvManager": "ms-python.python:system",
+    "python.defaultInterpreterPath": "/home/uutzinger/Python/serialui/bin/python",
+    "python.terminal.activateEnvironment": true,
 }
