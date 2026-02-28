@@ -17,8 +17,16 @@ jobs:
         include:
           - runner: ubuntu-24.04
             arch: x86_64
+            os_id: ubuntu24
+            os_name: linux-ubuntu24
+          - runner: ubuntu-22.04
+            arch: x86_64
+            os_id: ubuntu22
+            os_name: linux-ubuntu22
           - runner: ubuntu-24.04-arm
             arch: arm64
+            os_id: ubuntu24
+            os_name: linux-ubuntu24
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout source
@@ -41,13 +49,14 @@ jobs:
         shell: bash
         env:
           PYTHON_BIN: python
+          BUILD_OS_NAME: ${{ matrix.os_name }}
         run: |
           bash scripts/release.sh --build-c-executable --build-c-accelerated
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: SerialUI-linux-${{ matrix.arch }}-${{ github.ref_name }}-${{ github.run_number }}
+          name: SerialUI-linux-${{ matrix.os_id }}-${{ matrix.arch }}-${{ github.ref_name }}-${{ github.run_number }}
           if-no-files-found: error
           retention-days: 14
           path: |
