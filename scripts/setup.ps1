@@ -17,16 +17,16 @@ function Get-PythonCommand {
 function Invoke-Python {
     param(
         [string[]]$PyCmd,
-        [string[]]$Args
+        [string[]]$CmdArgs
     )
     $exe = $PyCmd[0]
     $preArgs = @()
     if ($PyCmd.Length -gt 1) {
         $preArgs = $PyCmd[1..($PyCmd.Length - 1)]
     }
-    & $exe @preArgs @Args
+    & $exe @preArgs @CmdArgs
     if ($LASTEXITCODE -ne 0) {
-        throw "Command failed with exit code ${LASTEXITCODE}: $($PyCmd -join ' ') $($Args -join ' ')"
+        throw "Command failed with exit code ${LASTEXITCODE}: $($PyCmd -join ' ') $($CmdArgs -join ' ')"
     }
 }
 
@@ -38,7 +38,7 @@ if (-not (Test-Path -Path $venvParent -PathType Container)) {
 }
 
 if (-not (Test-Path -Path $VenvDir -PathType Container)) {
-    Invoke-Python -PyCmd $pythonCmd -Args @("-m", "venv", $VenvDir)
+    Invoke-Python -PyCmd $pythonCmd -CmdArgs @("-m", "venv", $VenvDir)
 }
 
 $activateScript = Join-Path $VenvDir "Scripts\Activate.ps1"
@@ -49,7 +49,7 @@ if (-not (Test-Path -Path $activateScript -PathType Leaf)) {
 # Activate in this script scope for package install.
 . $activateScript
 
-Invoke-Python -PyCmd @("python") -Args @("-m", "pip", "install", "--upgrade", "pip")
+Invoke-Python -PyCmd @("python") -CmdArgs @("-m", "pip", "install", "--upgrade", "pip")
 
 $commonPackages = @(
     "pyqt6",
@@ -70,7 +70,7 @@ $commonPackages = @(
 $osPackages = @("wmi")
 
 $installArgs = @("-m", "pip", "install") + $commonPackages + $osPackages
-Invoke-Python -PyCmd @("python") -Args $installArgs
+Invoke-Python -PyCmd @("python") -CmdArgs $installArgs
 
 Write-Host ""
 Write-Host "Virtual environment ready: $VenvDir"
