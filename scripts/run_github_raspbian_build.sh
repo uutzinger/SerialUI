@@ -112,15 +112,26 @@ echo "Watching run: ${RUN_ID}"
 gh run watch "${RUN_ID}" --exit-status
 
 echo "Downloading artifacts to '${DOWNLOAD_DIR}'..."
+rm -rf "${DOWNLOAD_DIR}"
 mkdir -p "${DOWNLOAD_DIR}"
 gh run download "${RUN_ID}" --dir "${DOWNLOAD_DIR}"
 
 echo "Downloaded artifact contents:"
 find "${DOWNLOAD_DIR}" -maxdepth 3 -type f | sed 's#^#  - #'
 
-mapfile -t BUILT_ZIPS < <(find "${DOWNLOAD_DIR}" -type f -name 'SerialUI-*.zip' | sort)
+mapfile -t BUILT_ZIPS < <(find "${DOWNLOAD_DIR}" -type f -name 'SerialUI-[0-9]*.zip' | sort)
 if [[ "${#BUILT_ZIPS[@]}" -eq 0 ]]; then
-  echo "Warning: no SerialUI-*.zip found in downloaded artifacts." >&2
+  if command -v unzip >/dev/null 2>&1; then
+    echo "No packaged executable zips found directly; extracting downloaded artifact zip containers..."
+    EXTRACT_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/serialui-artifacts.XXXXXX")"
+    while IFS= read -r artifact_zip; do
+      unzip -q -o "${artifact_zip}" -d "${EXTRACT_ROOT}/$(basename "${artifact_zip}" .zip)" || true
+    done < <(find "${DOWNLOAD_DIR}" -type f -name '*.zip' | sort)
+    mapfile -t BUILT_ZIPS < <(find "${EXTRACT_ROOT}" -type f -name 'SerialUI-[0-9]*.zip' | sort)
+  fi
+fi
+if [[ "${#BUILT_ZIPS[@]}" -eq 0 ]]; then
+  echo "Warning: no packaged SerialUI-<version>-*.zip found in downloaded artifacts." >&2
   exit 1
 fi
 
