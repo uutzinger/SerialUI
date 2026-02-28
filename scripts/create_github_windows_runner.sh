@@ -70,14 +70,17 @@ fi
 
 PIP_INSTALL_LINE="$(printf '%s ' "${COMMON_PACKAGES[@]}")"
 PIP_INSTALL_LINE="${PIP_INSTALL_LINE% } wmi"
+PIP_INSTALL_LINE_ARM64="$(printf '%s\n' "${COMMON_PACKAGES[@]}" | awk '$0 != "numba" {printf("%s ", $0)}')"
+PIP_INSTALL_LINE_ARM64="${PIP_INSTALL_LINE_ARM64% } wmi"
 
 MATRIX_INCLUDE=$(cat <<EOF
           - runner: ${WINDOWS_AMD64_RUNNER}
             arch: amd64
+            pip_packages: "${PIP_INSTALL_LINE}"
 EOF
 )
 if [[ "${INCLUDE_ARM64}" == "1" ]]; then
-  MATRIX_INCLUDE+=$'\n'"          - runner: ${WINDOWS_ARM64_RUNNER}"$'\n'"            arch: arm64"
+  MATRIX_INCLUDE+=$'\n'"          - runner: ${WINDOWS_ARM64_RUNNER}"$'\n'"            arch: arm64"$'\n'"            pip_packages: \"${PIP_INSTALL_LINE_ARM64}\""
 fi
 
 mkdir -p "$(dirname "${WORKFLOW_FILE}")"
@@ -117,7 +120,7 @@ ${MATRIX_INCLUDE}
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          python -m pip install ${PIP_INSTALL_LINE}
+          python -m pip install \${{ matrix.pip_packages }}
 
       - name: Build executable archive via release.ps1 (with C-accelerated line parser)
         shell: pwsh
@@ -139,6 +142,7 @@ echo "Created workflow: ${WORKFLOW_FILE}"
 echo "Packages from setup.sh COMMON_PACKAGES + windows extras:"
 printf '  - %s\n' "${COMMON_PACKAGES[@]}"
 echo "  - wmi"
+echo "Windows arm64 package override excludes: numba"
 if [[ "${INCLUDE_ARM64}" == "1" ]]; then
   echo "Windows arm64 matrix enabled (runner: ${WINDOWS_ARM64_RUNNER})."
 fi

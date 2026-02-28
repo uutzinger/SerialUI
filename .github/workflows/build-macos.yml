@@ -23,6 +23,12 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install system dependencies
+        shell: bash
+        run: |
+          brew update
+          brew install libomp
+
       - name: Install app dependencies
         shell: bash
         run: |

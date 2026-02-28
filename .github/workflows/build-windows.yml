@@ -17,8 +17,10 @@ jobs:
         include:
           - runner: windows-2022
             arch: amd64
+            pip_packages: "pyqt6 pyqtgraph markdown bleak numpy scipy numba fastplotlib PyOpenGL pybind11 setuptools cobs tamp wmi"
           - runner: windows-11-arm
             arch: arm64
+            pip_packages: "pyqt6 pyqtgraph markdown bleak numpy scipy fastplotlib PyOpenGL pybind11 setuptools cobs tamp wmi"
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout source
@@ -35,7 +37,7 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pyqt6 pyqtgraph markdown bleak numpy scipy numba fastplotlib PyOpenGL pybind11 setuptools cobs tamp wmi
+          python -m pip install ${{ matrix.pip_packages }}
 
       - name: Build executable archive via release.ps1 (with C-accelerated line parser)
         shell: pwsh
