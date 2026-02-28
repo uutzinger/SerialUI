@@ -1,6 +1,9 @@
-[submodule "helpers/line_parsers/third_party/abseil-cpp"]
-	path = helpers/line_parsers/third_party/abseil-cpp
-	url = https://github.com/abseil/abseil-cpp
-[submodule "helpers/line_parsers/abseil-cpp"]
-	path = helpers/line_parsers/abseil-cpp
-	url = https://github.com/abseil/abseil-cpp
+[submodule "Python_libraries/cobs-python"]
+	path = Python_libraries/cobs-python
+	url = https://github.com/cmcqueen/cobs-python.git
+[submodule "Python_libraries/tamp"]
+	path = Python_libraries/tamp
+	url = https://github.com/BrianPugh/tamp.git
+[submodule "helpers/line_parsers/ankerl"]
+	path = helpers/line_parsers/ankerl
+	url = https://github.com/martinus/unordered_dense.git
