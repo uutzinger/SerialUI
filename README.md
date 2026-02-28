@@ -47,9 +47,13 @@ Either use the executable from the release assets or run the program with `pytho
 
 ## Installation
 
-### From Executable
+### From Executables
 
 Use the executable from the release assets on Github. No packages will need to be installed and no source code needs to be downloaded.
+
+- MacOs supports arm architecture
+- Linux supports ubuntu 24 with arm and amd64 architecture as well as ubuntu 22 with amd64 architecture
+- Windows supports windows amd64 and arm64 architecture
 
 ### From Source
 
@@ -190,6 +194,10 @@ Windows examples (`scripts/release.ps1`):
 ### Github workflows
 
 There are scripts that create my Github workflows to create executables on different platforms.
+
+`build_realease_all.sh` creates all of the builds
+
+On Windows amr64 platform, llvmlite is not available and numba acceleration is not activated.
 
 ## Contributors
 
