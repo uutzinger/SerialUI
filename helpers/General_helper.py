@@ -673,18 +673,19 @@ def setup_graphics_env(
             os.environ.setdefault("WGPU_GL_BACKEND", "OpenGL")
 
     elif sys == "Windows":
-        # Direct3D 12 is the native path
-        os.environ["WGPU_BACKEND_TYPE"] = (force_backend or "D3D12")
+        # Let Qt/wgpu auto-select a compatible backend unless explicitly forced.
+        # Hard-forcing D3D12 can fail on some older/incompatible GPU drivers.
+        if force_backend:
+            backend = str(force_backend).strip()
+            os.environ["WGPU_BACKEND_TYPE"] = backend
+            low = backend.lower()
+            if low in ("d3d12", "d3d11", "vulkan", "software"):
+                os.environ.setdefault("QSG_RHI_BACKEND", low)
         os.environ["WGPU_POWER_PREFERENCE"] = (
             "HighPerformance" if prefer_discrete_gpu else "LowPower"
         )
-        # Qt Quick RHI to D3D12 (or leave default which may be D3D11/D3D12)
-        os.environ.setdefault("QSG_RHI_BACKEND", "d3d12")
         # Qt platform is 'windows' by default; no change needed.
-
-        # Optional: request high-performance GPU on Windows via DXGI preference env
-        # (Windows also has per-app “Graphics performance preference” in Settings)
-        os.environ.setdefault("QT_OPENGL", "desktop")                          # if you ever use Qt/GL, prefer desktop GL
+        os.environ.setdefault("QT_OPENGL", "desktop")                          # if Qt/GL is used, prefer desktop GL
 
     elif sys == "Darwin":                                                      # macOS
         # Metal is the only real choice

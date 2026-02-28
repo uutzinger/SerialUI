@@ -4,6 +4,7 @@ from PyInstaller.building.build_main import Analysis, PYZ, EXE, COLLECT, Tree
 from config import USE_FASTPLOTLIB, USE_BLE
 
 block_cipher = None
+console_mode = os.environ.get("SERIALUI_CONSOLE", "").strip().lower() in ("1", "true", "yes", "on")
 
 # Path to project root (where this spec file lives)
 proj_root = os.path.abspath(os.getcwd())
@@ -120,7 +121,7 @@ exe = EXE(
     # (notably OpenBLAS/Numpy libs on Linux), causing runtime loader errors.
     strip=False,
     upx=False,
-    console=False,  # set False if you want a pure GUI app (no console window)
+    console=console_mode,
     icon=os.path.join("assets", "icon_96.ico"),
 )
 

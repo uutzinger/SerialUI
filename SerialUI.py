@@ -26,6 +26,72 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 # ==============================================================================
 import sys
 import os
+import traceback
+import threading
+from datetime import datetime
+from pathlib import Path
+
+def _serialui_log_dir() -> Path:
+    """Return writable log directory for crash diagnostics."""
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA")
+        if base:
+            root = Path(base)
+        else:
+            root = Path.home() / "AppData" / "Local"
+    else:
+        root = Path.home() / ".local" / "state"
+    out = root / "SerialUI" / "logs"
+    out.mkdir(parents=True, exist_ok=True)
+    return out
+
+def _write_crash_report(exc_type, exc_value, exc_tb, source: str = "main") -> Path | None:
+    try:
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_dir = _serialui_log_dir()
+        report_path = log_dir / "last_crash.log"
+        with report_path.open("a", encoding="utf-8") as fh:
+            fh.write("\n" + "=" * 80 + "\n")
+            fh.write(f"Timestamp: {ts}\n")
+            fh.write(f"Source: {source}\n")
+            fh.write(f"Executable: {sys.executable}\n")
+            fh.write(f"Frozen: {bool(getattr(sys, 'frozen', False))}\n")
+            fh.write("Traceback:\n")
+            traceback.print_exception(exc_type, exc_value, exc_tb, file=fh)
+        return report_path
+    except Exception:
+        return None
+
+def _show_windows_crash_dialog(path: Path | None) -> None:
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        msg = "SerialUI crashed during startup.\n"
+        if path is not None:
+            msg += f"Crash report: {path}"
+        ctypes.windll.user32.MessageBoxW(0, msg, "SerialUI Error", 0x10)
+    except Exception:
+        pass
+
+def _serialui_excepthook(exc_type, exc_value, exc_tb):
+    report = _write_crash_report(exc_type, exc_value, exc_tb, source="main")
+    if getattr(sys, "frozen", False):
+        _show_windows_crash_dialog(report)
+    try:
+        sys.__excepthook__(exc_type, exc_value, exc_tb)
+    except Exception:
+        pass
+
+def _threading_excepthook(args):
+    report = _write_crash_report(args.exc_type, args.exc_value, args.exc_traceback, source=f"thread:{args.thread.name}")
+    if getattr(sys, "frozen", False):
+        _show_windows_crash_dialog(report)
+
+sys.excepthook = _serialui_excepthook
+if hasattr(threading, "excepthook"):
+    threading.excepthook = _threading_excepthook
+
 def resource_path(relative_path: str) -> str:
     """
     Get absolute path to resource, works in dev and in PyInstaller bundle.
@@ -85,8 +151,6 @@ import os
 import time
 import textwrap
 from markdown import markdown
-from datetime import datetime
-from pathlib import Path
 import logging
 #
 # QT imports, QT5 or QT6 
