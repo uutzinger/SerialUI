@@ -3,13 +3,13 @@
 ### Use in Conjunction with Arduino IDE
 - To program your microcontroller while this program is running, click close serial port.
 - Program the microcontroller.
-- Make sure the Arduino IDE has the Serial Monitor or Serial Plotter closed.
+- Make sure the Arduino IDE has the Serial Monitor and Serial Plotter closed.
 - Click open serial port.
 
 You can not open the serial port when it is in use by Arduino IDE serial monitor or serial plotter.
 
 ### Issues with Microcontroller Response
-SerialUI attempts to reconnect when microcontroller is unplugged and reattached. Otherwise try to resolve issues in the following order:
+SerialUI attempts to reconnect when microcontroller is unplugged and reattached. Otherwise try to resolve issues in the following order (each step might solve the issue):
 
 - Click Reset ESP (for ESP type boards)
 - Push the reset button on the microcontroller if available.

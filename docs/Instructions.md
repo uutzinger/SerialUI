@@ -34,14 +34,14 @@
 
 ### Plotting Data
 
-1. Please be aware that when selecting plotting tab the first time with fastplotlib, it will take about 5-10 sec to build the chart.
-2. Set serial port or BLE as described above.
-3. You will need to select a line termination other than None.
-4. Open the Plotter tab.
-5. Select data separator (Simple or with Headers). For supported format read [parsing documentation](../docs/Dataparsing.md).
-6. Start plotting.
-7. Adjust view with the horizontal slider.
-8. Click stop or pause and zoom and pan with the mouse.
-9. Save and clear plotted data or save the figure.
-10. Whether you plot with pyqtgraph or fastplotlib is set in the configuration file. You can not change it at run time.
-11. pyqtgrpah can save figures are vetorgraphics (svg). fastplotlib saves as bitmap (png) only.
+1. Set serial port or BLE as described above.
+2. You will need to select a line termination other than None.
+3. Open the Plotter tab.
+4. Select data separator (Simple or with Headers). For supported format read [parsing documentation](../docs/Dataparsing.md).
+5. Start plotting.
+6. Adjust view with the horizontal slider.
+7. Click stop or pause and zoom and pan with the mouse.
+8. Save and clear plotted data or save the figure.
+9. Whether you plot with pyqtgraph or fastplotlib is set in the configuration file. You can not change it when you use the precompiled executable.
+10. pyqtgrpah can save figures are vetorgraphics (svg). fastplotlib saves as bitmap (png) only.
+11. Please be aware that when selecting plotting tab the first time with fastplotlib, it will take about 5-10 sec to build the chart.
