@@ -27,6 +27,8 @@
 #include <algorithm>
 #include <string_view>
 #include <cstring>   // memchr
+#include <cstdlib>   // strtod
+#include <cerrno>    // errno, ERANGE
 
 // Add this block:
 #if defined(_MSC_VER)
@@ -40,6 +42,27 @@
 namespace py = pybind11;
 
 static constexpr double NAN_VAL = std::numeric_limits<double>::quiet_NaN();
+
+// Apple libc++ does not provide floating-point std::from_chars.
+// Use strtod fallback there and keep from_chars on other platforms.
+static FORCE_INLINE
+bool parse_double_token(const char* begin, const char* end, double& out)
+{
+#if defined(__APPLE__)
+    std::string token(begin, static_cast<size_t>(end - begin));
+    char* parsed_end = nullptr;
+    errno = 0;
+    const double value = std::strtod(token.c_str(), &parsed_end);
+    if (parsed_end != token.c_str() && errno != ERANGE) {
+        out = value;
+        return true;
+    }
+    return false;
+#else
+    auto fc = std::from_chars(begin, end, out);
+    return fc.ec == std::errc();
+#endif
+}
 
 //------------------------------------------------------------------------
 // Split Channels: 
@@ -80,9 +103,7 @@ void split_numbers(std::string_view sv,
         if (i == N || std::isspace((unsigned char)sv[i])) {
             if (i > start) {
                 double v = NAN_VAL;
-                auto fc = std::from_chars(sv.data() + start,
-                                          sv.data() + i, v);
-                if (fc.ec == std::errc()) {
+                if (parse_double_token(sv.data() + start, sv.data() + i, v)) {
                     out.push_back(v);
                 }
                 else {

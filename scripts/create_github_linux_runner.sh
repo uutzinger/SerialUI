@@ -11,6 +11,7 @@ UBUNTU_AMD64_RUNNER="${UBUNTU_AMD64_RUNNER:-ubuntu-24.04}"
 UBUNTU_ARM64_RUNNER="${UBUNTU_ARM64_RUNNER:-ubuntu-24.04-arm}"
 INCLUDE_AMD64="${INCLUDE_AMD64:-1}"
 INCLUDE_ARM64="${INCLUDE_ARM64:-1}"
+WORKFLOW_NAME="${WORKFLOW_NAME:-Build Linux Executables (AMD64 + ARM64)}"
 
 usage() {
   cat <<EOF
@@ -22,6 +23,8 @@ Options:
                                 (default: .github/workflows/build-linux.yml)
   --python-version <ver>        Python version for setup-python
                                 (default: ${PYTHON_VERSION})
+  --workflow-name <name>        Workflow display name in GitHub Actions
+                                (default: ${WORKFLOW_NAME})
   --ubuntu-amd64-runner <name>  Runner label for amd64 build
                                 (default: ${UBUNTU_AMD64_RUNNER})
   --ubuntu-arm64-runner <name>  Runner label for arm64 build
@@ -36,6 +39,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --workflow-file) WORKFLOW_FILE="$2"; shift 2 ;;
     --python-version) PYTHON_VERSION="$2"; shift 2 ;;
+    --workflow-name) WORKFLOW_NAME="$2"; shift 2 ;;
     --ubuntu-amd64-runner) UBUNTU_AMD64_RUNNER="$2"; shift 2 ;;
     --ubuntu-arm64-runner) UBUNTU_ARM64_RUNNER="$2"; shift 2 ;;
     --no-amd64) INCLUDE_AMD64=0; shift ;;
@@ -98,7 +102,7 @@ fi
 mkdir -p "$(dirname "${WORKFLOW_FILE}")"
 
 cat > "${WORKFLOW_FILE}" <<EOF
-name: Build Linux Executable
+name: ${WORKFLOW_NAME}
 
 on:
   workflow_dispatch:
