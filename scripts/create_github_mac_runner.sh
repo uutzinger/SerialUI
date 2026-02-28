@@ -109,6 +109,12 @@ jobs:
         with:
           python-version: '${PYTHON_VERSION}'
 
+      - name: Install system dependencies
+        shell: bash
+        run: |
+          brew update
+          brew install libomp
+
       - name: Install app dependencies
         shell: bash
         run: |
