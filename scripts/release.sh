@@ -143,7 +143,7 @@ Usage:
 
 Options:
   --build-executable       Build executable/package via scripts/build_executable.sh.
-                           Alias: -build-executable
+                           Alias: --build-c-executable, -build-executable
   --build-c-accelerated    Build C-accelerated helpers parser extension in-place.
                            Alias: -build-c-accelerated
   --commit-msg "message"   Commit message (default: "release: <version>").
@@ -170,7 +170,7 @@ Notes:
     and creates dist/SerialUI-<version>-<os>-<arch>.zip.
   - --release requires GitHub CLI (gh) authentication.
   - --release and --upload-assets only use compressed files already present in dist/.
-  - Linux convention is --long-option; single-dash aliases are accepted for parity with PowerShell.
+  - POSIX shell convention is --long-option; single-dash aliases are accepted for parity with PowerShell.
 EOF
 }
 
@@ -190,7 +190,7 @@ RELEASE_ONLY_MODE=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --build-executable|-build-executable|-BuildExecutable) DO_BUILD_EXECUTABLE=1; USER_SET_BUILD_EXECUTABLE=1; shift ;;
+    --build-executable|--build-c-executable|-build-executable|-BuildExecutable|-BuildCExecutable) DO_BUILD_EXECUTABLE=1; USER_SET_BUILD_EXECUTABLE=1; shift ;;
     --build-c-accelerated|-build-c-accelerated|-BuildCAccelerated) DO_BUILD_C_ACCELERATED=1; shift ;;
     --commit-msg|-commit-msg|-CommitMsg) COMMIT_MSG="${2:-}"; shift 2 ;;
     --commit|-commit|-Commit) DO_COMMIT=1; shift ;;

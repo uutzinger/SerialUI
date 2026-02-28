@@ -1,7 +1,7 @@
 # Add folders you want to bundle
 import os
 from PyInstaller.building.build_main import Analysis, PYZ, EXE, COLLECT, Tree
-from config import USE_FASTPLOTLIB
+from config import USE_FASTPLOTLIB, USE_BLE
 
 block_cipher = None
 
@@ -40,6 +40,8 @@ excludes = [
     "matplotlib.backends.backend_gtk4cairo",
     "matplotlib.backends.backend_tkagg",
     "matplotlib.backends.backend_tkcairo",
+    # Debug helper is guarded out in frozen mode; avoid bundling it.
+    "debugpy",
 ]
 
 # In default config we do not use fastplotlib. Exclude its heavy dependency stack
@@ -59,7 +61,6 @@ if not USE_FASTPLOTLIB:
         "wx",
         "vtk",
         "pandas",
-        "scipy",
         "dask",
         "zarr",
         "numcodecs",
@@ -67,8 +68,13 @@ if not USE_FASTPLOTLIB:
         "botocore",
         "sphinx",
         "pytest",
-        "numba",
-        "llvmlite",
+    ]
+
+# BLE stack is optional in app config.
+if not USE_BLE:
+    excludes += [
+        "bleak",
+        "bleak.backends",
     ]
 
 a = Analysis(

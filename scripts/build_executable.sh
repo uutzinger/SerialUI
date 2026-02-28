@@ -51,6 +51,15 @@ run() {
     "$@"
 }
 
+normalized_os_name() {
+    case "$(uname -s)" in
+        Darwin) echo "macos" ;;
+        Linux) echo "linux" ;;
+        MINGW*|MSYS*|CYGWIN*) echo "windows" ;;
+        *) uname -s | tr '[:upper:]' '[:lower:]' ;;
+    esac
+}
+
 require_dir "${HELPERS_DIR}"
 require_file "${ROOT_DIR}/SerialUI.spec"
 require_file "${HELPERS_DIR}/setup.py"
@@ -130,8 +139,14 @@ popd >/dev/null
 
 if [[ "${NO_ZIP}" != "1" ]]; then
     log "Creating executable zip archive"
-    if [[ ! -d "${ROOT_DIR}/dist/SerialUI" ]]; then
-        echo "Expected executable directory not found: ${ROOT_DIR}/dist/SerialUI" >&2
+    APP_BASENAME=""
+    if [[ -d "${ROOT_DIR}/dist/SerialUI" ]]; then
+        APP_BASENAME="SerialUI"
+    elif [[ -d "${ROOT_DIR}/dist/SerialUI.app" ]]; then
+        # Fallback for macOS app-bundle style output.
+        APP_BASENAME="SerialUI.app"
+    else
+        echo "Expected executable output not found: ${ROOT_DIR}/dist/SerialUI or ${ROOT_DIR}/dist/SerialUI.app" >&2
         exit 1
     fi
     VERSION="$(project_version)"
@@ -139,17 +154,17 @@ if [[ "${NO_ZIP}" != "1" ]]; then
         echo "Error: config.py did not provide VERSION." >&2
         exit 1
     fi
-    OS_NAME="$(uname -s | tr '[:upper:]' '[:lower:]')"
+    OS_NAME="$(normalized_os_name)"
     ARCH="$(uname -m)"
     ZIP_BASE="${ROOT_DIR}/dist/SerialUI-${VERSION}-${OS_NAME}-${ARCH}"
     rm -f "${ZIP_BASE}.zip"
-    ROOT_DIR="${ROOT_DIR}" ZIP_BASE="${ZIP_BASE}" "${PYTHON_BIN}" - <<'PY'
+    ROOT_DIR="${ROOT_DIR}" ZIP_BASE="${ZIP_BASE}" APP_BASENAME="${APP_BASENAME}" "${PYTHON_BIN}" - <<'PY'
 import os
 import shutil
 from pathlib import Path
 
 root = Path(os.environ["ROOT_DIR"])
-src = root / "dist" / "SerialUI"
+src = root / "dist" / os.environ["APP_BASENAME"]
 dst_base = Path(os.environ["ZIP_BASE"])
 archive = shutil.make_archive(str(dst_base), "zip", root_dir=str(src.parent), base_dir=src.name)
 print(f"Executable zip: {archive}")
@@ -158,4 +173,4 @@ fi
 
 log "Done"
 echo "Wheel artifacts: ${HELPERS_DIR}/dist"
-echo "Standalone app:  ${ROOT_DIR}/dist/SerialUI"
+echo "Standalone app:  ${ROOT_DIR}/dist/SerialUI (or SerialUI.app on macOS)"

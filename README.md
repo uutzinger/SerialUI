@@ -47,11 +47,11 @@ Either use the executable from the release assets or run the program with `pytho
 
 ## Installation
 
-### Executable
+### From Executable
 
 Use the executable from the release assets. No packages will need to be installed.
 
-### Source
+### From Source
 
 Clone this repository into a folder where you store python programs and install the packages described below.
 
