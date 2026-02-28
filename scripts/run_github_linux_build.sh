@@ -92,7 +92,6 @@ for _ in {1..30}; do
   RUN_ID="$(
     gh run list \
       --workflow "${WORKFLOW_FILE}" \
-      --event workflow_dispatch \
       --limit 20 \
       --json databaseId,createdAt \
       --jq "[.[] | select(.createdAt >= \"${START_ISO}\")][0].databaseId // empty"

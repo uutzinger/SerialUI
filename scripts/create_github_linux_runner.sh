@@ -8,8 +8,10 @@ SETUP_SH="${REPO_ROOT}/scripts/setup.sh"
 WORKFLOW_FILE="${REPO_ROOT}/.github/workflows/build-linux.yml"
 PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
 UBUNTU_AMD64_RUNNER="${UBUNTU_AMD64_RUNNER:-ubuntu-24.04}"
+UBUNTU22_AMD64_RUNNER="${UBUNTU22_AMD64_RUNNER:-ubuntu-22.04}"
 UBUNTU_ARM64_RUNNER="${UBUNTU_ARM64_RUNNER:-ubuntu-24.04-arm}"
 INCLUDE_AMD64="${INCLUDE_AMD64:-1}"
+INCLUDE_UBUNTU22_AMD64="${INCLUDE_UBUNTU22_AMD64:-1}"
 INCLUDE_ARM64="${INCLUDE_ARM64:-1}"
 WORKFLOW_NAME="${WORKFLOW_NAME:-Build Linux Executables (AMD64 + ARM64)}"
 
@@ -27,9 +29,12 @@ Options:
                                 (default: ${WORKFLOW_NAME})
   --ubuntu-amd64-runner <name>  Runner label for amd64 build
                                 (default: ${UBUNTU_AMD64_RUNNER})
+  --ubuntu22-amd64-runner <name> Runner label for ubuntu 22.04 amd64 build
+                                 (default: ${UBUNTU22_AMD64_RUNNER})
   --ubuntu-arm64-runner <name>  Runner label for arm64 build
                                 (default: ${UBUNTU_ARM64_RUNNER})
   --no-amd64                    Exclude amd64 matrix entry
+  --no-ubuntu22-amd64           Exclude ubuntu 22.04 amd64 matrix entry
   --no-arm64                    Exclude arm64 matrix entry
   -h, --help                    Show this help
 EOF
@@ -41,16 +46,18 @@ while [[ $# -gt 0 ]]; do
     --python-version) PYTHON_VERSION="$2"; shift 2 ;;
     --workflow-name) WORKFLOW_NAME="$2"; shift 2 ;;
     --ubuntu-amd64-runner) UBUNTU_AMD64_RUNNER="$2"; shift 2 ;;
+    --ubuntu22-amd64-runner) UBUNTU22_AMD64_RUNNER="$2"; shift 2 ;;
     --ubuntu-arm64-runner) UBUNTU_ARM64_RUNNER="$2"; shift 2 ;;
     --no-amd64) INCLUDE_AMD64=0; shift ;;
+    --no-ubuntu22-amd64) INCLUDE_UBUNTU22_AMD64=0; shift ;;
     --no-arm64) INCLUDE_ARM64=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage; exit 2 ;;
   esac
 done
 
-if [[ "${INCLUDE_AMD64}" != "1" && "${INCLUDE_ARM64}" != "1" ]]; then
-  echo "Error: both --no-amd64 and --no-arm64 were set. Enable at least one architecture." >&2
+if [[ "${INCLUDE_AMD64}" != "1" && "${INCLUDE_UBUNTU22_AMD64}" != "1" && "${INCLUDE_ARM64}" != "1" ]]; then
+  echo "Error: all Linux matrix entries were disabled. Enable at least one target." >&2
   exit 2
 fi
 
@@ -85,6 +92,20 @@ if [[ "${INCLUDE_AMD64}" == "1" ]]; then
   MATRIX_INCLUDE+=$(cat <<EOF
           - runner: ${UBUNTU_AMD64_RUNNER}
             arch: x86_64
+            os_id: ubuntu24
+            os_name: linux-ubuntu24
+EOF
+)
+fi
+if [[ "${INCLUDE_UBUNTU22_AMD64}" == "1" ]]; then
+  if [[ -n "${MATRIX_INCLUDE}" ]]; then
+    MATRIX_INCLUDE+=$'\n'
+  fi
+  MATRIX_INCLUDE+=$(cat <<EOF
+          - runner: ${UBUNTU22_AMD64_RUNNER}
+            arch: x86_64
+            os_id: ubuntu22
+            os_name: linux-ubuntu22
 EOF
 )
 fi
@@ -95,6 +116,8 @@ if [[ "${INCLUDE_ARM64}" == "1" ]]; then
   MATRIX_INCLUDE+=$(cat <<EOF
           - runner: ${UBUNTU_ARM64_RUNNER}
             arch: arm64
+            os_id: ubuntu24
+            os_name: linux-ubuntu24
 EOF
 )
 fi
@@ -142,13 +165,14 @@ ${MATRIX_INCLUDE}
         shell: bash
         env:
           PYTHON_BIN: python
+          BUILD_OS_NAME: \${{ matrix.os_name }}
         run: |
           bash scripts/release.sh --build-c-executable --build-c-accelerated
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: SerialUI-linux-\${{ matrix.arch }}-\${{ github.ref_name }}-\${{ github.run_number }}
+          name: SerialUI-linux-\${{ matrix.os_id }}-\${{ matrix.arch }}-\${{ github.ref_name }}-\${{ github.run_number }}
           if-no-files-found: error
           retention-days: 14
           path: |

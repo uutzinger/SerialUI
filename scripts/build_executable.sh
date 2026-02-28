@@ -25,6 +25,7 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 BUILD_C_ACCEL="${BUILD_C_ACCEL:-1}"
 BUILD_PYTHONPATH="${BUILD_PYTHONPATH:-}"
 NO_ZIP="${NO_ZIP:-0}"
+BUILD_OS_NAME="${BUILD_OS_NAME:-}"
 
 log() {
     printf '\n[%s] %s\n' "$(date +'%H:%M:%S')" "$*"
@@ -154,7 +155,10 @@ if [[ "${NO_ZIP}" != "1" ]]; then
         echo "Error: config.py did not provide VERSION." >&2
         exit 1
     fi
-    OS_NAME="$(normalized_os_name)"
+    OS_NAME="${BUILD_OS_NAME}"
+    if [[ -z "${OS_NAME}" ]]; then
+        OS_NAME="$(normalized_os_name)"
+    fi
     ARCH="$(uname -m)"
     ZIP_BASE="${ROOT_DIR}/dist/SerialUI-${VERSION}-${OS_NAME}-${ARCH}"
     rm -f "${ZIP_BASE}.zip"
