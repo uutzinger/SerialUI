@@ -26,7 +26,7 @@ function Invoke-Python {
     }
     & $exe @preArgs @Args
     if ($LASTEXITCODE -ne 0) {
-        throw "Command failed with exit code $LASTEXITCODE: $($PyCmd -join ' ') $($Args -join ' ')"
+        throw "Command failed with exit code ${LASTEXITCODE}: $($PyCmd -join ' ') $($Args -join ' ')"
     }
 }
 
