@@ -1,4 +1,4 @@
-name: Build Linux Executable
+name: Build Linux Executable (AMD64)
 
 on:
   workflow_dispatch:
