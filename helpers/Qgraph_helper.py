@@ -129,7 +129,7 @@ def _exc_text(exc: Exception | None) -> str:
         return "unknown error"
     return f"{exc.__class__.__name__}: {exc}"
 
-def _probe_frozen_windows_c_parser() -> tuple[bool, str]:
+def _probe_frozen_c_parser() -> tuple[bool, str]:
     """
     Probe C parser import in a child process.
     This prevents a hard native crash from taking down the main UI process.
@@ -160,12 +160,12 @@ hasFastParser = False
 PARSER_BACKEND = "python"
 PARSER_STATUS_DETAIL = ""
 if USE_PARSERACCEL:
-    # Safety guard: on frozen Windows builds, native parser modules can fail
-    # at load time with non-Python access violations. We now probe in a child
-    # process and use C parser by default when probe succeeds.
+    # Safety guard for frozen apps: native parser modules can fail at load time
+    # with non-Python crashes. Probe import in a child process first, and only
+    # enable C parser when that probe succeeds.
     allow_c_parser = True
-    if getattr(sys, "frozen", False) and sys.platform.startswith("win"):
-        probe_ok, probe_detail = _probe_frozen_windows_c_parser()
+    if getattr(sys, "frozen", False):
+        probe_ok, probe_detail = _probe_frozen_c_parser()
         allow_c_parser = probe_ok
         if not probe_ok:
             PARSER_STATUS_DETAIL = f"C parser rejected by subprocess probe: {probe_detail}"

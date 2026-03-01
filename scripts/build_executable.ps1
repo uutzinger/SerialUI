@@ -195,6 +195,29 @@ finally {
     Pop-Location
 }
 
+if ($BuildCAccelerated) {
+    Log "Running frozen executable C-parser subprocess self-test"
+    $frozenExeCandidates = @(
+        (Join-Path $RootDir "dist\SerialUI\SerialUI.exe"),
+        (Join-Path $RootDir "dist\SerialUI.app\Contents\MacOS\SerialUI")
+    )
+    $frozenExe = $frozenExeCandidates | Where-Object { Test-Path -Path $_ -PathType Leaf } | Select-Object -First 1
+
+    if ($frozenExe) {
+        & $frozenExe "--selftest-c-parser"
+        $probeExit = $LASTEXITCODE
+        if ($probeExit -eq 0) {
+            Log "Frozen C-parser probe passed"
+        }
+        else {
+            Write-Warning "Frozen C-parser probe failed (exit code $probeExit). Executable will fall back to Python parser at runtime."
+        }
+    }
+    else {
+        Write-Warning "Could not locate frozen executable for C-parser probe test."
+    }
+}
+
 if (-not $NoZip) {
     $bundleDir = Join-Path $RootDir "dist\SerialUI"
     Require-Dir $bundleDir

@@ -8,6 +8,7 @@ set -euo pipefail
 # 2) Optionally builds C extensions in helpers/line_parsers
 # 3) Builds wheel/sdist for helpers package (line_parsers)
 # 4) Builds standalone app via PyInstaller spec
+# 5) Probes frozen executable C-parser import path (non-fatal; fallback uses Python parser)
 #
 # Usage:
 #   ./build_executable.sh
@@ -152,6 +153,29 @@ else
 fi
 run ls -lh dist
 popd >/dev/null
+
+if [[ "${BUILD_C_ACCEL}" == "1" ]]; then
+    log "Running frozen executable C-parser subprocess self-test"
+    FROZEN_EXE=""
+    if [[ -x "${ROOT_DIR}/dist/SerialUI/SerialUI" ]]; then
+        FROZEN_EXE="${ROOT_DIR}/dist/SerialUI/SerialUI"
+    elif [[ -x "${ROOT_DIR}/dist/SerialUI.app/Contents/MacOS/SerialUI" ]]; then
+        FROZEN_EXE="${ROOT_DIR}/dist/SerialUI.app/Contents/MacOS/SerialUI"
+    fi
+
+    if [[ -n "${FROZEN_EXE}" ]]; then
+        if PROBE_OUTPUT="$("${FROZEN_EXE}" --selftest-c-parser 2>&1)"; then
+            echo "${PROBE_OUTPUT}"
+            log "Frozen C-parser probe passed"
+        else
+            echo "${PROBE_OUTPUT}"
+            echo "WARNING: Frozen C-parser probe failed."
+            echo "         Executable will fall back to Python parser at runtime."
+        fi
+    else
+        echo "WARNING: Could not locate frozen executable for C-parser probe test."
+    fi
+fi
 
 if [[ "${NO_ZIP}" != "1" ]]; then
     log "Creating executable zip archive"
