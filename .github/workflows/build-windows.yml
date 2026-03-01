@@ -17,9 +17,11 @@ jobs:
         include:
           - runner: windows-2022
             arch: amd64
+            python_version: '3.10'
             pip_packages: "pyqt6 pyqtgraph markdown bleak numpy scipy numba fastplotlib PyOpenGL pybind11 setuptools cobs tamp wmi"
           - runner: windows-11-arm
             arch: arm64
+            python_version: '3.11'
             pip_packages: "pyqt6 pyqtgraph markdown bleak numpy scipy fastplotlib PyOpenGL pybind11 setuptools cobs tamp wmi"
     runs-on: ${{ matrix.runner }}
     steps:
@@ -29,9 +31,10 @@ jobs:
           fetch-depth: 0
 
       - name: Setup Python
+        id: setup_python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: ${{ matrix.python_version }}
 
       - name: Show Python version
         shell: pwsh
@@ -46,6 +49,7 @@ jobs:
           python -m pip install ${{ matrix.pip_packages }}
 
       - name: Build executable archive via release.ps1 (with C-accelerated line parser)
+        id: build_executable
         shell: pwsh
         run: |
           .\scripts\release.ps1 -PythonBin python -BuildExecutable -BuildCAccelerated
@@ -63,7 +67,6 @@ jobs:
 
       - name: Frozen self-test (C parser)
         id: c_parser_selftest
-        continue-on-error: true
         shell: pwsh
         run: |
           & .\dist\SerialUI\SerialUI.exe --selftest-c-parser
@@ -73,8 +76,7 @@ jobs:
 
       - name: Frozen self-test (numba)
         id: numba_selftest
-        if: ${{ matrix.arch != 'arm64' && steps.c_parser_selftest.outcome == 'success' }}
-        continue-on-error: true
+        if: ${{ matrix.arch != 'arm64' && steps.c_parser_selftest.conclusion == 'success' }}
         shell: pwsh
         run: |
           & .\dist\SerialUI\SerialUI.exe --selftest-numba
@@ -83,12 +85,14 @@ jobs:
           if ($exitCode -ne 0) { throw "Frozen numba self-test failed with exit code $exitCode" }
 
       - name: Crash diagnostics (Windows event logs)
-        if: ${{ always() && (steps.c_parser_selftest.outcome == 'failure' || (matrix.arch != 'arm64' && steps.numba_selftest.outcome == 'failure')) }}
+        if: ${{ always() && (steps.setup_python.conclusion == 'failure' || steps.build_executable.conclusion == 'failure' || steps.c_parser_selftest.conclusion == 'failure' || (matrix.arch != 'arm64' && steps.numba_selftest.conclusion == 'failure')) }}
         shell: pwsh
         run: |
           Write-Host "Step outcomes:"
-          Write-Host "  c_parser_selftest: ${{ steps.c_parser_selftest.outcome }}"
-          Write-Host "  numba_selftest:    ${{ steps.numba_selftest.outcome }}"
+          Write-Host "  setup_python:      ${{ steps.setup_python.conclusion }}"
+          Write-Host "  build_executable:  ${{ steps.build_executable.conclusion }}"
+          Write-Host "  c_parser_selftest: ${{ steps.c_parser_selftest.conclusion }}"
+          Write-Host "  numba_selftest:    ${{ steps.numba_selftest.conclusion }}"
 
           Write-Host "Collecting recent Application Error events for SerialUI.exe"
           $events = Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000; StartTime=(Get-Date).AddMinutes(-30)} -ErrorAction SilentlyContinue |
@@ -116,7 +120,7 @@ jobs:
             Select-Object FullName, Length
 
       - name: Upload build artifacts
-        if: always()
+        if: ${{ always() && steps.build_executable.conclusion == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: SerialUI-windows-${{ matrix.arch }}-${{ github.ref_name }}-${{ github.run_number }}
@@ -125,20 +129,3 @@ jobs:
           path: |
             dist/SerialUI-*.zip
             dist/SerialUI
-
-      - name: Enforce self-test results
-        if: always()
-        shell: pwsh
-        run: |
-          $failed = $false
-          if ('${{ steps.c_parser_selftest.outcome }}' -ne 'success') {
-            Write-Host "C parser self-test outcome: ${{ steps.c_parser_selftest.outcome }}"
-            $failed = $true
-          }
-          if ('${{ matrix.arch }}' -ne 'arm64' -and '${{ steps.numba_selftest.outcome }}' -ne 'success') {
-            Write-Host "Numba self-test outcome: ${{ steps.numba_selftest.outcome }}"
-            $failed = $true
-          }
-          if ($failed) {
-            throw "Frozen self-tests failed. See crash diagnostics above."
-          }

@@ -6,7 +6,8 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 SETUP_SH="${REPO_ROOT}/scripts/setup.sh"
 WORKFLOW_FILE="${REPO_ROOT}/.github/workflows/build-windows.yml"
-PYTHON_VERSION="${PYTHON_VERSION:-3.10}"
+WINDOWS_AMD64_PYTHON="${WINDOWS_AMD64_PYTHON:-3.10}"
+WINDOWS_ARM64_PYTHON="${WINDOWS_ARM64_PYTHON:-3.11}"
 WINDOWS_AMD64_RUNNER="${WINDOWS_AMD64_RUNNER:-windows-2022}"
 WINDOWS_ARM64_RUNNER="${WINDOWS_ARM64_RUNNER:-windows-11-arm}"
 INCLUDE_ARM64="${INCLUDE_ARM64:-1}"
@@ -19,8 +20,12 @@ Usage:
 Options:
   --workflow-file <path>         Workflow output path
                                  (default: .github/workflows/build-windows.yml)
-  --python-version <ver>         Python version for setup-python
-                                 (default: ${PYTHON_VERSION})
+  --python-version <ver>         Python version for both amd64 and arm64 runners
+                                 (default: amd64=${WINDOWS_AMD64_PYTHON}, arm64=${WINDOWS_ARM64_PYTHON})
+  --windows-amd64-python <ver>   Python version for amd64 runner
+                                 (default: ${WINDOWS_AMD64_PYTHON})
+  --windows-arm64-python <ver>   Python version for arm64 runner
+                                 (default: ${WINDOWS_ARM64_PYTHON})
   --windows-amd64-runner <name>  Runner label for amd64 build
                                  (default: ${WINDOWS_AMD64_RUNNER})
   --windows-arm64-runner <name>  Runner label for arm64 build
@@ -36,7 +41,9 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --workflow-file) WORKFLOW_FILE="$2"; shift 2 ;;
-    --python-version) PYTHON_VERSION="$2"; shift 2 ;;
+    --python-version) WINDOWS_AMD64_PYTHON="$2"; WINDOWS_ARM64_PYTHON="$2"; shift 2 ;;
+    --windows-amd64-python) WINDOWS_AMD64_PYTHON="$2"; shift 2 ;;
+    --windows-arm64-python) WINDOWS_ARM64_PYTHON="$2"; shift 2 ;;
     --windows-amd64-runner) WINDOWS_AMD64_RUNNER="$2"; shift 2 ;;
     --windows-arm64-runner) WINDOWS_ARM64_RUNNER="$2"; shift 2 ;;
     --no-arm64) INCLUDE_ARM64=0; shift ;;
@@ -76,11 +83,12 @@ PIP_INSTALL_LINE_ARM64="${PIP_INSTALL_LINE_ARM64% } wmi"
 MATRIX_INCLUDE=$(cat <<EOF
           - runner: ${WINDOWS_AMD64_RUNNER}
             arch: amd64
+            python_version: '${WINDOWS_AMD64_PYTHON}'
             pip_packages: "${PIP_INSTALL_LINE}"
 EOF
 )
 if [[ "${INCLUDE_ARM64}" == "1" ]]; then
-  MATRIX_INCLUDE+=$'\n'"          - runner: ${WINDOWS_ARM64_RUNNER}"$'\n'"            arch: arm64"$'\n'"            pip_packages: \"${PIP_INSTALL_LINE_ARM64}\""
+  MATRIX_INCLUDE+=$'\n'"          - runner: ${WINDOWS_ARM64_RUNNER}"$'\n'"            arch: arm64"$'\n'"            python_version: '${WINDOWS_ARM64_PYTHON}'"$'\n'"            pip_packages: \"${PIP_INSTALL_LINE_ARM64}\""
 fi
 
 mkdir -p "$(dirname "${WORKFLOW_FILE}")"
@@ -112,9 +120,10 @@ ${MATRIX_INCLUDE}
           fetch-depth: 0
 
       - name: Setup Python
+        id: setup_python
         uses: actions/setup-python@v5
         with:
-          python-version: '${PYTHON_VERSION}'
+          python-version: \${{ matrix.python_version }}
 
       - name: Show Python version
         shell: pwsh
@@ -129,6 +138,7 @@ ${MATRIX_INCLUDE}
           python -m pip install \${{ matrix.pip_packages }}
 
       - name: Build executable archive via release.ps1 (with C-accelerated line parser)
+        id: build_executable
         shell: pwsh
         run: |
           .\scripts\release.ps1 -PythonBin python -BuildExecutable -BuildCAccelerated
@@ -146,7 +156,6 @@ ${MATRIX_INCLUDE}
 
       - name: Frozen self-test (C parser)
         id: c_parser_selftest
-        continue-on-error: true
         shell: pwsh
         run: |
           & .\dist\SerialUI\SerialUI.exe --selftest-c-parser
@@ -156,8 +165,7 @@ ${MATRIX_INCLUDE}
 
       - name: Frozen self-test (numba)
         id: numba_selftest
-        if: \${{ matrix.arch != 'arm64' && steps.c_parser_selftest.outcome == 'success' }}
-        continue-on-error: true
+        if: \${{ matrix.arch != 'arm64' && steps.c_parser_selftest.conclusion == 'success' }}
         shell: pwsh
         run: |
           & .\dist\SerialUI\SerialUI.exe --selftest-numba
@@ -166,12 +174,14 @@ ${MATRIX_INCLUDE}
           if (\$exitCode -ne 0) { throw "Frozen numba self-test failed with exit code \$exitCode" }
 
       - name: Crash diagnostics (Windows event logs)
-        if: \${{ always() && (steps.c_parser_selftest.outcome == 'failure' || (matrix.arch != 'arm64' && steps.numba_selftest.outcome == 'failure')) }}
+        if: \${{ always() && (steps.setup_python.conclusion == 'failure' || steps.build_executable.conclusion == 'failure' || steps.c_parser_selftest.conclusion == 'failure' || (matrix.arch != 'arm64' && steps.numba_selftest.conclusion == 'failure')) }}
         shell: pwsh
         run: |
           Write-Host "Step outcomes:"
-          Write-Host "  c_parser_selftest: \${{ steps.c_parser_selftest.outcome }}"
-          Write-Host "  numba_selftest:    \${{ steps.numba_selftest.outcome }}"
+          Write-Host "  setup_python:      \${{ steps.setup_python.conclusion }}"
+          Write-Host "  build_executable:  \${{ steps.build_executable.conclusion }}"
+          Write-Host "  c_parser_selftest: \${{ steps.c_parser_selftest.conclusion }}"
+          Write-Host "  numba_selftest:    \${{ steps.numba_selftest.conclusion }}"
 
           Write-Host "Collecting recent Application Error events for SerialUI.exe"
           \$events = Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000; StartTime=(Get-Date).AddMinutes(-30)} -ErrorAction SilentlyContinue |
@@ -199,7 +209,7 @@ ${MATRIX_INCLUDE}
             Select-Object FullName, Length
 
       - name: Upload build artifacts
-        if: always()
+        if: \${{ always() && steps.build_executable.conclusion == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: SerialUI-windows-\${{ matrix.arch }}-\${{ github.ref_name }}-\${{ github.run_number }}
@@ -208,23 +218,6 @@ ${MATRIX_INCLUDE}
           path: |
             dist/SerialUI-*.zip
             dist/SerialUI
-
-      - name: Enforce self-test results
-        if: always()
-        shell: pwsh
-        run: |
-          \$failed = \$false
-          if ('\${{ steps.c_parser_selftest.outcome }}' -ne 'success') {
-            Write-Host "C parser self-test outcome: \${{ steps.c_parser_selftest.outcome }}"
-            \$failed = \$true
-          }
-          if ('\${{ matrix.arch }}' -ne 'arm64' -and '\${{ steps.numba_selftest.outcome }}' -ne 'success') {
-            Write-Host "Numba self-test outcome: \${{ steps.numba_selftest.outcome }}"
-            \$failed = \$true
-          }
-          if (\$failed) {
-            throw "Frozen self-tests failed. See crash diagnostics above."
-          }
 EOF
 
 echo "Created workflow: ${WORKFLOW_FILE}"
