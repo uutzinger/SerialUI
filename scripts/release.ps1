@@ -234,6 +234,7 @@ function Upload-ReleaseAssets {
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RootDir = Split-Path -Parent $ScriptDir
+$UpdateAnkerlScriptPs1 = Join-Path $ScriptDir "update_ankerl.ps1"
 $UpdateAnkerlScript = Join-Path $ScriptDir "update_ankerl.sh"
 Set-Location $RootDir
 
@@ -289,11 +290,18 @@ if ($Clean) {
 }
 
 if ($UpdateAnkerl) {
-    Require-File $UpdateAnkerlScript
-    if (-not (Get-Command bash -ErrorAction SilentlyContinue)) {
-        throw "bash was not found on PATH. Install Git Bash or run scripts/update_ankerl.sh from a bash shell."
+    if (Test-Path -Path $UpdateAnkerlScriptPs1 -PathType Leaf) {
+        & $UpdateAnkerlScriptPs1
     }
-    Run "bash" $UpdateAnkerlScript
+    elseif (Test-Path -Path $UpdateAnkerlScript -PathType Leaf) {
+        if (-not (Get-Command bash -ErrorAction SilentlyContinue)) {
+            throw "Neither scripts/update_ankerl.ps1 nor bash is available. Install Git Bash or add scripts/update_ankerl.ps1."
+        }
+        Run "bash" $UpdateAnkerlScript
+    }
+    else {
+        throw "No update script found (expected scripts/update_ankerl.ps1 or scripts/update_ankerl.sh)."
+    }
 }
 
 $updateOnlyMode = (
