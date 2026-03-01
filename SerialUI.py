@@ -23,6 +23,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 # ==============================================================================
 # pyinstaller resource path handling
+# crash logging and reporting for executable
 # ==============================================================================
 import sys
 import os
