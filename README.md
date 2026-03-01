@@ -192,7 +192,7 @@ Linux examples (`scripts/release.sh`):
 
 - Show options: `./scripts/release.sh --help`
 - Update ankerl for C-accelerated parser extension: `./scripts/release.sh --update-ankerl`
-- Build C- ccelerated parser extension before packaging: `./scripts/release.sh --build-c-accelerated`
+- Build C++ accelerated parser extension before packaging: `./scripts/release.sh --build-c-accelerated`
 - Build standalone executable (also creates `dist/SerialUI-*.zip`): `./scripts/release.sh --build-executable`
 - Build, commit, tag, and push: `./scripts/release.sh --build-executable --build-c-accelerated --commit --tag --push`
 - Create GitHub release for an existing version tag without rebuilding: `./scripts/release.sh --release`
