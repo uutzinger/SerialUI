@@ -144,8 +144,13 @@ Usage:
 Options:
   --build-executable       Build executable/package via scripts/build_executable.sh.
                            Alias: --build-c-executable, -build-executable
-  --build-c-accelerated    Build C-accelerated helpers parser extension in-place.
+  --build-c-accelerated    Build C-accelerated helpers parser extension in-place,
+                           build wheel, and install line_parsers into active env.
                            Alias: -build-c-accelerated
+  --update-ankerl          Update ankerl headers used by helpers/line_parsers
+                           (unordered_dense.h and companion headers such as stl.h)
+                           from helpers/line_parsers/ankerl submodule.
+                           This does not trigger any build.
   --commit-msg "message"   Commit message (default: "release: <version>").
                            Alias: -commit-msg "message"
   --commit                 Stage + commit build/release files.
@@ -177,6 +182,7 @@ EOF
 COMMIT_MSG=""
 DO_BUILD_EXECUTABLE=0
 DO_BUILD_C_ACCELERATED=0
+DO_UPDATE_ANKERL=0
 DO_COMMIT=0
 DO_TAG=0
 DO_PUSH=0
@@ -192,6 +198,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --build-executable|--build-c-executable|-build-executable|-BuildExecutable|-BuildCExecutable) DO_BUILD_EXECUTABLE=1; USER_SET_BUILD_EXECUTABLE=1; shift ;;
     --build-c-accelerated|-build-c-accelerated|-BuildCAccelerated) DO_BUILD_C_ACCELERATED=1; shift ;;
+    --update-ankerl|-update-ankerl|-UpdateAnkerl) DO_UPDATE_ANKERL=1; shift ;;
     --commit-msg|-commit-msg|-CommitMsg) COMMIT_MSG="${2:-}"; shift 2 ;;
     --commit|-commit|-Commit) DO_COMMIT=1; shift ;;
     --tag|-tag|-Tag) DO_TAG=1; USER_SET_TAG=1; shift ;;
@@ -241,8 +248,22 @@ if [[ "${DO_CLEAN}" -eq 1 ]]; then
   rm -rf helpers/build helpers/dist helpers/*.egg-info helpers/.eggs
 fi
 
+if [[ "${DO_UPDATE_ANKERL}" -eq 1 ]]; then
+  require_file "scripts/update_ankerl.sh"
+  "${SCRIPT_DIR}/update_ankerl.sh"
+fi
+
 DO_BUILD_HELPERS=1
 if [[ "${DO_BUILD_EXECUTABLE}" -eq 1 ]]; then
+  DO_BUILD_HELPERS=0
+elif [[ "${DO_UPDATE_ANKERL}" -eq 1 \
+     && "${DO_BUILD_C_ACCELERATED}" -eq 0 \
+     && "${DO_RELEASE}" -eq 0 \
+     && "${DO_UPLOAD_ASSETS}" -eq 0 \
+     && "${DO_COMMIT}" -eq 0 \
+     && "${DO_TAG}" -eq 0 \
+     && "${DO_PUSH}" -eq 0 ]]; then
+  # Update-only mode: sync header and exit without building helpers/wheels.
   DO_BUILD_HELPERS=0
 elif [[ "${DO_RELEASE}" -eq 1 && "${RELEASE_ONLY_MODE}" -eq 1 && "${DO_BUILD_C_ACCELERATED}" -eq 0 ]]; then
   DO_BUILD_HELPERS=0
@@ -284,6 +305,11 @@ elif [[ "${DO_BUILD_HELPERS}" -eq 1 || "${DO_BUILD_C_ACCELERATED}" -eq 1 ]]; the
   fi
   WHEEL_PATH="$(ls -t dist/*.whl | head -n1)"
   echo "Built wheel: helpers/${WHEEL_PATH}"
+
+  if [[ "${DO_BUILD_C_ACCELERATED}" -eq 1 ]]; then
+    "${PYTHON_BIN}" -m pip install --force-reinstall --no-deps "${WHEEL_PATH}"
+    echo "Installed wheel into active environment: helpers/${WHEEL_PATH}"
+  fi
 
   popd >/dev/null
 fi

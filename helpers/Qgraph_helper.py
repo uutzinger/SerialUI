@@ -40,12 +40,14 @@ from math import pi, floor, ceil, isfinite, floor, log10, isclose
 from typing import Optional
 import numpy as np
 # Accelerator
+NUMBA_IMPORT_ERROR = ""
 try:
     from numba import njit
     hasNUMBA = True
-except Exception:
+except Exception as exc:
     njit = None
     hasNUMBA = False
+    NUMBA_IMPORT_ERROR = f"{exc.__class__.__name__}: {exc}"
 # Provide a no‑op decorator if numba not available (so @njit(...) won’t crash)
 if njit is None:
     def njit(*_args, **_kwargs):
@@ -121,7 +123,14 @@ else:
 # ----------------------------------------
 #  - python implementation, slow and legacy
 #  - c implementation, fast, requires user to run setup.py to compile the code once
+def _exc_text(exc: Exception | None) -> str:
+    if exc is None:
+        return "unknown error"
+    return f"{exc.__class__.__name__}: {exc}"
+
 hasFastParser = False
+PARSER_BACKEND = "python"
+PARSER_STATUS_DETAIL = ""
 if USE_PARSERACCEL:
     # Safety guard: on frozen Windows builds, native parser modules can fail
     # at load time with non-Python access violations. Default to Python parser
@@ -129,24 +138,38 @@ if USE_PARSERACCEL:
     allow_c_parser = True
     if getattr(sys, "frozen", False) and sys.platform.startswith("win"):
         allow_c_parser = (os.environ.get("SERIALUI_FORCE_C_PARSER", "0") == "1")
+        if not allow_c_parser:
+            PARSER_STATUS_DETAIL = "disabled on frozen Windows (set SERIALUI_FORCE_C_PARSER=1 to force C parser)"
 
     if allow_c_parser:
         try:
             from line_parsers import simple_parser
             from line_parsers import header_parser
             hasFastParser = True
-        except Exception:
+            PARSER_BACKEND = "line_parsers"
+        except Exception as exc_primary:
             try:
                 # Source-tree fallback: use local compiled extensions in helpers/line_parsers
                 from helpers.line_parsers import simple_parser
                 from helpers.line_parsers import header_parser
                 hasFastParser = True
-            except Exception:
+                PARSER_BACKEND = "helpers.line_parsers"
+            except Exception as exc_fallback:
                 hasFastParser = False
+                PARSER_STATUS_DETAIL = (
+                    f"import failed for line_parsers ({_exc_text(exc_primary)}); "
+                    f"fallback helpers.line_parsers failed ({_exc_text(exc_fallback)})"
+                )
+else:
+    PARSER_STATUS_DETAIL = "disabled by config (USE_PARSERACCEL=False)"
 
 useFastParser = hasFastParser and USE_PARSERACCEL
 #
-from helpers.Circular_Buffer import CircularBuffer
+from helpers.Circular_Buffer import (
+    CircularBuffer,
+    hasNUMBA as hasNUMBA_CBUFFER,
+    NUMBA_IMPORT_ERROR as NUMBA_IMPORT_ERROR_CBUFFER,
+)
 #
 from helpers.General_helper import (clip_value, rotate, color_to_rgba, rgbafloat_to_rgbaint,
                                     select_file, confirm_overwrite_append, is_widget_gl_free,
@@ -376,11 +399,76 @@ class QChart(QObject):
         self.tickGate_timer.timeout.connect(lambda: setattr(self, "tickGate", True))
 
         self.warning = True                                                    # flag to only warn once about binary data with separator
+        self._accel_status_reported = False
+
+        # Report startup capability state immediately. Route to parent log handler
+        # when available; otherwise fall back to local console logger.
+        self.report_acceleration_status()
         
         self.logger.log(
             logging.INFO, 
             f"[{self.instance_name[:15]:<15}]: QChart initialized."
         )
+
+    def _acceleration_status_messages(self):
+        """Build one-time capability status messages for parser and numba paths."""
+        messages = []
+
+        if useFastParser:
+            messages.append((
+                logging.INFO,
+                f"[{self.instance_name[:15]:<15}]: C parser enabled ({PARSER_BACKEND}).",
+            ))
+        else:
+            level = logging.WARNING if USE_PARSERACCEL else logging.INFO
+            detail = PARSER_STATUS_DETAIL or "C parser not available"
+            messages.append((
+                level,
+                f"[{self.instance_name[:15]:<15}]: C parser unavailable, using Python parser. {detail}",
+            ))
+
+        if hasNUMBA and hasNUMBA_CBUFFER:
+            messages.append((
+                logging.INFO,
+                f"[{self.instance_name[:15]:<15}]: Numba acceleration enabled.",
+            ))
+        else:
+            reasons = []
+            if not hasNUMBA:
+                reasons.append(f"Qgraph njit missing ({NUMBA_IMPORT_ERROR or 'unknown error'})")
+            if not hasNUMBA_CBUFFER:
+                reasons.append(f"Circular buffer jitclass missing ({NUMBA_IMPORT_ERROR_CBUFFER or 'unknown error'})")
+            detail = "; ".join(reasons) if reasons else "partial numba acceleration only"
+            messages.append((
+                logging.WARNING,
+                f"[{self.instance_name[:15]:<15}]: Numba acceleration disabled/fallback active. {detail}",
+            ))
+
+        return messages
+
+    def report_acceleration_status(self, force_console: bool = False) -> None:
+        """
+        Report parser/numba capability state.
+        If a parent with `handle_log` exists, use it so messages appear in the UI log.
+        Otherwise use the local console logger.
+        """
+        if self._accel_status_reported:
+            return
+
+        parent_logger = None
+        if not force_console:
+            parent_obj = self.parent()
+            if parent_obj is not None and hasattr(parent_obj, "handle_log"):
+                parent_logger = parent_obj.handle_log
+
+        for level, msg in self._acceleration_status_messages():
+            if parent_logger is not None:
+                parent_logger(level, msg)
+            elif not force_console:
+                self.logSignal.emit(level, msg)
+            else:
+                self.logger.log(level, msg)
+        self._accel_status_reported = True
 
     @pyqtSlot()
     def pg_figure_init(self):

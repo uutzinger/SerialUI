@@ -2,6 +2,7 @@ param(
     [string]$PythonBin = "python",
     [switch]$BuildExecutable,
     [switch]$BuildCAccelerated,
+    [switch]$UpdateAnkerl,
     [string]$BuildPythonPath = "",
     [string]$CommitMsg = "",
     [switch]$Commit,
@@ -68,7 +69,12 @@ Options:
   -PythonBin <python>          Python interpreter (default: python)
   -BuildExecutable             Build standalone app via scripts/build_executable.ps1
                                Also creates dist\SerialUI-<version>-windows-<arch>.zip
-  -BuildCAccelerated           Build C-accelerated helpers (default: off)
+  -BuildCAccelerated           Build C-accelerated helpers, build wheel,
+                               and install line_parsers into active env
+  -UpdateAnkerl                Update ankerl headers used by helpers\line_parsers
+                               (unordered_dense.h and companion headers such as stl.h)
+                               from helpers\line_parsers\ankerl submodule
+                               This does not trigger any build
   -BuildPythonPath <path>      Custom PYTHONPATH for executable build
   -CommitMsg <message>         Commit message (default: "release: <version>")
   -Commit                      Stage and commit changes
@@ -227,6 +233,7 @@ function Upload-ReleaseAssets {
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RootDir = Split-Path -Parent $ScriptDir
+$UpdateAnkerlScript = Join-Path $ScriptDir "update_ankerl.sh"
 Set-Location $RootDir
 
 if ($Help) {
@@ -280,8 +287,28 @@ if ($Clean) {
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $cleanPaths
 }
 
+if ($UpdateAnkerl) {
+    Require-File $UpdateAnkerlScript
+    if (-not (Get-Command bash -ErrorAction SilentlyContinue)) {
+        throw "bash was not found on PATH. Install Git Bash or run scripts/update_ankerl.sh from a bash shell."
+    }
+    Run "bash" $UpdateAnkerlScript
+}
+
 $doBuildHelpers = $true
 if ($BuildExecutable) {
+    $doBuildHelpers = $false
+}
+elseif (
+    $UpdateAnkerl -and
+    (-not $BuildCAccelerated.IsPresent) -and
+    (-not $Release) -and
+    (-not $UploadAssets) -and
+    (-not $Commit) -and
+    (-not $Tag) -and
+    (-not $Push)
+) {
+    # Update-only mode: sync header and exit without building helpers/wheels.
     $doBuildHelpers = $false
 }
 elseif ($UploadAssets -and (-not $BuildCAccelerated.IsPresent) -and (-not $Release)) {
@@ -294,7 +321,10 @@ elseif ($Release -and $releaseOnlyMode -and (-not $BuildCAccelerated.IsPresent))
 if ($BuildExecutable) {
     $buildScript = Join-Path $ScriptDir "build_executable.ps1"
     Require-File $buildScript
-    & $buildScript -PythonBin $PythonBin -BuildCAccelerated:$($BuildCAccelerated.IsPresent) -BuildPythonPath $BuildPythonPath
+    & $buildScript `
+        -PythonBin $PythonBin `
+        -BuildCAccelerated:$($BuildCAccelerated.IsPresent) `
+        -BuildPythonPath $BuildPythonPath
     if ($LASTEXITCODE -ne 0) {
         throw "build_executable.ps1 failed with exit code $LASTEXITCODE"
     }
@@ -346,6 +376,11 @@ elseif ($doBuildHelpers -or $BuildCAccelerated) {
             throw "Build completed but no wheel found in helpers/dist/."
         }
         Write-Host "Built wheel: helpers\dist\$($wheel.Name)"
+
+        if ($BuildCAccelerated) {
+            Run $PythonBin "-m" "pip" "install" "--force-reinstall" "--no-deps" $wheel.FullName
+            Write-Host "Installed wheel into active environment: $($wheel.FullName)"
+        }
     }
     finally {
         Pop-Location

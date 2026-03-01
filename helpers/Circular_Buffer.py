@@ -31,14 +31,16 @@
 ############################################################################################################################################
 #
 import numpy as np
+NUMBA_IMPORT_ERROR = ""
 try:
     from numba import float64, int64
     from numba.experimental import jitclass
     hasNUMBA = True
-except Exception:
+except Exception as exc:
     float64 = int64 = None
     jitclass = None
     hasNUMBA = False
+    NUMBA_IMPORT_ERROR = f"{exc.__class__.__name__}: {exc}"
     
 ############################################################################################################################################
 # CircularBuffer class
