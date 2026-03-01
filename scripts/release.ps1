@@ -295,20 +295,25 @@ if ($UpdateAnkerl) {
     Run "bash" $UpdateAnkerlScript
 }
 
-$doBuildHelpers = $true
-if ($BuildExecutable) {
-    $doBuildHelpers = $false
-}
-elseif (
+$updateOnlyMode = (
     $UpdateAnkerl -and
+    (-not $BuildExecutable) -and
     (-not $BuildCAccelerated.IsPresent) -and
     (-not $Release) -and
     (-not $UploadAssets) -and
     (-not $Commit) -and
     (-not $Tag) -and
     (-not $Push)
-) {
-    # Update-only mode: sync header and exit without building helpers/wheels.
+)
+
+if ($updateOnlyMode) {
+    Write-Host "Update-only mode: skipped helper/executable build steps."
+    Write-Host "Release script completed."
+    exit 0
+}
+
+$doBuildHelpers = $true
+if ($BuildExecutable) {
     $doBuildHelpers = $false
 }
 elseif ($UploadAssets -and (-not $BuildCAccelerated.IsPresent) -and (-not $Release)) {

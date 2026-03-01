@@ -253,17 +253,26 @@ if [[ "${DO_UPDATE_ANKERL}" -eq 1 ]]; then
   "${SCRIPT_DIR}/update_ankerl.sh"
 fi
 
+UPDATE_ONLY_MODE=0
+if [[ "${DO_UPDATE_ANKERL}" -eq 1 \
+   && "${DO_BUILD_EXECUTABLE}" -eq 0 \
+   && "${DO_BUILD_C_ACCELERATED}" -eq 0 \
+   && "${DO_RELEASE}" -eq 0 \
+   && "${DO_UPLOAD_ASSETS}" -eq 0 \
+   && "${DO_COMMIT}" -eq 0 \
+   && "${DO_TAG}" -eq 0 \
+   && "${DO_PUSH}" -eq 0 ]]; then
+  UPDATE_ONLY_MODE=1
+fi
+
+if [[ "${UPDATE_ONLY_MODE}" -eq 1 ]]; then
+  echo "Update-only mode: skipped helper/executable build steps."
+  echo "Release script completed."
+  exit 0
+fi
+
 DO_BUILD_HELPERS=1
 if [[ "${DO_BUILD_EXECUTABLE}" -eq 1 ]]; then
-  DO_BUILD_HELPERS=0
-elif [[ "${DO_UPDATE_ANKERL}" -eq 1 \
-     && "${DO_BUILD_C_ACCELERATED}" -eq 0 \
-     && "${DO_RELEASE}" -eq 0 \
-     && "${DO_UPLOAD_ASSETS}" -eq 0 \
-     && "${DO_COMMIT}" -eq 0 \
-     && "${DO_TAG}" -eq 0 \
-     && "${DO_PUSH}" -eq 0 ]]; then
-  # Update-only mode: sync header and exit without building helpers/wheels.
   DO_BUILD_HELPERS=0
 elif [[ "${DO_RELEASE}" -eq 1 && "${RELEASE_ONLY_MODE}" -eq 1 && "${DO_BUILD_C_ACCELERATED}" -eq 0 ]]; then
   DO_BUILD_HELPERS=0
