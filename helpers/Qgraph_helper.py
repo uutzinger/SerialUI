@@ -34,6 +34,7 @@ import time
 import re
 import textwrap
 import sys
+import os
 import importlib
 from math import pi, floor, ceil, isfinite, floor, log10, isclose
 from typing import Optional
@@ -120,18 +121,29 @@ else:
 # ----------------------------------------
 #  - python implementation, slow and legacy
 #  - c implementation, fast, requires user to run setup.py to compile the code once
-try:
-    from line_parsers import simple_parser
-    from line_parsers import header_parser
-    hasFastParser = True
-except Exception:
-    try:
-        # Source-tree fallback: use local compiled extensions in helpers/line_parsers
-        from helpers.line_parsers import simple_parser
-        from helpers.line_parsers import header_parser
-        hasFastParser = True
-    except Exception:
-        hasFastParser = False
+hasFastParser = False
+if USE_PARSERACCEL:
+    # Safety guard: on frozen Windows builds, native parser modules can fail
+    # at load time with non-Python access violations. Default to Python parser
+    # unless explicitly overridden for diagnostics.
+    allow_c_parser = True
+    if getattr(sys, "frozen", False) and sys.platform.startswith("win"):
+        allow_c_parser = (os.environ.get("SERIALUI_FORCE_C_PARSER", "0") == "1")
+
+    if allow_c_parser:
+        try:
+            from line_parsers import simple_parser
+            from line_parsers import header_parser
+            hasFastParser = True
+        except Exception:
+            try:
+                # Source-tree fallback: use local compiled extensions in helpers/line_parsers
+                from helpers.line_parsers import simple_parser
+                from helpers.line_parsers import header_parser
+                hasFastParser = True
+            except Exception:
+                hasFastParser = False
+
 useFastParser = hasFastParser and USE_PARSERACCEL
 #
 from helpers.Circular_Buffer import CircularBuffer
