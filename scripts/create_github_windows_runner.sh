@@ -143,15 +143,19 @@ ${MATRIX_INCLUDE}
         run: |
           .\scripts\release.ps1 -PythonBin python -BuildExecutable -BuildCAccelerated
 
-      - name: Remove bundled Qt MSVCP140.dll (defensive)
+      - name: Remove bundled MSVCP140.dll files (defensive)
         shell: pwsh
         run: |
-          \$qtMsvcp = ".\dist\SerialUI\_internal\PyQt6\Qt6\bin\MSVCP140.dll"
-          if (Test-Path -Path \$qtMsvcp -PathType Leaf) {
-            Remove-Item -Force \$qtMsvcp
-            Write-Host "Removed bundled Qt runtime: \$qtMsvcp"
+          \$internalDir = ".\dist\SerialUI\_internal"
+          \$dlls = Get-ChildItem -Path \$internalDir -Recurse -Filter MSVCP140.dll -ErrorAction SilentlyContinue
+          if (\$dlls) {
+            \$dlls | ForEach-Object {
+              Remove-Item -Force \$_.FullName
+              Write-Host "Removed bundled runtime file:"
+              Write-Host \$_.FullName
+            }
           } else {
-            Write-Host "Qt MSVCP140.dll not present in bundle."
+            Write-Host "No bundled MSVCP140.dll files found under \$internalDir"
           }
 
       - name: Frozen self-test (C parser)
@@ -199,7 +203,7 @@ ${MATRIX_INCLUDE}
             Select-Object -First 10 TimeCreated, Id, ProviderName, Message |
             Format-List
 
-          Write-Host "Checking for bundled Qt MSVCP140.dll"
+          Write-Host "Checking for remaining bundled MSVCP140.dll files"
           Get-ChildItem .\dist\SerialUI\_internal -Recurse -Filter MSVCP140.dll -ErrorAction SilentlyContinue |
             Select-Object FullName, Length
 

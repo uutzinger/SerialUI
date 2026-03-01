@@ -196,17 +196,19 @@ finally {
 }
 
 # Defensive Windows runtime fix:
-# Some PyQt6 bundles include a private MSVCP140.dll that can crash process startup
-# (0xC0000005) on certain systems. Prefer system CRT by removing this private copy
-# if it is present in the collected app.
-$qtMsvcpCandidates = @(
-    (Join-Path $RootDir "dist\SerialUI\_internal\PyQt6\Qt6\bin\MSVCP140.dll"),
-    (Join-Path $RootDir "dist\SerialUI\PyQt6\Qt6\bin\MSVCP140.dll")
-)
-foreach ($dllPath in $qtMsvcpCandidates) {
-    if (Test-Path -Path $dllPath -PathType Leaf) {
-        Log "Removing bundled Qt runtime: $dllPath"
-        Remove-Item -Force $dllPath
+# Bundled MSVCP140.dll copies from Qt/winrt/other dependencies can cause startup
+# or extension-import instability. Prefer system CRT by removing bundled copies.
+$internalDir = Join-Path $RootDir "dist\SerialUI\_internal"
+if (Test-Path -Path $internalDir -PathType Container) {
+    $msvcpDlls = Get-ChildItem -Path $internalDir -Recurse -Filter "MSVCP140.dll" -ErrorAction SilentlyContinue
+    if ($msvcpDlls) {
+        foreach ($dll in $msvcpDlls) {
+            Log "Removing bundled runtime: $($dll.FullName)"
+            Remove-Item -Force $dll.FullName
+        }
+    }
+    else {
+        Log "No bundled MSVCP140.dll found under $internalDir"
     }
 }
 

@@ -103,14 +103,14 @@ a = Analysis(
     noarchive=False,
 )
 
-# Work around a Windows runtime conflict: a bundled Qt MSVCP140.dll can crash
-# early process startup in some environments (0xC0000005). Keep system/runtime
-# resolution for this DLL instead of shipping Qt's private copy.
+# Work around Windows runtime conflicts: bundled MSVCP140.dll copies from various
+# packages (Qt/winrt/etc.) can cause startup/import instability in frozen builds.
+# Prefer the system CRT by excluding bundled MSVCP140.dll entries.
 if os.name == "nt":
     def _keep_binary(entry):
         for field in entry[:2]:
             norm = str(field).replace("\\", "/").lower()
-            if norm.endswith("msvcp140.dll") and "/pyqt6/qt6/bin/" in norm:
+            if norm.endswith("/msvcp140.dll") or norm.endswith("msvcp140.dll"):
                 return False
         return True
 
