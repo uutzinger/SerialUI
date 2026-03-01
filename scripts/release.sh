@@ -162,6 +162,9 @@ Options:
   --release, -release      Create GitHub release and upload compressed assets from dist/ (*.zip, *.tar.gz).
                            If tag "<version>" is missing: implies --build-executable, --tag, --push.
                            If tag "<version>" exists: release-only mode (no rebuild/tag/push).
+  --create-release         Create GitHub release for existing pushed tag "<version>" only.
+                           Never builds, tags, or pushes; therefore does not trigger tag-push workflows.
+                           Alias: --createrelease, -create-release, -createrelease
   --upload-assets          Upload additional dist/*.tar.gz and dist/*.zip to existing GitHub release.
                            Alias: -upload-assets
   --clean                  Remove build artifacts before build.
@@ -187,6 +190,7 @@ DO_COMMIT=0
 DO_TAG=0
 DO_PUSH=0
 DO_RELEASE=0
+DO_CREATE_RELEASE=0
 DO_UPLOAD_ASSETS=0
 DO_CLEAN=0
 USER_SET_BUILD_EXECUTABLE=0
@@ -204,6 +208,7 @@ while [[ $# -gt 0 ]]; do
     --tag|-tag|-Tag) DO_TAG=1; USER_SET_TAG=1; shift ;;
     --push|-push|-Push) DO_PUSH=1; USER_SET_PUSH=1; shift ;;
     --release|-release|-Release) DO_RELEASE=1; shift ;;
+    --create-release|--createrelease|-create-release|-createrelease|-CreateRelease) DO_CREATE_RELEASE=1; shift ;;
     --upload-assets|-upload-assets|-UploadAssets) DO_UPLOAD_ASSETS=1; shift ;;
     --clean|-clean|-Clean) DO_CLEAN=1; shift ;;
     -h|--help|-help|-Help) usage; exit 0 ;;
@@ -240,6 +245,31 @@ if [[ "${DO_RELEASE}" -eq 1 ]]; then
     if [[ "${USER_SET_PUSH}" -eq 0 ]]; then
       DO_PUSH=1
     fi
+  fi
+fi
+
+if [[ "${DO_CREATE_RELEASE}" -eq 1 ]]; then
+  DO_RELEASE=1
+  RELEASE_ONLY_MODE=1
+  DO_BUILD_EXECUTABLE=0
+  DO_TAG=0
+  DO_PUSH=0
+
+  if ! git rev-parse -q --verify "refs/tags/${PACKAGE_VERSION}" >/dev/null 2>&1; then
+    echo "Error: --create-release requires existing local tag ${PACKAGE_VERSION}." >&2
+    echo "Run: git tag ${PACKAGE_VERSION} && git push origin refs/tags/${PACKAGE_VERSION}" >&2
+    exit 2
+  fi
+
+  CURRENT_BRANCH="$(git branch --show-current)"
+  CHECK_REMOTE="$(git config --get "branch.${CURRENT_BRANCH}.remote" || true)"
+  if [[ -z "${CHECK_REMOTE}" ]]; then
+    CHECK_REMOTE="origin"
+  fi
+  if ! git ls-remote --exit-code --tags "${CHECK_REMOTE}" "refs/tags/${PACKAGE_VERSION}" >/dev/null 2>&1; then
+    echo "Error: --create-release requires tag ${PACKAGE_VERSION} to be pushed to ${CHECK_REMOTE}." >&2
+    echo "Run: git push ${CHECK_REMOTE} refs/tags/${PACKAGE_VERSION}" >&2
+    exit 2
   fi
 fi
 

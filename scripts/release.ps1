@@ -10,6 +10,7 @@ param(
     [switch]$Tag,
     [switch]$Push,
     [switch]$Release,
+    [switch]$CreateRelease,
     [switch]$UploadAssets,
     [switch]$Clean,
     [Alias("h")]
@@ -84,6 +85,9 @@ Options:
   -Release                     Create GitHub release for tag "<version>" and upload compressed assets from dist\ (*.zip, *.tar.gz)
                                If tag is missing, implies build executable + tag + push
                                If tag exists, runs release-only mode unless overridden
+  -CreateRelease               Create GitHub release for existing pushed tag "<version>" only
+                               Never builds, tags, or pushes
+                               Alias in bash: --create-release / --createrelease
   -UploadAssets                Upload additional dist\*.zip and dist\*.tar.gz to existing release
   -Clean                       Remove build artifacts before build
   -Help, -h                    Show this help
@@ -146,6 +150,15 @@ function Validate-Version {
 function Test-LocalTag {
     param([string]$Tag)
     & git rev-parse -q --verify "refs/tags/$Tag" *> $null
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Test-RemoteTag {
+    param(
+        [string]$Tag,
+        [string]$Remote = "origin"
+    )
+    & git ls-remote --exit-code --tags $Remote "refs/tags/$Tag" *> $null
     return ($LASTEXITCODE -eq 0)
 }
 
@@ -271,6 +284,31 @@ if ($Release) {
         if (-not $userSetBuildExecutable) { $BuildExecutable = $true }
         if (-not $userSetTag) { $Tag = $true }
         if (-not $userSetPush) { $Push = $true }
+    }
+}
+
+if ($CreateRelease) {
+    $Release = $true
+    $releaseOnlyMode = $true
+    $BuildExecutable = $false
+    $Tag = $false
+    $Push = $false
+
+    if (-not (Test-LocalTag -Tag $version)) {
+        throw "-CreateRelease requires existing local tag $version. Run: git tag $version ; git push origin refs/tags/$version"
+    }
+
+    $currentBranchForRemote = (& git "branch" "--show-current").Trim()
+    $remoteForCreateRelease = (& git "config" "--get" "branch.$currentBranchForRemote.remote" 2>$null)
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($remoteForCreateRelease)) {
+        $remoteForCreateRelease = "origin"
+    }
+    else {
+        $remoteForCreateRelease = $remoteForCreateRelease.Trim()
+    }
+
+    if (-not (Test-RemoteTag -Tag $version -Remote $remoteForCreateRelease)) {
+        throw "-CreateRelease requires tag $version to be pushed to $remoteForCreateRelease. Run: git push $remoteForCreateRelease refs/tags/$version"
     }
 }
 
