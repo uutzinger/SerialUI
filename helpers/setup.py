@@ -4,6 +4,7 @@
 #   - `pip install -e .`
 
 from setuptools import setup, Extension, find_packages
+from setuptools.command.build_ext import build_ext
 import pybind11
 import numpy
 import sys
@@ -19,6 +20,34 @@ os.chdir(this_dir)
 is_windows = sys.platform.startswith('win')
 is_macos = sys.platform == "darwin"
 is_unix = not is_windows  # Linux or macOS
+
+
+class SafeBuildExt(build_ext):
+    """
+    Build extensions with conservative flags for distributable binaries.
+    On Windows/MSVC, strip LTCG-related flags that can make extension loading
+    fragile across target machines when frozen with PyInstaller.
+    """
+    def build_extensions(self):
+        if is_windows:
+            # Strip optimization/link-time flags injected by default MSVC toolchain.
+            for attr in ("compile_options", "compile_options_debug"):
+                opts = getattr(self.compiler, attr, None)
+                if isinstance(opts, list):
+                    setattr(self.compiler, attr, [o for o in opts if o.upper() != "/GL"])
+
+            for attr in ("ldflags_shared", "ldflags_shared_debug"):
+                opts = getattr(self.compiler, attr, None)
+                if isinstance(opts, list):
+                    setattr(self.compiler, attr, [o for o in opts if o.upper() != "/LTCG"])
+
+            for ext in self.extensions:
+                if getattr(ext, "extra_compile_args", None):
+                    ext.extra_compile_args = [o for o in ext.extra_compile_args if o.upper() != "/GL"]
+                if getattr(ext, "extra_link_args", None):
+                    ext.extra_link_args = [o for o in ext.extra_link_args if o.upper() != "/LTCG"]
+
+        super().build_extensions()
 
 if is_windows:
     # ---------------- WINDOWS / MSVC FLAGS ----------------
@@ -192,5 +221,6 @@ setup(
     version='1.6',
     packages=find_packages(),                                                  # finds line_parsers
     ext_modules=[simple_ext, header_ext],
+    cmdclass={"build_ext": SafeBuildExt},
     install_requires=['pybind11>=2.6.0','numpy'],
 )

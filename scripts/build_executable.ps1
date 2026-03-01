@@ -113,6 +113,16 @@ try {
         $env:PYTHONWARNINGS = if ([string]::IsNullOrWhiteSpace($oldWarnings)) { "ignore::FutureWarning" } else { $oldWarnings }
         try {
             Run $PythonBin "setup.py" "build_ext" "--inplace" "-v"
+            Log "Running C-parser self-test"
+            $selfTest = @"
+import importlib
+mods = ['line_parsers.simple_parser', 'line_parsers.header_parser']
+for name in mods:
+    m = importlib.import_module(name)
+    print(f'Imported {name} from {getattr(m, "__file__", "<unknown>")}')
+print('C parser self-test passed')
+"@
+            Run $PythonBin "-c" $selfTest
         }
         finally {
             if ($null -eq $oldWarnings) {

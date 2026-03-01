@@ -117,6 +117,21 @@ run rm -rf build dist ./*.egg-info .eggs
 if [[ "${BUILD_C_ACCEL}" == "1" ]]; then
     log "Building C-accelerated parsers"
     run env PYTHONWARNINGS="${PYTHONWARNINGS:-ignore::FutureWarning}" "${PYTHON_BIN}" setup.py build_ext --inplace -v
+    log "Running C-parser self-test"
+    run env PYTHONNOUSERSITE=1 "${PYTHON_BIN}" - <<'PY'
+import importlib
+import sys
+
+mods = [
+    "line_parsers.simple_parser",
+    "line_parsers.header_parser",
+]
+for name in mods:
+    m = importlib.import_module(name)
+    path = getattr(m, "__file__", "<unknown>")
+    print(f"Imported {name} from {path}")
+print("C parser self-test passed")
+PY
 else
     log "Skipping in-place C-accelerated parser build (BUILD_C_ACCEL=${BUILD_C_ACCEL})"
 fi
