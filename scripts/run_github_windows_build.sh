@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-WORKFLOW_FILE="${WORKFLOW_FILE:-build-windows.yml}"
+WORKFLOW_FILE="${WORKFLOW_FILE:-.github/workflows/build-windows.yml}"
 REF="${REF:-$(git rev-parse --abbrev-ref HEAD)}"
 DOWNLOAD_DIR="${DOWNLOAD_DIR:-artifacts/windows-runner}"
 COPY_TO_DIST="${COPY_TO_DIST:-1}"
@@ -13,7 +13,8 @@ Usage:
 
 Options:
   --ref <git-ref>            Branch/tag ref to run on (default: current branch)
-  --workflow <file-or-name>  Workflow id/name (default: build-windows.yml)
+  --workflow <file-or-name>  Workflow path/id/name
+                             (default: .github/workflows/build-windows.yml)
   --download-dir <dir>       Local directory for downloaded artifacts
                              (default: artifacts/windows-runner)
   --no-copy-dist             Do not copy SerialUI-*.zip into local dist/
@@ -85,7 +86,16 @@ fi
 START_ISO="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 
 echo "Triggering workflow '${WORKFLOW_FILE}' on ref '${REF}'..."
-gh workflow run "${WORKFLOW_FILE}" --ref "${REF}"
+if ! gh workflow run "${WORKFLOW_FILE}" --ref "${REF}"; then
+  # Some repos keep stale/deleted workflow names around; retry with canonical path.
+  if [[ "${WORKFLOW_FILE}" != ".github/workflows/build-windows.yml" ]]; then
+    echo "Retrying dispatch with canonical workflow path '.github/workflows/build-windows.yml'..."
+    gh workflow run ".github/workflows/build-windows.yml" --ref "${REF}"
+    WORKFLOW_FILE=".github/workflows/build-windows.yml"
+  else
+    exit 1
+  fi
+fi
 
 RUN_ID=""
 for _ in {1..30}; do
