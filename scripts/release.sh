@@ -66,11 +66,11 @@ PY
 
 create_github_release() {
   local version="$1"
+  local with_assets="${2:-1}"
   local tag="${version}"
   local assets=()
 
   require_cmd gh
-  require_dir "dist"
 
   if ! gh auth status >/dev/null 2>&1; then
     echo "Error: gh is not authenticated. Run: gh auth login" >&2
@@ -87,23 +87,34 @@ create_github_release() {
     exit 2
   fi
 
-  shopt -s nullglob
-  assets=(dist/*.tar.gz dist/*.zip)
-  shopt -u nullglob
-  if [[ "${#assets[@]}" -eq 0 ]]; then
-    echo "Error: no release assets found in dist/ (expected *.tar.gz or *.zip)." >&2
-    exit 2
+  if [[ "${with_assets}" -eq 1 ]]; then
+    require_dir "dist"
+    shopt -s nullglob
+    assets=(dist/*.tar.gz dist/*.zip)
+    shopt -u nullglob
+    if [[ "${#assets[@]}" -eq 0 ]]; then
+      echo "Error: no release assets found in dist/ (expected *.tar.gz or *.zip)." >&2
+      exit 2
+    fi
   fi
 
-  gh release create "${tag}" \
-    "${assets[@]}" \
-    --title "${tag}" \
-    --generate-notes
+  if [[ "${with_assets}" -eq 1 ]]; then
+    gh release create "${tag}" \
+      "${assets[@]}" \
+      --title "${tag}" \
+      --generate-notes
+  else
+    gh release create "${tag}" \
+      --title "${tag}" \
+      --generate-notes
+  fi
 
   echo "Created GitHub release ${tag}"
-  for asset in "${assets[@]}"; do
-    echo "  asset: ${asset}"
-  done
+  if [[ "${with_assets}" -eq 1 ]]; then
+    for asset in "${assets[@]}"; do
+      echo "  asset: ${asset}"
+    done
+  fi
 }
 
 upload_release_assets() {
@@ -163,7 +174,9 @@ Options:
                            If tag "<version>" is missing: implies --build-executable, --tag, --push.
                            If tag "<version>" exists: release-only mode (no rebuild/tag/push).
   --create-release         Create GitHub release for existing pushed tag "<version>" only.
-                           Never builds, tags, or pushes; therefore does not trigger tag-push workflows.
+                           Never builds, tags, or pushes, and does not upload assets.
+                           Use --upload-assets separately if desired.
+                           Therefore does not trigger tag-push workflows.
                            Alias: --createrelease, -create-release, -createrelease
   --upload-assets          Upload additional dist/*.tar.gz and dist/*.zip to existing GitHub release.
                            Alias: -upload-assets
@@ -377,7 +390,11 @@ if [[ "${DO_PUSH}" -eq 1 ]]; then
 fi
 
 if [[ "${DO_RELEASE}" -eq 1 ]]; then
-  create_github_release "${PACKAGE_VERSION}"
+  RELEASE_WITH_ASSETS=1
+  if [[ "${DO_CREATE_RELEASE}" -eq 1 ]]; then
+    RELEASE_WITH_ASSETS=0
+  fi
+  create_github_release "${PACKAGE_VERSION}" "${RELEASE_WITH_ASSETS}"
 fi
 
 if [[ "${DO_UPLOAD_ASSETS}" -eq 1 ]]; then
