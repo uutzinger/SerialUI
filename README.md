@@ -196,6 +196,7 @@ Linux examples (`scripts/release.sh`):
 - Build standalone executable (also creates `dist/SerialUI-*.zip`): `./scripts/release.sh --build-executable`
 - Build, commit, tag, and push: `./scripts/release.sh --build-executable --build-c-accelerated --commit --tag --push`
 - Create GitHub release for an existing version tag without rebuilding: `./scripts/release.sh --release`
+- Create GitHub release only for an existing pushed tag (never build/tag/push): `./scripts/release.sh --create-release`
 - Upload existing archives in `dist/` (`*.tar.gz`, `*.zip`) to an existing release: `./scripts/release.sh --upload-assets`
 
 Windows examples (`scripts/release.ps1`):
@@ -203,6 +204,7 @@ Windows examples (`scripts/release.ps1`):
 - Show options: `.\scripts\release.ps1 -Help`
 - Build standalone executable (also creates `dist\SerialUI-*.zip`): `.\scripts\release.ps1 -BuildExecutable`
 - Build standalone executable + C-accelerated parser: `.\scripts\release.ps1 -BuildExecutable -BuildCAccelerated`
+- Create GitHub release only for an existing pushed tag (never build/tag/push): `.\scripts\release.ps1 -CreateRelease`
 - Upload existing archives in `dist\` to an existing release: `.\scripts\release.ps1 -UploadAssets`
 
 ### Github workflows
