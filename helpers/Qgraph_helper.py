@@ -161,19 +161,19 @@ PARSER_BACKEND = "python"
 PARSER_STATUS_DETAIL = ""
 if USE_PARSERACCEL:
     # Safety guard: on frozen Windows builds, native parser modules can fail
-    # at load time with non-Python access violations. Default to Python parser
-    # unless explicitly overridden for diagnostics.
+    # at load time with non-Python access violations. We now probe in a child
+    # process and use C parser by default when probe succeeds.
     allow_c_parser = True
     if getattr(sys, "frozen", False) and sys.platform.startswith("win"):
-        force_c_parser = (os.environ.get("SERIALUI_FORCE_C_PARSER", "0") == "1")
-        if not force_c_parser:
+        disable_c_parser = (os.environ.get("SERIALUI_DISABLE_C_PARSER", "0") == "1")
+        if disable_c_parser:
             allow_c_parser = False
-            PARSER_STATUS_DETAIL = "disabled on frozen Windows (set SERIALUI_FORCE_C_PARSER=1 to force C parser)"
+            PARSER_STATUS_DETAIL = "disabled by env override (SERIALUI_DISABLE_C_PARSER=1)"
         else:
             probe_ok, probe_detail = _probe_frozen_windows_c_parser()
             allow_c_parser = probe_ok
             if not probe_ok:
-                PARSER_STATUS_DETAIL = f"forced C parser rejected by subprocess probe: {probe_detail}"
+                PARSER_STATUS_DETAIL = f"C parser rejected by subprocess probe: {probe_detail}"
 
     if allow_c_parser:
         try:
