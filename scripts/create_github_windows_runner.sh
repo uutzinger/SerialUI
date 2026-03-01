@@ -6,7 +6,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 SETUP_SH="${REPO_ROOT}/scripts/setup.sh"
 WORKFLOW_FILE="${REPO_ROOT}/.github/workflows/build-windows.yml"
-PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
+PYTHON_VERSION="${PYTHON_VERSION:-3.10}"
 WINDOWS_AMD64_RUNNER="${WINDOWS_AMD64_RUNNER:-windows-2022}"
 WINDOWS_ARM64_RUNNER="${WINDOWS_ARM64_RUNNER:-windows-11-arm}"
 INCLUDE_ARM64="${INCLUDE_ARM64:-1}"
@@ -116,6 +116,12 @@ ${MATRIX_INCLUDE}
         with:
           python-version: '${PYTHON_VERSION}'
 
+      - name: Show Python version
+        shell: pwsh
+        run: |
+          python --version
+          python -c "import sys; print(sys.version)"
+
       - name: Install app dependencies
         shell: pwsh
         run: |
@@ -144,7 +150,9 @@ ${MATRIX_INCLUDE}
         shell: pwsh
         run: |
           & .\dist\SerialUI\SerialUI.exe --selftest-c-parser
-          if (\$LASTEXITCODE -ne 0) { throw "Frozen C parser self-test failed with exit code \$LASTEXITCODE" }
+          \$exitCode = \$LASTEXITCODE
+          Write-Host "C parser self-test exit code: \$exitCode"
+          if (\$exitCode -ne 0) { throw "Frozen C parser self-test failed with exit code \$exitCode" }
 
       - name: Frozen self-test (numba)
         id: numba_selftest
@@ -153,12 +161,18 @@ ${MATRIX_INCLUDE}
         shell: pwsh
         run: |
           & .\dist\SerialUI\SerialUI.exe --selftest-numba
-          if (\$LASTEXITCODE -ne 0) { throw "Frozen numba self-test failed with exit code \$LASTEXITCODE" }
+          \$exitCode = \$LASTEXITCODE
+          Write-Host "Numba self-test exit code: \$exitCode"
+          if (\$exitCode -ne 0) { throw "Frozen numba self-test failed with exit code \$exitCode" }
 
       - name: Crash diagnostics (Windows event logs)
         if: \${{ always() && (steps.c_parser_selftest.outcome == 'failure' || (matrix.arch != 'arm64' && steps.numba_selftest.outcome == 'failure')) }}
         shell: pwsh
         run: |
+          Write-Host "Step outcomes:"
+          Write-Host "  c_parser_selftest: \${{ steps.c_parser_selftest.outcome }}"
+          Write-Host "  numba_selftest:    \${{ steps.numba_selftest.outcome }}"
+
           Write-Host "Collecting recent Application Error events for SerialUI.exe"
           \$events = Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000; StartTime=(Get-Date).AddMinutes(-30)} -ErrorAction SilentlyContinue |
             Where-Object { \$_.Message -match 'Faulting application name: SerialUI.exe' } |
@@ -168,8 +182,20 @@ ${MATRIX_INCLUDE}
           } else {
             Write-Host "No matching Application Error (ID=1000) events found in the last 30 minutes."
           }
+
+          Write-Host "Recent Application log events related to SerialUI/parser/runtime:"
+          Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddMinutes(-30)} -ErrorAction SilentlyContinue |
+            Where-Object { \$_.Message -match 'SerialUI.exe|simple_parser|header_parser|python3[0-9]{2}\.dll|MSVCP140.dll' } |
+            Select-Object -First 10 TimeCreated, Id, ProviderName, Message |
+            Format-List
+
           Write-Host "Checking for bundled Qt MSVCP140.dll"
           Get-ChildItem .\dist\SerialUI\_internal -Recurse -Filter MSVCP140.dll -ErrorAction SilentlyContinue |
+            Select-Object FullName, Length
+
+          Write-Host "Checking bundled parser extensions"
+          Get-ChildItem .\dist\SerialUI\_internal -Recurse -Filter *.pyd -ErrorAction SilentlyContinue |
+            Where-Object { \$_.Name -match 'simple_parser|header_parser' } |
             Select-Object FullName, Length
 
       - name: Upload build artifacts
