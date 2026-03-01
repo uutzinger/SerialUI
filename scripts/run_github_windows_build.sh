@@ -83,25 +83,67 @@ if [[ -z "${REF}" ]]; then
   exit 2
 fi
 
+REPO_SLUG="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+if [[ -z "${REPO_SLUG}" ]]; then
+  echo "Error: unable to resolve repository slug via gh repo view." >&2
+  exit 2
+fi
+
+WORKFLOW_TABLE="$(
+  gh api "repos/${REPO_SLUG}/actions/workflows" --paginate \
+    --jq '.workflows[] | [.id,.path,.name,.state] | @tsv'
+)"
+
+WORKFLOW_ID=""
+WORKFLOW_PATH=""
+WORKFLOW_NAME=""
+if [[ "${WORKFLOW_FILE}" =~ ^[0-9]+$ ]]; then
+  WORKFLOW_ID="${WORKFLOW_FILE}"
+  RESOLVED_LINE="$(printf '%s\n' "${WORKFLOW_TABLE}" | awk -F '\t' -v wid="${WORKFLOW_ID}" '$1==wid {print; exit}')"
+else
+  RESOLVED_LINE="$(printf '%s\n' "${WORKFLOW_TABLE}" | awk -F '\t' -v wf="${WORKFLOW_FILE}" '$2==wf {print; exit}')"
+  if [[ -z "${RESOLVED_LINE}" ]]; then
+    WF_CANON=".github/workflows/${WORKFLOW_FILE##*/}"
+    RESOLVED_LINE="$(printf '%s\n' "${WORKFLOW_TABLE}" | awk -F '\t' -v wf="${WF_CANON}" '$2==wf {print; exit}')"
+  fi
+  if [[ -z "${RESOLVED_LINE}" ]]; then
+    RESOLVED_LINE="$(printf '%s\n' "${WORKFLOW_TABLE}" | awk -F '\t' -v wf="${WORKFLOW_FILE##*/}" '$2 ~ ("/" wf "$") || $3==wf {print; exit}')"
+  fi
+  if [[ -n "${RESOLVED_LINE}" ]]; then
+    WORKFLOW_ID="$(printf '%s' "${RESOLVED_LINE}" | awk -F '\t' '{print $1}')"
+  fi
+fi
+
+if [[ -z "${WORKFLOW_ID}" ]]; then
+  echo "Error: could not resolve workflow '${WORKFLOW_FILE}' in repo ${REPO_SLUG}." >&2
+  echo "Known workflows:" >&2
+  printf '%s\n' "${WORKFLOW_TABLE}" | awk -F '\t' '{printf("  - id=%s path=%s name=%s state=%s\n",$1,$2,$3,$4)}' >&2
+  exit 2
+fi
+
+if [[ -z "${RESOLVED_LINE:-}" ]]; then
+  RESOLVED_LINE="$(printf '%s\n' "${WORKFLOW_TABLE}" | awk -F '\t' -v wid="${WORKFLOW_ID}" '$1==wid {print; exit}')"
+fi
+WORKFLOW_PATH="$(printf '%s' "${RESOLVED_LINE}" | awk -F '\t' '{print $2}')"
+WORKFLOW_NAME="$(printf '%s' "${RESOLVED_LINE}" | awk -F '\t' '{print $3}')"
+WORKFLOW_STATE="$(printf '%s' "${RESOLVED_LINE}" | awk -F '\t' '{print $4}')"
+
+echo "Resolved workflow: id=${WORKFLOW_ID} path=${WORKFLOW_PATH} name=${WORKFLOW_NAME} state=${WORKFLOW_STATE}"
+
 START_ISO="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 
-echo "Triggering workflow '${WORKFLOW_FILE}' on ref '${REF}'..."
-if ! gh workflow run "${WORKFLOW_FILE}" --ref "${REF}"; then
-  # Some repos keep stale/deleted workflow names around; retry with canonical path.
-  if [[ "${WORKFLOW_FILE}" != ".github/workflows/build-windows.yml" ]]; then
-    echo "Retrying dispatch with canonical workflow path '.github/workflows/build-windows.yml'..."
-    gh workflow run ".github/workflows/build-windows.yml" --ref "${REF}"
-    WORKFLOW_FILE=".github/workflows/build-windows.yml"
-  else
-    exit 1
-  fi
+echo "Triggering workflow id '${WORKFLOW_ID}' on ref '${REF}'..."
+if ! gh api -X POST "repos/${REPO_SLUG}/actions/workflows/${WORKFLOW_ID}/dispatches" -f "ref=${REF}"; then
+  echo "Dispatch failed. Showing first lines of ${WORKFLOW_PATH} at ref '${REF}' for trigger debugging:" >&2
+  gh api -H "Accept: application/vnd.github.raw+json" "repos/${REPO_SLUG}/contents/${WORKFLOW_PATH}?ref=${REF}" | sed -n '1,40p' >&2 || true
+  exit 1
 fi
 
 RUN_ID=""
 for _ in {1..30}; do
   RUN_ID="$(
     gh run list \
-      --workflow "${WORKFLOW_FILE}" \
+      --workflow "${WORKFLOW_ID}" \
       --limit 20 \
       --json databaseId,createdAt \
       --jq "[.[] | select(.createdAt >= \"${START_ISO}\")][0].databaseId // empty"
