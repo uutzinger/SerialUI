@@ -1,3 +1,19 @@
+<#
+Legacy Build Script (default tag: 1.4.2)
+
+Main command sequence executed:
+1) git restore --source <tag> -- SerialUI.spec helpers/setup.py
+2) python setup.py clean --all        (in helpers, best-effort)
+3) python setup.py build_ext --inplace -v
+4) python -m pip install -e .         (from helpers)
+5) Clean root build/ and dist/
+6) python -m PyInstaller --clean --noconfirm SerialUI.spec
+
+Usage:
+  .\scripts\old_build.ps1
+  .\scripts\old_build.ps1 -LegacyTag 1.4.2 -PythonBin python
+#>
+
 param(
     [string]$PythonBin = "python",
     [string]$LegacyTag = "1.4.2"
