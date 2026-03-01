@@ -195,13 +195,14 @@ finally {
     Pop-Location
 }
 
+$frozenExeCandidates = @(
+    (Join-Path $RootDir "dist\SerialUI\SerialUI.exe"),
+    (Join-Path $RootDir "dist\SerialUI.app\Contents\MacOS\SerialUI")
+)
+$frozenExe = $frozenExeCandidates | Where-Object { Test-Path -Path $_ -PathType Leaf } | Select-Object -First 1
+
 if ($BuildCAccelerated) {
     Log "Running frozen executable C-parser subprocess self-test"
-    $frozenExeCandidates = @(
-        (Join-Path $RootDir "dist\SerialUI\SerialUI.exe"),
-        (Join-Path $RootDir "dist\SerialUI.app\Contents\MacOS\SerialUI")
-    )
-    $frozenExe = $frozenExeCandidates | Where-Object { Test-Path -Path $_ -PathType Leaf } | Select-Object -First 1
 
     if ($frozenExe) {
         & $frozenExe "--selftest-c-parser"
@@ -216,6 +217,21 @@ if ($BuildCAccelerated) {
     else {
         Write-Warning "Could not locate frozen executable for C-parser probe test."
     }
+}
+
+Log "Running frozen executable numba subprocess self-test"
+if ($frozenExe) {
+    & $frozenExe "--selftest-numba"
+    $probeExit = $LASTEXITCODE
+    if ($probeExit -eq 0) {
+        Log "Frozen numba probe passed"
+    }
+    else {
+        Write-Warning "Frozen numba probe failed (exit code $probeExit). Executable may run without numba acceleration."
+    }
+}
+else {
+    Write-Warning "Could not locate frozen executable for numba probe test."
 }
 
 if (-not $NoZip) {

@@ -143,6 +143,55 @@ _selftest_rc = _run_c_parser_selftest_mode()
 if _selftest_rc >= 0:
     raise SystemExit(_selftest_rc)
 
+
+def _run_numba_selftest_mode() -> int:
+    """
+    Lightweight self-test mode for numba probing.
+    Runs before importing the full app stack.
+    """
+    if "--selftest-numba" not in sys.argv:
+        return -1
+
+    errors = []
+
+    try:
+        import numba
+        from numba import njit
+    except Exception as exc:
+        errors.append(f"numba import failed: {exc}")
+    else:
+        try:
+            @njit(cache=False)
+            def _numba_probe(x):
+                return x + 1
+            value = _numba_probe(1)
+            if int(value) != 2:
+                raise RuntimeError(f"unexpected JIT result {value!r}")
+        except Exception as exc:
+            errors.append(f"numba JIT failed: {exc}")
+
+    try:
+        from helpers.Circular_Buffer import hasNUMBA, NUMBA_IMPORT_ERROR
+        if not hasNUMBA:
+            raise RuntimeError(NUMBA_IMPORT_ERROR or "hasNUMBA=False")
+    except Exception as exc:
+        errors.append(f"helpers.Circular_Buffer numba path failed: {exc}")
+
+    if errors:
+        print(
+            "Numba self-test failed: " + " | ".join(errors),
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"Numba self-test passed (numba={numba.__version__})")
+    return 0
+
+
+_selftest_rc = _run_numba_selftest_mode()
+if _selftest_rc >= 0:
+    raise SystemExit(_selftest_rc)
+
 # ==============================================================================
 # Config
 # ==============================================================================

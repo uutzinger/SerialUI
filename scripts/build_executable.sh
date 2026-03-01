@@ -154,15 +154,15 @@ fi
 run ls -lh dist
 popd >/dev/null
 
+FROZEN_EXE=""
+if [[ -x "${ROOT_DIR}/dist/SerialUI/SerialUI" ]]; then
+    FROZEN_EXE="${ROOT_DIR}/dist/SerialUI/SerialUI"
+elif [[ -x "${ROOT_DIR}/dist/SerialUI.app/Contents/MacOS/SerialUI" ]]; then
+    FROZEN_EXE="${ROOT_DIR}/dist/SerialUI.app/Contents/MacOS/SerialUI"
+fi
+
 if [[ "${BUILD_C_ACCEL}" == "1" ]]; then
     log "Running frozen executable C-parser subprocess self-test"
-    FROZEN_EXE=""
-    if [[ -x "${ROOT_DIR}/dist/SerialUI/SerialUI" ]]; then
-        FROZEN_EXE="${ROOT_DIR}/dist/SerialUI/SerialUI"
-    elif [[ -x "${ROOT_DIR}/dist/SerialUI.app/Contents/MacOS/SerialUI" ]]; then
-        FROZEN_EXE="${ROOT_DIR}/dist/SerialUI.app/Contents/MacOS/SerialUI"
-    fi
-
     if [[ -n "${FROZEN_EXE}" ]]; then
         if PROBE_OUTPUT="$("${FROZEN_EXE}" --selftest-c-parser 2>&1)"; then
             echo "${PROBE_OUTPUT}"
@@ -175,6 +175,20 @@ if [[ "${BUILD_C_ACCEL}" == "1" ]]; then
     else
         echo "WARNING: Could not locate frozen executable for C-parser probe test."
     fi
+fi
+
+log "Running frozen executable numba subprocess self-test"
+if [[ -n "${FROZEN_EXE}" ]]; then
+    if PROBE_OUTPUT="$("${FROZEN_EXE}" --selftest-numba 2>&1)"; then
+        echo "${PROBE_OUTPUT}"
+        log "Frozen numba probe passed"
+    else
+        echo "${PROBE_OUTPUT}"
+        echo "WARNING: Frozen numba probe failed."
+        echo "         Executable may run without numba acceleration."
+    fi
+else
+    echo "WARNING: Could not locate frozen executable for numba probe test."
 fi
 
 if [[ "${NO_ZIP}" != "1" ]]; then

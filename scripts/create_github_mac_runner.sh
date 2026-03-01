@@ -128,6 +128,21 @@ jobs:
         run: |
           bash scripts/release.sh --build-c-executable --build-c-accelerated
 
+      - name: Frozen self-tests (C parser + numba)
+        shell: bash
+        run: |
+          FROZEN_EXE=""
+          if [[ -x "dist/SerialUI/SerialUI" ]]; then
+            FROZEN_EXE="dist/SerialUI/SerialUI"
+          elif [[ -x "dist/SerialUI.app/Contents/MacOS/SerialUI" ]]; then
+            FROZEN_EXE="dist/SerialUI.app/Contents/MacOS/SerialUI"
+          else
+            echo "Frozen executable not found for self-tests." >&2
+            exit 1
+          fi
+          "\${FROZEN_EXE}" --selftest-c-parser
+          "\${FROZEN_EXE}" --selftest-numba
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:

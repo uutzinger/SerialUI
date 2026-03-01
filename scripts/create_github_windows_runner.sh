@@ -127,6 +127,19 @@ ${MATRIX_INCLUDE}
         run: |
           .\scripts\release.ps1 -PythonBin python -BuildExecutable -BuildCAccelerated
 
+      - name: Frozen self-test (C parser)
+        shell: pwsh
+        run: |
+          & .\dist\SerialUI\SerialUI.exe --selftest-c-parser
+          if (\$LASTEXITCODE -ne 0) { throw "Frozen C parser self-test failed with exit code \$LASTEXITCODE" }
+
+      - name: Frozen self-test (numba)
+        if: \${{ matrix.arch != 'arm64' }}
+        shell: pwsh
+        run: |
+          & .\dist\SerialUI\SerialUI.exe --selftest-numba
+          if (\$LASTEXITCODE -ne 0) { throw "Frozen numba self-test failed with exit code \$LASTEXITCODE" }
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
