@@ -114,14 +114,15 @@ try {
         try {
             Run $PythonBin "setup.py" "build_ext" "--inplace" "-v"
             Log "Running C-parser self-test"
-            $selfTest = @"
+            $selfTest = @'
 import importlib
 mods = ['line_parsers.simple_parser', 'line_parsers.header_parser']
 for name in mods:
     m = importlib.import_module(name)
-    print(f'Imported {name} from {getattr(m, "__file__", "<unknown>")}')
-print('C parser self-test passed')
-"@
+    path = getattr(m, "__file__", "<unknown>")
+    print("Imported {} from {}".format(name, path))
+print("C parser self-test passed")
+'@
             Run $PythonBin "-c" $selfTest
         }
         finally {
