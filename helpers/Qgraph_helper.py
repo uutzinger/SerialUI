@@ -165,15 +165,10 @@ if USE_PARSERACCEL:
     # process and use C parser by default when probe succeeds.
     allow_c_parser = True
     if getattr(sys, "frozen", False) and sys.platform.startswith("win"):
-        disable_c_parser = (os.environ.get("SERIALUI_DISABLE_C_PARSER", "0") == "1")
-        if disable_c_parser:
-            allow_c_parser = False
-            PARSER_STATUS_DETAIL = "disabled by env override (SERIALUI_DISABLE_C_PARSER=1)"
-        else:
-            probe_ok, probe_detail = _probe_frozen_windows_c_parser()
-            allow_c_parser = probe_ok
-            if not probe_ok:
-                PARSER_STATUS_DETAIL = f"C parser rejected by subprocess probe: {probe_detail}"
+        probe_ok, probe_detail = _probe_frozen_windows_c_parser()
+        allow_c_parser = probe_ok
+        if not probe_ok:
+            PARSER_STATUS_DETAIL = f"C parser rejected by subprocess probe: {probe_detail}"
 
     if allow_c_parser:
         try:
