@@ -1,8 +1,8 @@
-$ErrorActionPreference = "Stop"
-
 param(
     [string]$PythonBin = "python"
 )
+
+$ErrorActionPreference = "Stop"
 
 function Run {
     param(
