@@ -2,6 +2,7 @@ param(
     [string]$PythonBin = "python",
     [switch]$BuildExecutable,
     [switch]$BuildCAccelerated,
+    [Alias("update-ankerl", "udate-ankerl")]
     [switch]$UpdateAnkerl,
     [string]$BuildPythonPath = "",
     [string]$CommitMsg = "",
