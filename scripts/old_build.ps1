@@ -1,5 +1,6 @@
 param(
-    [string]$PythonBin = "python"
+    [string]$PythonBin = "python",
+    [string]$LegacyTag = "1.4.2"
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,21 +21,25 @@ function Run {
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RootDir = Split-Path -Parent $ScriptDir
-$LegacyDir = Join-Path $RootDir "tmp\serialui-1.4.2"
 $HelpersDir = Join-Path $RootDir "helpers"
 
-if (-not (Test-Path -Path $LegacyDir -PathType Container)) {
-    throw "Missing legacy folder: $LegacyDir"
-}
-if (-not (Test-Path -Path (Join-Path $LegacyDir "SerialUI.spec") -PathType Leaf)) {
-    throw "Missing legacy spec file in: $LegacyDir"
-}
-if (-not (Test-Path -Path (Join-Path $LegacyDir "setup.py") -PathType Leaf)) {
-    throw "Missing legacy setup.py file in: $LegacyDir"
-}
+Push-Location $RootDir
+try {
+    # Validate that the requested tag/commit exists.
+    & git rev-parse --verify "$LegacyTag`^{commit}" *> $null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Legacy tag/commit not found: $LegacyTag"
+    }
 
-Copy-Item -Force (Join-Path $LegacyDir "SerialUI.spec") (Join-Path $RootDir "SerialUI.spec")
-Copy-Item -Force (Join-Path $LegacyDir "setup.py") (Join-Path $HelpersDir "setup.py")
+    Write-Host "+ git restore --source $LegacyTag -- SerialUI.spec helpers/setup.py"
+    & git restore --source $LegacyTag -- "SerialUI.spec" "helpers/setup.py"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to restore legacy build files from tag/commit: $LegacyTag"
+    }
+}
+finally {
+    Pop-Location
+}
 
 Push-Location $HelpersDir
 try {
