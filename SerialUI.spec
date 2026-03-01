@@ -110,7 +110,7 @@ if os.name == "nt":
     def _keep_binary(entry):
         for field in entry[:2]:
             norm = str(field).replace("\\", "/").lower()
-            if norm.endswith("/pyqt6/qt6/bin/msvcp140.dll"):
+            if norm.endswith("msvcp140.dll") and "/pyqt6/qt6/bin/" in norm:
                 return False
         return True
 

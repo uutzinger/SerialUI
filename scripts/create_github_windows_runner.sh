@@ -127,20 +127,53 @@ ${MATRIX_INCLUDE}
         run: |
           .\scripts\release.ps1 -PythonBin python -BuildExecutable -BuildCAccelerated
 
+      - name: Remove bundled Qt MSVCP140.dll (defensive)
+        shell: pwsh
+        run: |
+          \$qtMsvcp = ".\dist\SerialUI\_internal\PyQt6\Qt6\bin\MSVCP140.dll"
+          if (Test-Path -Path \$qtMsvcp -PathType Leaf) {
+            Remove-Item -Force \$qtMsvcp
+            Write-Host "Removed bundled Qt runtime: \$qtMsvcp"
+          } else {
+            Write-Host "Qt MSVCP140.dll not present in bundle."
+          }
+
       - name: Frozen self-test (C parser)
+        id: c_parser_selftest
+        continue-on-error: true
         shell: pwsh
         run: |
           & .\dist\SerialUI\SerialUI.exe --selftest-c-parser
           if (\$LASTEXITCODE -ne 0) { throw "Frozen C parser self-test failed with exit code \$LASTEXITCODE" }
 
       - name: Frozen self-test (numba)
-        if: \${{ matrix.arch != 'arm64' }}
+        id: numba_selftest
+        if: \${{ matrix.arch != 'arm64' && steps.c_parser_selftest.outcome == 'success' }}
+        continue-on-error: true
         shell: pwsh
         run: |
           & .\dist\SerialUI\SerialUI.exe --selftest-numba
           if (\$LASTEXITCODE -ne 0) { throw "Frozen numba self-test failed with exit code \$LASTEXITCODE" }
 
+      - name: Crash diagnostics (Windows event logs)
+        if: \${{ always() && (steps.c_parser_selftest.outcome == 'failure' || (matrix.arch != 'arm64' && steps.numba_selftest.outcome == 'failure')) }}
+        shell: pwsh
+        run: |
+          Write-Host "Collecting recent Application Error events for SerialUI.exe"
+          \$events = Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000; StartTime=(Get-Date).AddMinutes(-30)} -ErrorAction SilentlyContinue |
+            Where-Object { \$_.Message -match 'Faulting application name: SerialUI.exe' } |
+            Select-Object -First 5 -ExpandProperty Message
+          if (\$events) {
+            \$events | ForEach-Object { Write-Host "-----"; Write-Host \$_ }
+          } else {
+            Write-Host "No matching Application Error (ID=1000) events found in the last 30 minutes."
+          }
+          Write-Host "Checking for bundled Qt MSVCP140.dll"
+          Get-ChildItem .\dist\SerialUI\_internal -Recurse -Filter MSVCP140.dll -ErrorAction SilentlyContinue |
+            Select-Object FullName, Length
+
       - name: Upload build artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: SerialUI-windows-\${{ matrix.arch }}-\${{ github.ref_name }}-\${{ github.run_number }}
@@ -149,6 +182,23 @@ ${MATRIX_INCLUDE}
           path: |
             dist/SerialUI-*.zip
             dist/SerialUI
+
+      - name: Enforce self-test results
+        if: always()
+        shell: pwsh
+        run: |
+          \$failed = \$false
+          if ('\${{ steps.c_parser_selftest.outcome }}' -ne 'success') {
+            Write-Host "C parser self-test outcome: \${{ steps.c_parser_selftest.outcome }}"
+            \$failed = \$true
+          }
+          if ('\${{ matrix.arch }}' -ne 'arm64' -and '\${{ steps.numba_selftest.outcome }}' -ne 'success') {
+            Write-Host "Numba self-test outcome: \${{ steps.numba_selftest.outcome }}"
+            \$failed = \$true
+          }
+          if (\$failed) {
+            throw "Frozen self-tests failed. See crash diagnostics above."
+          }
 EOF
 
 echo "Created workflow: ${WORKFLOW_FILE}"

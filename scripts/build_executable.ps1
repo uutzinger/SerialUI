@@ -195,6 +195,21 @@ finally {
     Pop-Location
 }
 
+# Defensive Windows runtime fix:
+# Some PyQt6 bundles include a private MSVCP140.dll that can crash process startup
+# (0xC0000005) on certain systems. Prefer system CRT by removing this private copy
+# if it is present in the collected app.
+$qtMsvcpCandidates = @(
+    (Join-Path $RootDir "dist\SerialUI\_internal\PyQt6\Qt6\bin\MSVCP140.dll"),
+    (Join-Path $RootDir "dist\SerialUI\PyQt6\Qt6\bin\MSVCP140.dll")
+)
+foreach ($dllPath in $qtMsvcpCandidates) {
+    if (Test-Path -Path $dllPath -PathType Leaf) {
+        Log "Removing bundled Qt runtime: $dllPath"
+        Remove-Item -Force $dllPath
+    }
+}
+
 $frozenExeCandidates = @(
     (Join-Path $RootDir "dist\SerialUI\SerialUI.exe"),
     (Join-Path $RootDir "dist\SerialUI.app\Contents\MacOS\SerialUI")
