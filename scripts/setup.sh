@@ -10,7 +10,10 @@ fi
 
 mkdir -p "$HOME/Python"
 
-if [ ! -d "$VENV_DIR" ]; then
+venv_existed=0
+if [ -d "$VENV_DIR" ]; then
+  venv_existed=1
+else
   python3 -m venv "$VENV_DIR"
 fi
 
@@ -51,7 +54,12 @@ case "$(uname -s)" in
     ;;
 esac
 
-python -m pip install "${COMMON_PACKAGES[@]}" "${OS_PACKAGES[@]}"
+install_args=(-m pip install)
+if [ "$venv_existed" -eq 1 ]; then
+  install_args+=(--upgrade)
+fi
+
+python "${install_args[@]}" "${COMMON_PACKAGES[@]}" "${OS_PACKAGES[@]}"
 
 echo ""
 echo "Virtual environment ready: $VENV_DIR"

@@ -37,7 +37,8 @@ if (-not (Test-Path -Path $venvParent -PathType Container)) {
     New-Item -ItemType Directory -Path $venvParent -Force | Out-Null
 }
 
-if (-not (Test-Path -Path $VenvDir -PathType Container)) {
+$venvExisted = Test-Path -Path $VenvDir -PathType Container
+if (-not $venvExisted) {
     Invoke-Python -PyCmd $pythonCmd -CmdArgs @("-m", "venv", $VenvDir)
 }
 
@@ -69,7 +70,11 @@ $commonPackages = @(
 
 $osPackages = @("wmi")
 
-$installArgs = @("-m", "pip", "install") + $commonPackages + $osPackages
+$installArgs = @("-m", "pip", "install")
+if ($venvExisted) {
+    $installArgs += "--upgrade"
+}
+$installArgs += $commonPackages + $osPackages
 Invoke-Python -PyCmd @("python") -CmdArgs $installArgs
 
 Write-Host ""
