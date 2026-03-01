@@ -36,6 +36,7 @@ import textwrap
 import sys
 import os
 import importlib
+import subprocess
 from math import pi, floor, ceil, isfinite, floor, log10, isclose
 from typing import Optional
 import numpy as np
@@ -128,6 +129,33 @@ def _exc_text(exc: Exception | None) -> str:
         return "unknown error"
     return f"{exc.__class__.__name__}: {exc}"
 
+def _probe_frozen_windows_c_parser() -> tuple[bool, str]:
+    """
+    Probe C parser import in a child process.
+    This prevents a hard native crash from taking down the main UI process.
+    """
+    exe = sys.executable
+    if not exe:
+        return False, "missing sys.executable for probe"
+    try:
+        proc = subprocess.run(
+            [exe, "--selftest-c-parser"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except Exception as exc:
+        return False, f"probe launch failed ({_exc_text(exc)})"
+
+    if proc.returncode == 0:
+        return True, "self-test passed"
+
+    stdout = (proc.stdout or "").strip()
+    stderr = (proc.stderr or "").strip()
+    details = stderr or stdout or "no output"
+    return False, f"self-test failed (exit={proc.returncode}): {details}"
+
 hasFastParser = False
 PARSER_BACKEND = "python"
 PARSER_STATUS_DETAIL = ""
@@ -137,9 +165,15 @@ if USE_PARSERACCEL:
     # unless explicitly overridden for diagnostics.
     allow_c_parser = True
     if getattr(sys, "frozen", False) and sys.platform.startswith("win"):
-        allow_c_parser = (os.environ.get("SERIALUI_FORCE_C_PARSER", "0") == "1")
-        if not allow_c_parser:
+        force_c_parser = (os.environ.get("SERIALUI_FORCE_C_PARSER", "0") == "1")
+        if not force_c_parser:
+            allow_c_parser = False
             PARSER_STATUS_DETAIL = "disabled on frozen Windows (set SERIALUI_FORCE_C_PARSER=1 to force C parser)"
+        else:
+            probe_ok, probe_detail = _probe_frozen_windows_c_parser()
+            allow_c_parser = probe_ok
+            if not probe_ok:
+                PARSER_STATUS_DETAIL = f"forced C parser rejected by subprocess probe: {probe_detail}"
 
     if allow_c_parser:
         try:

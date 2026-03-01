@@ -107,6 +107,26 @@ def resource_path(relative_path: str) -> str:
     return os.path.join(base_path, relative_path)
 # ==============================================================================
 
+def _run_c_parser_selftest_mode() -> int:
+    """
+    Lightweight self-test mode for frozen Windows parser probing.
+    Runs before importing the full app stack.
+    """
+    if "--selftest-c-parser" not in sys.argv:
+        return -1
+    try:
+        from line_parsers import simple_parser  # noqa: F401
+        from line_parsers import header_parser  # noqa: F401
+        print("C parser self-test passed")
+        return 0
+    except Exception as exc:
+        print(f"C parser self-test failed: {exc}", file=sys.stderr)
+        return 1
+
+_selftest_rc = _run_c_parser_selftest_mode()
+if _selftest_rc >= 0:
+    raise SystemExit(_selftest_rc)
+
 # ==============================================================================
 # Config
 # ==============================================================================
