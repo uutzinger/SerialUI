@@ -73,9 +73,19 @@ jobs:
         id: c_parser_selftest
         shell: pwsh
         run: |
-          & .\dist\SerialUI\SerialUI.exe --selftest-c-parser
-          $exitCode = $LASTEXITCODE
+          $stdoutPath = "c_parser_stdout.txt"
+          $stderrPath = "c_parser_stderr.txt"
+          if (Test-Path $stdoutPath) { Remove-Item -Force $stdoutPath }
+          if (Test-Path $stderrPath) { Remove-Item -Force $stderrPath }
+
+          $proc = Start-Process -FilePath ".\dist\SerialUI\SerialUI.exe" -ArgumentList "--selftest-c-parser" -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+
+          $exitCode = $proc.ExitCode
           Write-Host "C parser self-test exit code: $exitCode"
+          Write-Host "C parser self-test stdout:"
+          if (Test-Path $stdoutPath) { Get-Content $stdoutPath }
+          Write-Host "C parser self-test stderr:"
+          if (Test-Path $stderrPath) { Get-Content $stderrPath }
           if ($exitCode -ne 0) { throw "Frozen C parser self-test failed with exit code $exitCode" }
 
       - name: Frozen self-test (numba)
@@ -83,9 +93,19 @@ jobs:
         if: ${{ matrix.arch != 'arm64' && steps.c_parser_selftest.conclusion == 'success' }}
         shell: pwsh
         run: |
-          & .\dist\SerialUI\SerialUI.exe --selftest-numba
-          $exitCode = $LASTEXITCODE
+          $stdoutPath = "numba_stdout.txt"
+          $stderrPath = "numba_stderr.txt"
+          if (Test-Path $stdoutPath) { Remove-Item -Force $stdoutPath }
+          if (Test-Path $stderrPath) { Remove-Item -Force $stderrPath }
+
+          $proc = Start-Process -FilePath ".\dist\SerialUI\SerialUI.exe" -ArgumentList "--selftest-numba" -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+
+          $exitCode = $proc.ExitCode
           Write-Host "Numba self-test exit code: $exitCode"
+          Write-Host "Numba self-test stdout:"
+          if (Test-Path $stdoutPath) { Get-Content $stdoutPath }
+          Write-Host "Numba self-test stderr:"
+          if (Test-Path $stderrPath) { Get-Content $stderrPath }
           if ($exitCode -ne 0) { throw "Frozen numba self-test failed with exit code $exitCode" }
 
       - name: Crash diagnostics (Windows event logs)
@@ -108,6 +128,16 @@ jobs:
             Write-Host "No matching Application Error (ID=1000) events found in the last 30 minutes."
           }
 
+          Write-Host "Collecting recent Windows Error Reporting events (ID=1001) for SerialUI.exe"
+          $werEvents = Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1001; StartTime=(Get-Date).AddMinutes(-30)} -ErrorAction SilentlyContinue |
+            Where-Object { $_.Message -match 'SerialUI.exe|SerialUI' } |
+            Select-Object -First 5 -ExpandProperty Message
+          if ($werEvents) {
+            $werEvents | ForEach-Object { Write-Host "-----"; Write-Host $_ }
+          } else {
+            Write-Host "No matching Windows Error Reporting (ID=1001) events found in the last 30 minutes."
+          }
+
           Write-Host "Recent Application log events related to SerialUI/parser/runtime:"
           Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddMinutes(-30)} -ErrorAction SilentlyContinue |
             Where-Object { $_.Message -match 'SerialUI.exe|simple_parser|header_parser|python3[0-9]{2}\.dll|MSVCP140.dll' } |
@@ -122,6 +152,58 @@ jobs:
           Get-ChildItem .\dist\SerialUI\_internal -Recurse -Filter *.pyd -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -match 'simple_parser|header_parser' } |
             Select-Object FullName, Length
+
+          Write-Host "Attempting parser extension load via host python (diagnostic only)"
+          @'
+import os
+import sys
+import ctypes
+import traceback
+from pathlib import Path
+
+root = Path("dist/SerialUI/_internal")
+parser_dir = root / "helpers" / "line_parsers"
+print(f"root={root}")
+print(f"parser_dir={parser_dir}")
+
+if hasattr(os, "add_dll_directory"):
+    for d in (root, root / "winrt", parser_dir):
+        if d.exists():
+            try:
+                os.add_dll_directory(str(d))
+                print(f"add_dll_directory ok: {d}")
+            except Exception as exc:
+                print(f"add_dll_directory failed: {d}: {exc}")
+
+for pyd in sorted(parser_dir.glob("*.pyd")):
+    if "simple_parser" not in pyd.name and "header_parser" not in pyd.name:
+        continue
+    print(f"loading {pyd}")
+    try:
+        ctypes.WinDLL(str(pyd))
+        print("  WinDLL load: ok")
+    except Exception as exc:
+        print(f"  WinDLL load failed: {exc!r}")
+
+try:
+    sys.path.insert(0, str(root))
+    import helpers.line_parsers.simple_parser  # noqa: F401
+    import helpers.line_parsers.header_parser  # noqa: F401
+    print("python import helpers.line_parsers: ok")
+except Exception:
+    print("python import helpers.line_parsers failed:")
+    traceback.print_exc()
+'@ | Set-Content -Encoding UTF8 .\diag_parser_import.py
+          python .\diag_parser_import.py
+          Remove-Item -Force .\diag_parser_import.py -ErrorAction SilentlyContinue
+
+          Write-Host "Captured self-test logs (if available):"
+          foreach ($p in @("c_parser_stdout.txt","c_parser_stderr.txt","numba_stdout.txt","numba_stderr.txt")) {
+            if (Test-Path $p) {
+              Write-Host "----- $p -----"
+              Get-Content $p
+            }
+          }
 
       - name: Upload build artifacts
         if: ${{ always() && steps.build_executable.conclusion == 'success' }}
