@@ -49,11 +49,27 @@ Either use the executable from the release assets or run the program with `pytho
 
 ### From Executables
 
-Use the executable from the release assets on Github. No packages will need to be installed and no source code needs to be downloaded.
+Use the executable from the release assets on Github. No packages will need to be installed and no source code needs to be downloaded. However you will need to unzip the archive before running the executable.
 
 - MacOs supports arm architecture
 - Linux supports ubuntu 24 with arm and amd64 architecture as well as ubuntu 22 with amd64 architecture
 - Windows supports windows amd64 and arm64 architecture
+
+#### First run notes
+Operating systems may block downloaded executables until you explicitly allow them.
+
+- `Windows`: If SmartScreen appears, use `More info` then `Run anyway`. If needed, in power shell unblock the extracted files `Get-ChildItem .\SerialUI -Recurse -File | Unblock-File` 
+- `macOS`: If Gatekeeper blocks launch, right-click the app and choose `Open` once. If still blocked, remove quarantine recursively in shell:
+  `xattr -dr com.apple.quarantine /path/to/SerialUI.app`
+- `Linux`: After unzip, ensure executable bit is set in shell:
+  `chmod +x ./SerialUI/SerialUI`
+
+After first launch, you can run self-tests from a terminal to make sure the accelerators work:
+
+- C parser: `SerialUI --selftest-c-parser`
+- Numba acceleration: `SerialUI --selftest-numba`
+- If self-tests fail, SerialUI still runs and falls back to the pure Python version.
+- Windows ARM64 builds do not currently enable numba acceleration (llvmlite wheel availability).
 
 ### From Source
 
@@ -65,12 +81,7 @@ This program has dependencies. You can install them with `scripts/setup.sh` on L
 
 There is build script in `scripts/release.sh` or `release.ps1` to activate the C accelerated text parser with `./scripts/release.sh --build-c-accelerated` or `./scripts/release.ps1 -build-c-accelerated`
  
-This requires a Cpp compiler and the python packages `pybind11` and `setuptools` to be available.
-
-A future version will also need:
-- `scipy` image decompression (FFT)
-- `cobs` serial data encoding (byte stuffing)
-- `tamp` for compression (lightweight for microcontrollers)
+This requires a C++ compiler and the python packages `pybind11` and `setuptools` to be available.
 
 ## Enabling / Disabling Features
 
