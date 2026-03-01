@@ -19,6 +19,21 @@ function Run {
     }
 }
 
+function Remove-IfExists {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+    if (Test-Path -Path $Path) {
+        try {
+            Remove-Item -Recurse -Force -ErrorAction Stop $Path
+        }
+        catch {
+            throw "Failed to remove '$Path'. Close SerialUI/Explorer windows that may lock dist files, then retry. Error: $($_.Exception.Message)"
+        }
+    }
+}
+
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RootDir = Split-Path -Parent $ScriptDir
 $HelpersDir = Join-Path $RootDir "helpers"
@@ -64,6 +79,10 @@ finally {
 
 Push-Location $RootDir
 try {
+    Write-Host "+ cleaning root build outputs"
+    Remove-IfExists (Join-Path $RootDir "build")
+    Remove-IfExists (Join-Path $RootDir "dist")
+
     Run $PythonBin "-m" "PyInstaller" "--clean" "--noconfirm" "SerialUI.spec"
 }
 finally {
