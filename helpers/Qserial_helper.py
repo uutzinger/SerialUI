@@ -326,7 +326,6 @@ class QSerial(QObject):
         self.serialWorker.destroyed.connect(         lambda: setattr(self, "serialWorker", None))
         self.serialThread.finished.connect(          self.serialThread.deleteLater) # delete thread at some time
         self.serialThread.destroyed.connect(         lambda: setattr(self, "serialThread", None))
-        self.serialThread.started.connect(           self.serialWorker.on_thread_debug_init, type=ConnectionType.QueuedConnection)
 
         # Signals from QSerial-UI to Serial Worker
         self.changePortRequest.connect(              self.serialWorker.on_changePortRequest, type=ConnectionType.QueuedConnection) # connect changing port
@@ -1570,9 +1569,6 @@ class Serial(QObject):
         self.eolFallback_timeout = MAX_EOL_FALLBACK_TIMEOUT
         self.bufferIn_max = 65536                                              # keep last 64 KiB
 
-        # Debugger
-        self.debug_initialized = False
-
     # ==========================================================================
     # Utility Functions
     # ==========================================================================
@@ -1833,32 +1829,6 @@ class Serial(QObject):
     # ==========================================================================
     # UI Response Functions
     # ==========================================================================
-
-    @pyqtSlot()
-    def on_thread_debug_init(self) -> None:
-        self.ensure_debugger_attached()
-
-    def ensure_debugger_attached(self) -> None:
-        """Enable debugpy tracing for this QThread (idempotent)."""
-        if self.debug_initialized:
-            return
-        try:
-            import debugpy
-            debugpy.debug_this_thread()
-            self.debug_initialized = True
-            try:
-                self.logSignal.emit(logging.DEBUG, 
-                    f"[{self.instance_name[:15]:<15}]: debugpy enabled for serial worker thread."
-                )
-            except Exception:
-                pass
-        except Exception as e:
-            try:
-                self.logSignal.emit(logging.ERROR, 
-                    f"[{self.instance_name[:15]:<15}]: debugpy init failed: {e}"
-                )
-            except Exception:
-                pass
 
     @pyqtSlot()
     def on_mtocRequest(self):

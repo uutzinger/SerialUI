@@ -84,7 +84,6 @@ class QUSBMonitor(QObject):
         # Connect signals and slots
         self.usbThread.started.connect(             self.usbWorker.run, type=ConnectionType.QueuedConnection)
         self.usbThread.started.connect(             lambda: setattr(self, "isRunning", True))
-        self.usbThread.started.connect(             self.usbWorker.on_thread_debug_init, type=ConnectionType.QueuedConnection)
         self.usbThread.finished.connect(            self.usbThread.deleteLater) # delete thread at some time
         self.usbThread.finished.connect(            self._on_worker_thread_finished)
         self.usbThread.destroyed.connect(           lambda: setattr(self, "usbThread", None))
@@ -200,47 +199,6 @@ class USBMonitorWorker(QObject):
         # suppress duplicate (action, device_node) events for a short window
         self.recent_events = {}                                                # dict[(action, node)] = last_time_monotonic
         self.dedupe_secs   = 0.5                                               # tune as needed
-
-        # Debugger
-        self.debug_initialized = False
-
-    @pyqtSlot()
-    def on_thread_debug_init(self) -> None:
-        # Runs in worker thread when QThread’s event loop starts
-        self.ensure_debugger_attached()
-
-    def ensure_debugger_attached(self) -> None:
-        """Enable debugpy tracing for this QThread (idempotent)."""
-        
-        # If running as a PyInstaller EXE → disable debugpy entirely
-        import sys
-        if getattr(sys, "frozen", False):
-            return
-
-        # Only enable when developer explicitly requests it
-        import os
-        if os.getenv("SERIALUI_DEBUGPY", "0") != "1":
-            return
-            
-        if self.debug_initialized:
-            return
-        try:
-            import debugpy
-            debugpy.debug_this_thread()
-            self.debug_initialized = True
-            try:
-                self.logSignal.emit(logging.DEBUG, 
-                    f"[{self.instance_name[:15]:<15}]: debugpy enabled for serial worker thread."
-                )
-            except Exception:
-                pass
-        except Exception as e:
-            try:
-                self.logSignal.emit(logging.ERROR, 
-                    f"[{self.instance_name[:15]:<15}]: debugpy init failed: {e}"
-                )
-            except Exception:
-                pass
 
     @pyqtSlot()
     def run(self):
