@@ -314,14 +314,25 @@ if [[ "${UPDATE_ONLY_MODE}" -eq 1 ]]; then
   exit 0
 fi
 
-DO_BUILD_HELPERS=1
+REQUESTED_NONBUILD_ACTION=0
+if [[ "${DO_COMMIT}" -eq 1 \
+   || "${DO_TAG}" -eq 1 \
+   || "${DO_PUSH}" -eq 1 \
+   || "${DO_RELEASE}" -eq 1 \
+   || "${DO_CREATE_RELEASE}" -eq 1 \
+   || "${DO_UPLOAD_ASSETS}" -eq 1 \
+   || "${DO_CLEAN}" -eq 1 ]]; then
+  REQUESTED_NONBUILD_ACTION=1
+fi
+
+DO_BUILD_HELPERS=0
 if [[ "${DO_BUILD_EXECUTABLE}" -eq 1 ]]; then
   DO_BUILD_HELPERS=0
-elif [[ "${DO_RELEASE}" -eq 1 && "${RELEASE_ONLY_MODE}" -eq 1 && "${DO_BUILD_C_ACCELERATED}" -eq 0 ]]; then
-  DO_BUILD_HELPERS=0
-elif [[ "${DO_UPLOAD_ASSETS}" -eq 1 && "${DO_BUILD_C_ACCELERATED}" -eq 0 && "${DO_RELEASE}" -eq 0 ]]; then
-  # Asset upload-only mode: no local build required.
-  DO_BUILD_HELPERS=0
+elif [[ "${DO_BUILD_C_ACCELERATED}" -eq 1 ]]; then
+  DO_BUILD_HELPERS=1
+elif [[ "${REQUESTED_NONBUILD_ACTION}" -eq 0 && "${DO_UPDATE_ANKERL}" -eq 0 ]]; then
+  # Keep legacy default: `release.sh` with no options builds helper wheel.
+  DO_BUILD_HELPERS=1
 fi
 
 if [[ "${DO_BUILD_EXECUTABLE}" -eq 1 ]]; then

@@ -16,7 +16,7 @@ Usage:
   scripts/build_release_all.sh [options]
 
 Pipeline:
-  1) Run release.sh with commit/tag/push/release
+  1) Run release.sh with commit/tag/push, then create-release
   2) Run runner builds (linux/macos/windows/raspbian) on the release tag
   3) Run release.sh --upload-assets
 
@@ -107,7 +107,7 @@ if ! git diff --quiet || ! git diff --cached --quiet || [[ -n "$(git ls-files --
   HAS_CHANGES=1
 fi
 
-RELEASE_ARGS=(--tag --push --release)
+RELEASE_ARGS=(--tag --push)
 if [[ "${HAS_CHANGES}" -eq 1 ]]; then
   RELEASE_ARGS=(--commit "${RELEASE_ARGS[@]}")
 else
@@ -117,6 +117,8 @@ fi
 echo ""
 echo "Step 1/3: Running release.sh ${RELEASE_ARGS[*]}"
 bash scripts/release.sh "${RELEASE_ARGS[@]}"
+echo "Step 1/3: Running release.sh --create-release"
+bash scripts/release.sh --create-release
 
 echo ""
 echo "Step 2/3: Running runner builds on tag ${VERSION}"
