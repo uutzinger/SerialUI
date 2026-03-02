@@ -437,7 +437,7 @@ class mainWindow(QMainWindow):
         self.log_widget.setReadOnly(True)                                      # prevent user edits
         self.log_widget.setWordWrapMode(NO_WORDWRAP)                           # no wrapping for better performance
         self.log_widget.setUndoRedoEnabled(False)
-        self.log_widget.setMaximumBlockCount(int(self.maxlines/5))
+        self.log_widget.setMaximumBlockCount(DEFAULT_TEXT_LINES)               # 
         self.log_widget.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
 
         self.log_scroll_bar = self.log_widget.verticalScrollBar()
