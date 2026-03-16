@@ -329,8 +329,14 @@ class USBMonitorWorker(QObject):
 
     def poll_ports(self, poll_ms: int) -> None:
         """
-        Basic polling fallback when pyudev is not available (Darwin or minimal Linux).
-        Emits added/removed events by diffing serial ports.
+        Basic serial-port polling fallback used when native USB notifications are
+        unavailable or unreliable.
+
+        Used on Darwin and minimal Linux when pyudev is not available, and on
+        Windows when WMI event subscriptions are not available in the current
+        environment.
+
+        Emits added/removed events by diffing the available serial ports.
         """
         self.logSignal.emit(logging.INFO, 
             f"[{self.instance_name[:15]:<15}]: Monitoring USB with serial port polling fallback and interval {poll_ms/1000}s"
@@ -345,7 +351,8 @@ class USBMonitorWorker(QObject):
         try:
             def current_set():
                 ports = _QSPI.availablePorts()
-                # Prefer absolute system path if available (Linux/Mac), else synthesize from portName
+                # Prefer absolute system path if available (Linux/macOS), else
+                # fall back to the reported port name such as COMx on Windows.
                 items = []
                 for p in ports:
                     try:
@@ -401,11 +408,11 @@ class USBMonitorWorker(QObject):
         try:
             import wmi
         except Exception as e:
-            self.logSignal.emit(logging.ERROR, 
-                f"[{self.instance_name[:15]:<15}]: wmi module not available: {e}"
+            self.logSignal.emit(logging.WARNING, 
+                f"[{self.instance_name[:15]:<15}]: wmi module not available: {e}; falling back to serial port polling."
             )
-            self.finished.emit()
-            return        
+            self.poll_ports(poll_ms)
+            return
         c = wmi.WMI()
 
         try:
@@ -414,9 +421,10 @@ class USBMonitorWorker(QObject):
                 "remove": c.Win32_PnPEntity.watch_for(notification_type="Deletion", delay_secs=0.2)
             }
         except Exception as e:
-            self.logSignal.emit(logging.ERROR, 
-                f"[{self.instance_name[:15]:<15}]: Error setting up USB monitor: {e}"
+            self.logSignal.emit(logging.WARNING, 
+                f"[{self.instance_name[:15]:<15}]: Error setting up USB monitor: {e}; falling back to serial port polling."
             )
+            self.poll_ports(poll_ms)
             return
 
         while self.running:
