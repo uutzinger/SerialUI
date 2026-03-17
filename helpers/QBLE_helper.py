@@ -16,6 +16,7 @@
 # ==============================================================================
 from config import (FLUSH_INTERVAL_MS,
                     BLEPIN, 
+                    BLESCAN_SHORT, BLESCAN_LONG,
                     SERVICE_UUID, RX_CHARACTERISTIC_UUID, TX_CHARACTERISTIC_UUID,
                     USE_BLUETOOTHCTL, BLEMTUMAX, BLEMTUNORMAL, ATT_HDR, BLEMTUDEFAULT,
                     PROFILEME, DEBUGSERIAL, DEBUG_LEVEL,
@@ -134,7 +135,7 @@ class QBLESerial(QObject):
     # ==========================================================================
 
     # BLEAK
-    scanDevicesRequest           = pyqtSignal()                                # scan for BLE devices
+    scanDevicesRequest           = pyqtSignal(float)                           # scan for BLE devices with timeout [s]
     connectDeviceRequest         = pyqtSignal(object, int, bool)               # connect to BLE device, mac, timeout, 
     disconnectDeviceRequest      = pyqtSignal()                                # disconnect from BLE device
     changeLineTerminationRequest = pyqtSignal(bytes)                           # request line termination to change
@@ -194,6 +195,7 @@ class QBLESerial(QObject):
 
         self.lastNumComputed       = time.perf_counter()                       # init throughput time calculation
         self.receiverIsRunning     = False                                     # BLE transceiver is not running
+        self.device_scan_requested = False                                     # defer initial scan until BLE view is shown
 
         self.lastNumReceived       = 0
         self.lastNumSent           = 0
@@ -282,14 +284,14 @@ class QBLESerial(QObject):
         self.bleakWorker = BleakWorker()                                       # create BLE worker object
         self.bleakWorker.moveToThread(self.bleakThread)
         # Make sure loop exits before scheduling coroutines
-        self.bleakThread.ready.connect(                 lambda loop: (self.bleakWorker.set_loop(loop), self.scanDevicesRequest.emit()))
+        self.bleakThread.ready.connect(                 lambda loop: self.bleakWorker.set_loop(loop))
         self.bleakWorker.finished.connect(              lambda: self.bleakThread.stop())
         self.bleakWorker.finished.connect(              lambda: self.bleakThread.wait())
         self.mtocRequest.connect(                       lambda: self.bleakWorker.request_mtoc()) # connect mtoc request to worker
 
         # Signals from QBLE (UI) -> Bleak Worker
         self.changeLineTerminationRequest.connect(      lambda eol: self.bleakWorker.change_LineTermination(eol)) # connect changing line termination
-        self.scanDevicesRequest.connect(                lambda: self.bleakWorker.start_scan())
+        self.scanDevicesRequest.connect(                lambda timeout: self.bleakWorker.start_scan(timeout))
         self.sendFileRequest.connect(                   lambda filePath: self.bleakWorker.send_file(filePath)) # request to send file
         self.sendTextRequest.connect(                   lambda text: self.bleakWorker.send_bytes(text)) # request to transmit text to TX
         self.sendLineRequest.connect(                   lambda line: self.bleakWorker.send_line(line)) # request to transmit one line of text to TX
@@ -428,11 +430,12 @@ class QBLESerial(QObject):
         """
         Update BLE device list
         """
-        self.scanDevicesRequest.emit()
+        self.device_scan_requested = True
+        self.scanDevicesRequest.emit(float(BLESCAN_LONG))
         self.ui.pushButton_BLEScan.setEnabled(False)
         self.ui.pushButton_BLEConnect.setEnabled(False)
         self.logSignal.emit(logging.INFO, 
-            f"[{self.instance_name[:15]:<15}]: BLE device scan requested."
+            f"[{self.instance_name[:15]:<15}]: BLE device scan requested ({BLESCAN_LONG:.1f}s)."
         )
         self.ui.statusBar().showMessage('BLE device scan requested.', 2000)            
 
@@ -1897,10 +1900,10 @@ class BleakWorker(QObject):
     # BLEAK Device Scan
     # ----------------------------------------
 
-    def start_scan(self):
-        self.schedule(self._scanDevices())
+    def start_scan(self, timeout: float = BLESCAN_LONG):
+        self.schedule(self._scanDevices(timeout=float(timeout)))
 
-    async def _scanDevices(self):
+    async def _scanDevices(self, timeout: float = BLESCAN_LONG):
         """Scan for BLE devices offering the Nordic UART Service."""
 
         if PROFILEME: 
@@ -1908,9 +1911,9 @@ class BleakWorker(QObject):
 
         try:
             self.logSignal.emit(logging.INFO, 
-                f"[{self.instance_name[:15]:<15}]: Scanning for BLE devices."
+                f"[{self.instance_name[:15]:<15}]: Scanning for BLE devices ({timeout:.1f}s)."
             )
-            devices = await BleakScanner.discover(timeout=5, return_adv=True)
+            devices = await BleakScanner.discover(timeout=float(timeout), return_adv=True)
         except Exception as e:
             self.logSignal.emit(logging.ERROR, 
                 f"[{self.instance_name[:15]:<15}]: Error scanning for devices: {e}"

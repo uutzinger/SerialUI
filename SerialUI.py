@@ -202,6 +202,7 @@ from config import (
     DEFAULT_TEXT_LINES, MAX_TEXT_LINES, MAX_ROWS,
     DEBUGKEYINPUT, DEBUG_LEVEL, DEBUGRECEIVER, DEBUGCHART,
     ENCODING, BACKGROUNDCOLOR, BACKGROUNDCOLOR_LOG, BACKGROUNDCOLOR_TABS,
+    BLESCAN_SHORT,
     EOL_DICT, EOL_DICT_INV, EOL_DEFAULT_LABEL, EOL_DEFAULT_BYTES, DEFAULT_LINETERMINATOR,
     PARSE_OPTIONS, PARSE_OPTIONS_INV, PARSE_DEFAULT_LABEL, PARSE_DEFAULT_NAME,
     LOG_OPTIONS, LOG_OPTIONS_INV, LOG_DEFAULT_LABEL, LOG_DEFAULT_NAME,
@@ -252,7 +253,7 @@ try:
         QTextEdit, QTabWidget, QWidget, 
         QPlainTextEdit, QApplication,
     )
-    from PyQt6.QtGui import QIcon, QShortcut, QTextCursor, QTextOption,  QKeySequence, QGuiApplication, QPixmap
+    from PyQt6.QtGui import QIcon, QShortcut, QTextCursor, QTextOption,  QKeySequence, QGuiApplication, QPixmap, QFontDatabase
     WindowType    = Qt.WindowType
     ConnectionType= Qt.ConnectionType
     NO_WRAP       = QPlainTextEdit.LineWrapMode.NoWrap
@@ -274,7 +275,7 @@ except Exception:
         QPlainTextEdit, QApplication,
     )
     from PyQt5.QtGui import (
-        QIcon, QTextCursor, QTextOption, QKeySequence, QGuiApplication, QPixmap
+        QIcon, QTextCursor, QTextOption, QKeySequence, QGuiApplication, QPixmap, QFontDatabase
     )
     WindowType    = Qt
     ConnectionType= Qt
@@ -414,6 +415,7 @@ class mainWindow(QMainWindow):
 
         self.isMonitoring = False
         self.isPlotting   = False                                              # chart receiver status request
+        self.startup_work_scheduled = False
         self.lineSendHistory     = []                                          # previously sent text (e.g. commands)
         self.lineSendHistoryIndx = -1               
         self.textLineTerminator = DEFAULT_LINETERMINATOR
@@ -430,6 +432,11 @@ class mainWindow(QMainWindow):
 
         self.log_widget = self.ui.plainTextEdit_Log
         self.log_widget.setStyleSheet(f"background-color: {BACKGROUNDCOLOR_LOG};")
+        if hasQt6:
+            log_font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        else:
+            log_font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+        self.log_widget.setFont(log_font)
 
         # Modify LOG display window on serial text display
         self.log_widget.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
@@ -1096,8 +1103,16 @@ class mainWindow(QMainWindow):
             self.text_scroll_bar.setValue(self.text_scroll_bar.maximum())
             self.log_scroll_bar.setValue(self.log_scroll_bar.maximum())
 
+        elif tab_name == "Log":
+            self.log_scroll_bar.setValue(self.log_scroll_bar.maximum())
+
         elif tab_name == "Plotter":
-            pass
+            if USE_FASTPLOTLIB:
+                if not self.chart.chartFPLInitialized:
+                    QTimer.singleShot(0, self.chart.fpl_figure_init)
+            else:
+                if not self.chart.chartPGInitialized:
+                    QTimer.singleShot(0, self.chart.pg_figure_init)
 
         elif tab_name == "Indicator":
             pass
@@ -1131,6 +1146,14 @@ class mainWindow(QMainWindow):
             return
 
         self.ui.stackedWidget_BLE_Serial.setCurrentIndex(1)
+        if not self.ble.device_scan_requested:
+            self.ble.device_scan_requested = True
+            self.ble.scanDevicesRequest.emit(float(BLESCAN_SHORT))
+            self.ble.ui.pushButton_BLEScan.setEnabled(False)
+            self.ble.ui.pushButton_BLEConnect.setEnabled(False)
+            self.handle_log(logging.INFO,
+                f"[{self.instance_name[:15]:<15}]: BLE device auto-scan requested ({BLESCAN_SHORT:.1f}s)."
+            )
         self.handle_log(logging.INFO,
             f"[{self.instance_name[:15]:<15}]: BLE."
         )
@@ -1140,13 +1163,13 @@ class mainWindow(QMainWindow):
     def showEvent(self, event):
         """Qt calls this when the User Interface window is shown."""
         super().showEvent(event)
-        if USE_FASTPLOTLIB:
-            QTimer.singleShot(200, self.chart.fpl_figure_init)
-        else:
-            QTimer.singleShot(200, self.chart.pg_figure_init)
-        
-        # Start the Monitoring by default
-        QTimer.singleShot(0, lambda: self.runMonitoringRequest.emit(True))
+        if self.startup_work_scheduled:
+            return
+
+        self.startup_work_scheduled = True
+
+        # Give the UI time to paint and accept input before auto-start work begins.
+        QTimer.singleShot(750, lambda: self.runMonitoringRequest.emit(True))
 
     @pyqtSlot()
     def closeEvent(self, event):
