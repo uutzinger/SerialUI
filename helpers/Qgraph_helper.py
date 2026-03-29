@@ -37,6 +37,10 @@ import sys
 import os
 import importlib
 import subprocess
+try:
+    from importlib import metadata as importlib_metadata
+except Exception:
+    importlib_metadata = None
 from math import pi, floor, ceil, isfinite, floor, log10, isclose
 from typing import Optional
 import numpy as np
@@ -159,6 +163,18 @@ def _probe_frozen_c_parser() -> tuple[bool, str]:
 hasFastParser = False
 PARSER_BACKEND = "python"
 PARSER_STATUS_DETAIL = ""
+PARSER_VERSION = ""
+PARSER_MODULE_PATH = ""
+
+def _detect_parser_version() -> str:
+    """Best-effort version lookup for the installed C parser package."""
+    if importlib_metadata is None:
+        return ""
+    try:
+        return importlib_metadata.version("line_parsers")
+    except Exception:
+        return ""
+
 if USE_PARSERACCEL:
     # Safety guard for frozen apps: native parser modules can fail at load time
     # with non-Python crashes. Probe import in a child process first, and only
@@ -172,22 +188,25 @@ if USE_PARSERACCEL:
 
     if allow_c_parser:
         try:
-            from line_parsers import simple_parser
-            from line_parsers import header_parser
+            from helpers.line_parsers import simple_parser
+            from helpers.line_parsers import header_parser
             hasFastParser = True
-            PARSER_BACKEND = "line_parsers"
+            PARSER_BACKEND = "helpers.line_parsers"
+            PARSER_VERSION = _detect_parser_version()
+            PARSER_MODULE_PATH = getattr(header_parser, "__file__", "")
         except Exception as exc_primary:
             try:
-                # Source-tree fallback: use local compiled extensions in helpers/line_parsers
-                from helpers.line_parsers import simple_parser
-                from helpers.line_parsers import header_parser
+                from line_parsers import simple_parser
+                from line_parsers import header_parser
                 hasFastParser = True
-                PARSER_BACKEND = "helpers.line_parsers"
+                PARSER_BACKEND = "line_parsers"
+                PARSER_VERSION = _detect_parser_version()
+                PARSER_MODULE_PATH = getattr(header_parser, "__file__", "")
             except Exception as exc_fallback:
                 hasFastParser = False
                 PARSER_STATUS_DETAIL = (
-                    f"import failed for line_parsers ({_exc_text(exc_primary)}); "
-                    f"fallback helpers.line_parsers failed ({_exc_text(exc_fallback)})"
+                    f"import failed for helpers.line_parsers ({_exc_text(exc_primary)}); "
+                    f"fallback line_parsers failed ({_exc_text(exc_fallback)})"
                 )
 else:
     PARSER_STATUS_DETAIL = "disabled by config (USE_PARSERACCEL=False)"
@@ -361,6 +380,9 @@ class QChart(QObject):
         
         self.legend = None                                                     # handle to the legend in the plot
         self.legend_entries = []                                               # handles to the legend entries in the plot
+        self.pg_live_follow_x = True                                           # live-follow x unless user inspects manually
+        self.pg_live_follow_y = True                                           # live-follow y unless user inspects manually
+        self.pg_syncing_view_state = False                                     # suppress feedback loops while syncing pg state
 
         # Data traces
         self.data_traces = []                                                  # handles to the data traces in the plot
@@ -444,9 +466,11 @@ class QChart(QObject):
         messages = []
 
         if useFastParser:
+            version_part = f", version {PARSER_VERSION}" if PARSER_VERSION else ""
+            path_part = f", module {PARSER_MODULE_PATH}" if PARSER_MODULE_PATH else ""
             messages.append((
                 logging.INFO,
-                f"[{self.instance_name[:15]:<15}]: C parser enabled ({PARSER_BACKEND}).",
+                f"[{self.instance_name[:15]:<15}]: C parser enabled ({PARSER_BACKEND}{version_part}{path_part}).",
             ))
         else:
             level = logging.WARNING if USE_PARSERACCEL else logging.INFO
@@ -661,6 +685,11 @@ class QChart(QObject):
             self.chartWidgetPG.setYRange(self.y_min, self.y_max)
 
             connect(self.viewBox.sigRangeChanged, self.on_pg_viewBox_changed, unique=True) # When plot is idle we allow zoom and pan
+            connect(self.viewBox.sigRangeChangedManually, self.on_pg_viewbox_manual_range_change, unique=True)
+            connect(self.viewBox.sigStateChanged, self.on_pg_viewbox_state_changed, unique=True)
+            menu = getattr(self.viewBox, "menu", None)
+            if menu is not None and hasattr(menu, "viewAll"):
+                connect(menu.viewAll.triggered, self.on_pg_viewbox_view_all, unique=True)
 
             # Trace Colors
             self.pensPG = [pg.mkPen(color, width=LINEWIDTH) for color in COLORS]
@@ -967,6 +996,86 @@ class QChart(QObject):
             self.pg_updateAxesTicks("x", x_lo, x_hi, n_major=MAJOR_TICKS, n_minor=MINOR_TICKS)
         if y_range_changed:
             self.pg_updateAxesTicks("y", y_lo, y_hi, n_major=MAJOR_TICKS, n_minor=MINOR_TICKS)
+
+    @pyqtSlot(object)
+    def on_pg_viewbox_manual_range_change(self, axis_changed) -> None:
+        """Suspend live-follow on axes the user adjusted manually."""
+        if not isinstance(axis_changed, (list, tuple)):
+            return
+        try:
+            x_changed, y_changed = axis_changed
+        except Exception:
+            return
+        if x_changed:
+            self.pg_live_follow_x = False
+        if y_changed:
+            self.pg_live_follow_y = False
+
+    @pyqtSlot(object)
+    def on_pg_viewbox_state_changed(self, _viewbox) -> None:
+        """Translate pyqtgraph auto-range menu actions into app-managed live-follow."""
+        if self.viewBox is None or self.pg_syncing_view_state:
+            return
+        try:
+            state = self.viewBox.getState(copy=False)
+            auto_x, auto_y = state.get("autoRange", [False, False])
+        except Exception:
+            return
+        resume_x = (auto_x is not False)
+        resume_y = (auto_y is not False)
+        if resume_x:
+            self.pg_live_follow_x = True
+        if resume_y:
+            self.pg_live_follow_y = True
+
+        if not getattr(self.ChartTimer, "isActive", lambda: False)():
+            return
+
+        # While live plotting, keep pyqtgraph auto-range disabled and let
+        # updatePlot() drive the view. Leaving pg auto-range enabled at the
+        # same time as manual setXRange/setYRange can cause feedback loops.
+        if resume_x or resume_y:
+            self.pg_disable_autorange(x=resume_x, y=resume_y)
+
+    @pyqtSlot()
+    def on_pg_viewbox_view_all(self) -> None:
+        """Treat pyqtgraph's built-in View All action as re-entering live-follow mode."""
+        self.pg_live_follow_x = True
+        self.pg_live_follow_y = True
+        if getattr(self.ChartTimer, "isActive", lambda: False)():
+            self.pg_disable_autorange(x=True, y=True)
+
+    def pg_reset_live_follow(self) -> None:
+        """Resume live-follow on both axes."""
+        self.pg_live_follow_x = True
+        self.pg_live_follow_y = True
+
+    def pg_disable_autorange(self, x: bool = False, y: bool = False) -> None:
+        """Disable pyqtgraph auto-range without re-entering state-change handlers."""
+        if self.viewBox is None:
+            return
+        if not x and not y:
+            return
+        self.pg_syncing_view_state = True
+        try:
+            if x:
+                self.viewBox.disableAutoRange(pg.ViewBox.XAxis)
+            if y:
+                self.viewBox.disableAutoRange(pg.ViewBox.YAxis)
+        finally:
+            self.pg_syncing_view_state = False
+
+    def pg_visible_trace_indices(self, num_cols: int) -> list[int]:
+        """Return currently visible pyqtgraph traces for visible-only autoscaling."""
+        visible = []
+        for i in range(min(num_cols, len(self.data_traces))):
+            trace = self.data_traces[i]
+            try:
+                if trace.isVisible():
+                    visible.append(i)
+            except Exception:
+                visible.append(i)
+        return visible
 
     # ==========================================================================
     # fastplotlib functions
@@ -1833,8 +1942,16 @@ class QChart(QObject):
         # - FPL updates with latest data only and need to calculate min/max from visible buffers at later time in the code below)
         if not USE_FASTPLOTLIB:
             # calculate here
-            self.y_min = float(np.nanmin(y_vals))                              # 4%
-            self.y_max = float(np.nanmax(y_vals))                              # 2% 
+            trace_cols = self.pg_visible_trace_indices(num_cols)
+            if not trace_cols:
+                trace_cols = list(range(num_cols))
+            if trace_cols:
+                y_visible = y_vals[:, trace_cols]
+                self.y_min = float(np.nanmin(y_visible))                       # 4%
+                self.y_max = float(np.nanmax(y_visible))                       # 2%
+            else:
+                self.y_min = -1.0
+                self.y_max = 1.0
                     
             if not isfinite(self.y_min):
                 self.y_min = -1.0
@@ -1985,96 +2102,61 @@ class QChart(QObject):
         if not USE_FASTPLOTLIB:
             # PyQtGraph ─────────────────────────────────
 
-            x_min, x_max = self.x_min, self.x_max
-            y_min, y_max = self.y_min, self.y_max
+            if self.viewBox is not None:
+                if self.pg_live_follow_x or self.pg_live_follow_y:
+                    self.pg_disable_autorange(
+                        x=self.pg_live_follow_x,
+                        y=self.pg_live_follow_y,
+                    )
+                if self.pg_live_follow_x:
+                    self.viewBox.setXRange(self.x_min, self.x_max, padding=0.0)
+                if self.pg_live_follow_y:
+                    self.viewBox.setYRange(self.y_min, self.y_max, padding=0.0)
+
+                try:
+                    (x_min, x_max), (y_min, y_max) = self.viewBox.viewRange()
+                except Exception:
+                    x_min, x_max = self.x_min, self.x_max
+                    y_min, y_max = self.y_min, self.y_max
+            else:
+                x_min, x_max = self.x_min, self.x_max
+                y_min, y_max = self.y_min, self.y_max
+
             x_span = max(SMALLEST, x_max - x_min)
             y_span = max(SMALLEST, y_max - y_min)
 
-            # Avoid redundant setRange and setTick calls by comparing to previous values
             prev = getattr(self, "pg_last_ranges", None)
             if not prev:
-                # First time run, seed ranges once
-                self.viewBox.setXRange(self.x_min, x_max)
-                self.viewBox.setYRange(self.y_min, y_max)
                 self.pg_updateAxesTicks("x", x_min, x_max, n_major=MAJOR_TICKS, n_minor=MINOR_TICKS)
                 self.pg_updateAxesTicks("y", y_min, y_max, n_major=MAJOR_TICKS, n_minor=MINOR_TICKS)
-                self.pg_last_ranges = {"x": (x_min, x_max, x_span), 
-                                        "y": (y_min, y_max, y_span)}
             else:
-                # Previous values
                 x_min_prev, x_max_prev, x_span_prev = prev.get("x", (None, None, None))
                 y_min_prev, y_max_prev, y_span_prev = prev.get("y", (None, None, None))
 
-                x_limits_changed = False
-                x_span_changed   = False
-                y_limits_changed = False
-                y_span_changed   = False
-
-                # ─── X range ─────────────
-                if x_min_prev is None or x_max_prev is None:
-                    # No previous values
-                    x_limits_changed  = True
-                    x_span_changed    = True
-                else:
-                    # compare with previous values
-                    if (x_min_prev, x_max_prev) != (self.x_min, self.x_max):
-                        x_limits_changed = True
-                        if x_span != x_span_prev:
-                            x_span_changed = True
-
-                # ──── Y range ─────────────
-                if y_min_prev is None or y_max_prev is None:
-                    # no previous values
-                    y_limits_changed  = True
-                    y_span_changed    = True
-                    y_center_changed  = True
-                else:
-                    #  expand or shrink with hysteresis
-                    if not (isclose(y_min, y_min_prev, rel_tol=REL_TOL, abs_tol=0) or
-                            isclose(y_max, y_max_prev, rel_tol=REL_TOL, abs_tol=0)):
-                        y_limits_changed = True
-                        if not isclose(y_span, y_span_prev, rel_tol=REL_TOL, abs_tol=0):
-                            y_span_changed = True
-
-                if x_limits_changed:
-                    # set new range and update ticks
-                    self.viewBox.setXRange(x_min, x_max)
-                    x_min_prev, x_max_prev = x_min, x_max
-
-                if y_limits_changed:
-                    # set new range and update ticks
-                    self.viewBox.setYRange(y_min, y_max)
-                    y_min_prev, y_max_prev = y_min, y_max
-
-                if x_span_changed:
+                if (
+                    x_min_prev is None or x_max_prev is None or
+                    not (isclose(x_min, x_min_prev, rel_tol=REL_TOL, abs_tol=0) and
+                         isclose(x_max, x_max_prev, rel_tol=REL_TOL, abs_tol=0))
+                ) and (
+                    x_span_prev is None or
+                    not isclose(x_span, x_span_prev, rel_tol=REL_TOL, abs_tol=0)
+                ):
                     self.pg_updateAxesTicks("x", x_min, x_max, n_major=MAJOR_TICKS, n_minor=MINOR_TICKS)
-                    x_span_prev = x_span
 
-                if y_span_changed:
+                if (
+                    y_min_prev is None or y_max_prev is None or
+                    not (isclose(y_min, y_min_prev, rel_tol=REL_TOL, abs_tol=0) and
+                         isclose(y_max, y_max_prev, rel_tol=REL_TOL, abs_tol=0))
+                ) and (
+                    y_span_prev is None or
+                    not isclose(y_span, y_span_prev, rel_tol=REL_TOL, abs_tol=0)
+                ):
                     self.pg_updateAxesTicks("y", y_min, y_max, n_major=MAJOR_TICKS, n_minor=MINOR_TICKS)
-                    y_span_prev = y_span
 
-                # TranslateBy is actually less efficient
-                #   left over code
-                # dxr          = self.x_max - x_max_prev
-                # dxl          = self.x_min - x_min_prev
-                # if x_span_prev == x_span and dxr == dxl:
-                #     # translate view, no tick update needed
-                #     # self.viewBox.translateBy(x=dxr, y=0.0) # 38% 970
-                #     # self._x_realign_count += 1 
-                #     # if self._x_realign_count >= 120:
-                #     #    self.viewBox.setXRange(self.x_min, self.x_max) # 32% 830
-                #     #    self._x_realign_count = 0
-                # else:
-                #     # set new range and update ticks
-                #     self.viewBox.setXRange(self.x_min, self.x_max)
-                #     if x_span != x_span_prev:
-                #         self.pg_updateAxesTicks("x", self.x_min, self.x_max, n_major=MAJOR_TICKS, n_minor=MINOR_TICKS)
-
-                # Store current values for next comparison
-                self.pg_last_ranges = {
-                    "x": (x_min_prev, x_max_prev, x_span_prev), 
-                    "y": (y_min_prev, y_max_prev, y_span_prev)}
+            self.pg_last_ranges = {
+                "x": (x_min, x_max, x_span),
+                "y": (y_min, y_max, y_span),
+            }
 
         else:
             # FastPlotLib ─────────────────────────────────
@@ -2710,6 +2792,10 @@ class QChart(QObject):
             dlo = colon_pos + 1
             dhi = hdrs[i + 1][0] if i + 1 < len(hdrs) else n
             data = line[dlo:dhi].strip()
+            # A delimiter comma between adjacent headers belongs to the line syntax,
+            # not to the current field payload. Keep true empty payloads intact.
+            if data.endswith(",") and data[:-1].strip() != "":
+                data = data[:-1].rstrip()
             out.append((header, data))
 
         return out if out else [("", "")]
@@ -3069,14 +3155,13 @@ class QChart(QObject):
                     self.pg_clearLegend()
                     self.chartWidgetPG.clear()
 
-                # Disable mouse pan/zoom mode
-                # Disable auto ranging
+                self.pg_reset_live_follow()
+
+                # Keep mouse pan/zoom available while live-updating.
                 if self.viewBox:
-                    self.viewBox.setMouseEnabled(x=False, y=False)
+                    self.viewBox.setMouseEnabled(x=True, y=True)
                     self.viewBox.disableAutoRange(pg.ViewBox.XAxis)            # disable autorange, we will set view in updatePlot
                     self.viewBox.disableAutoRange(pg.ViewBox.YAxis)            # disable autorange, we will set view in updatePlot
-
-                    disconnect(self.viewBox.sigRangeChanged, self.on_pg_viewBox_changed)
 
                     self.viewBox.setLimits(
                         xMin      = None, 
@@ -3345,12 +3430,12 @@ class QChart(QObject):
                 # PyQtGraph ─────────────────────────────────
 
                 # Disable mouse pan/zoom mode
-                # Disable auto ranging
+                self.pg_reset_live_follow()
+
                 if self.viewBox:
-                    self.viewBox.setMouseEnabled(x=False, y=False)
+                    self.viewBox.setMouseEnabled(x=True, y=True)
                     self.viewBox.disableAutoRange(pg.ViewBox.XAxis)            # disable autorange, we will set view in updatePlot
                     self.viewBox.disableAutoRange(pg.ViewBox.YAxis)            # disable autorange, we will set view in updatePlot
-                    disconnect(self.viewBox.sigRangeChanged, self.on_pg_viewBox_changed)
                     self.viewBox.setLimits(
                         xMin      = None, 
                         xMax      = None,

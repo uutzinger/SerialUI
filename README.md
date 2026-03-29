@@ -217,8 +217,6 @@ On Windows amr64 platform, llvmlite is not available and numba acceleration is n
 
 ## Contributors
 
-Urs Utzinger, 2022-2025 (University of Arizona), 
-
-Cameron K Brooks, 2024 (Western University), 
-
-GPT-5.3, OpenAI
+- Urs Utzinger, 2022-2026 (University of Arizona)
+- Cameron K Brooks, 2024 (Western University)
+- GPT-5.3,4, (OpenAI)

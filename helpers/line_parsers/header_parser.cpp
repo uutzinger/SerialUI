@@ -598,6 +598,18 @@ py::tuple parse_lines(
             HeaderData hd;
             hd.base_name = base;
 
+            // A trailing comma that only separates this header from the next
+            // header should not create a second empty subchannel.
+            if (!data_sv.empty() && data_sv.back() == ',') {
+                std::string_view candidate = data_sv.substr(0, data_sv.size() - 1);
+                size_t lo = 0;
+                size_t hi = candidate.size();
+                trim_range(candidate, lo, hi);
+                if (hi > lo) {
+                    data_sv = candidate.substr(lo, hi - lo);
+                }
+            }
+
             // Split on commas into subs[]
             subs.clear();
             split_channels(data_sv, subs);

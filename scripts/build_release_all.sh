@@ -9,6 +9,7 @@ RUN_LINUX=1
 RUN_MACOS=1
 RUN_WINDOWS=1
 RUN_RASPBIAN=0
+COMMIT_MSG=""
 
 usage() {
   cat <<'EOF'
@@ -21,6 +22,7 @@ Pipeline:
   3) Run release.sh --upload-assets
 
 Options:
+  --commit-msg "msg" Set custom commit message passed to release.sh
   --skip-linux       Skip Linux runner build
   --skip-macos       Skip macOS runner build
   --skip-windows     Skip Windows runner build
@@ -31,6 +33,11 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --commit-msg)
+      [[ $# -ge 2 ]] || { echo "Error: --commit-msg requires a value" >&2; exit 2; }
+      COMMIT_MSG="$2"
+      shift 2
+      ;;
     --skip-linux) RUN_LINUX=0; shift ;;
     --skip-macos) RUN_MACOS=0; shift ;;
     --skip-windows) RUN_WINDOWS=0; shift ;;
@@ -112,6 +119,10 @@ if [[ "${HAS_CHANGES}" -eq 1 ]]; then
   RELEASE_ARGS=(--commit "${RELEASE_ARGS[@]}")
 else
   echo "No local changes detected; running release without --commit."
+fi
+
+if [[ -n "${COMMIT_MSG}" ]]; then
+  RELEASE_ARGS=(--commit-msg "${COMMIT_MSG}" "${RELEASE_ARGS[@]}")
 fi
 
 echo ""

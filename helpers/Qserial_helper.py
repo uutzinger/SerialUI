@@ -834,7 +834,7 @@ class QSerial(QObject):
             elif self.serialPort_previous != "":
                 index = self.ui.comboBoxDropDown_SerialPorts.findText(self.serialPort_previous)
             else:
-                index = -1
+                index = 0 if self.serialPorts else -1
             if index > -1:                                                     # if we found item
                 self.ui.comboBoxDropDown_SerialPorts.setCurrentIndex(index)
                 self.ui.pushButton_SerialOpenClose.setEnabled(True)
@@ -923,7 +923,9 @@ class QSerial(QObject):
         index = self.ui.comboBoxDropDown_SerialPorts.findText(self.serialPort)
         if index > -1:                                                         # if we found previously selected item
             self.ui.comboBoxDropDown_SerialPorts.setCurrentIndex(index)
-        else:                                                                  # if we did not find previous item, set box to last item (None)
+        elif self.serialPorts:                                                 # default to the first available real port
+            self.ui.comboBoxDropDown_SerialPorts.setCurrentIndex(0)
+        else:                                                                  # no serial ports available, keep box on "None"
             self.ui.comboBoxDropDown_SerialPorts.setCurrentIndex(lenPortNames)
             self.serialPort_previous = ""
         # enable signals again

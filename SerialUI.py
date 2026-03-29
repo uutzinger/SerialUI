@@ -118,20 +118,20 @@ def _run_c_parser_selftest_mode() -> int:
     errors = []
 
     try:
-        from line_parsers import simple_parser  # noqa: F401
-        from line_parsers import header_parser  # noqa: F401
-        print("C parser self-test passed (backend=line_parsers)")
-        return 0
-    except Exception as exc:
-        errors.append(f"line_parsers: {exc}")
-
-    try:
         from helpers.line_parsers import simple_parser  # noqa: F401
         from helpers.line_parsers import header_parser  # noqa: F401
         print("C parser self-test passed (backend=helpers.line_parsers)")
         return 0
     except Exception as exc:
         errors.append(f"helpers.line_parsers: {exc}")
+
+    try:
+        from line_parsers import simple_parser  # noqa: F401
+        from line_parsers import header_parser  # noqa: F401
+        print("C parser self-test passed (backend=line_parsers)")
+        return 0
+    except Exception as exc:
+        errors.append(f"line_parsers: {exc}")
 
     print(
         "C parser self-test failed: " + " | ".join(errors),
@@ -1180,6 +1180,11 @@ class mainWindow(QMainWindow):
         self.handle_log(logging.INFO,
             f"[{self.instance_name[:15]:<15}]: Finishing workers..."
         )
+
+        # Keep the BLE worker stack alive while the disconnect handshake completes.
+        if USE_BLE and getattr(self, "ble", None) is not None:
+            self.ble.disconnect_before_shutdown(timeout_ms=5000)
+            QCoreApplication.processEvents()
 
         disconnect(self.mtocRequest,             self.serial.on_mtocRequest)
         disconnect(self.mtocRequest,             self.chart.on_mtocRequest)

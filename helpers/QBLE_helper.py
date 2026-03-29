@@ -17,6 +17,7 @@
 from config import (FLUSH_INTERVAL_MS,
                     BLEPIN, 
                     BLESCAN_SHORT, BLESCAN_LONG,
+                    DEFAULT_TARGET_DEVICE_NAME,
                     SERVICE_UUID, RX_CHARACTERISTIC_UUID, TX_CHARACTERISTIC_UUID,
                     USE_BLUETOOTHCTL, BLEMTUMAX, BLEMTUNORMAL, ATT_HDR, BLEMTUDEFAULT,
                     PROFILEME, DEBUGSERIAL, DEBUG_LEVEL,
@@ -673,6 +674,8 @@ class QBLESerial(QObject):
         # save current selected device 
         currentIndex   = self.ui.comboBoxDropDown_Device.currentIndex()
         selectedDevice = self.ui.comboBoxDropDown_Device.itemData(currentIndex)
+        selected_address = getattr(selectedDevice, "address", None)
+        current_address = getattr(self.device, "address", None)
 
         self.ui.comboBoxDropDown_Device.blockSignals(True)
         self.ui.comboBoxDropDown_Device.clear()
@@ -681,7 +684,14 @@ class QBLESerial(QObject):
         
         # search for previous device and select it
         index_to_select = -1
-        if selectedDevice is not None:
+        if selected_address or current_address:
+            for index in range(self.ui.comboBoxDropDown_Device.count()):
+                device = self.ui.comboBoxDropDown_Device.itemData(index)
+                device_address = getattr(device, "address", None)
+                if device_address and device_address in {selected_address, current_address}:
+                    index_to_select = index
+                    break
+        elif selectedDevice is not None:
             for index in range(self.ui.comboBoxDropDown_Device.count()):
                 if self.ui.comboBoxDropDown_Device.itemData(index) == selectedDevice:
                     index_to_select = index
@@ -1157,6 +1167,66 @@ class QBLESerial(QObject):
 
         self.ui.statusBar().showMessage('BLE device  disconnected.', 2000)
 
+    def disconnect_before_shutdown(self, timeout_ms: int = 5000) -> bool:
+        """
+        Request a BLE disconnect while the worker thread and event loop are still alive.
+
+        The disconnect button path works because it always queues the request to the
+        worker and lets the worker decide whether a client is still connected. Reuse
+        that same approach for shutdown instead of relying on cross-thread reads of
+        `client.is_connected`, which can be stale or already cleared by teardown.
+        """
+        bleakWorker = getattr(self, "bleakWorker", None)
+        if not bleakWorker or not qobject_alive(bleakWorker):
+            return False
+
+        try:
+            bleakWorker.reconnect = False
+        except Exception:
+            pass
+
+        button_connected = False
+        try:
+            button_connected = (self.ui.pushButton_BLEConnect.text() == "Disconnect")
+        except Exception:
+            pass
+
+        client = getattr(bleakWorker, "client", None)
+        needs_disconnect = any((
+            button_connected,
+            bool(client is not None),
+            bool(getattr(bleakWorker, "disconnecting", False)),
+            bool(self.device_info.get("connected", False)),
+            bool(self.receiverIsRunning),
+        ))
+        if not needs_disconnect:
+            return False
+
+        self.logSignal.emit(logging.INFO,
+            f"[{self.instance_name[:15]:<15}]: Requesting BLE device disconnect before shutdown."
+        )
+        if not getattr(bleakWorker, "disconnecting", False):
+            self.disconnectDeviceRequest.emit()
+
+        ok, args, reason = wait_for_signal(
+            bleakWorker.disconnectingSuccess,
+            timeout_ms=timeout_ms,
+            sender=bleakWorker,
+        )
+        if not ok and reason != "destroyed":
+            self.logSignal.emit(logging.WARNING,
+                f"[{self.instance_name[:15]:<15}]: BLE disconnect before shutdown timed out because of {reason}."
+            )
+            return False
+
+        if args and args[0] is False:
+            self.logSignal.emit(logging.WARNING,
+                f"[{self.instance_name[:15]:<15}]: BLE disconnect before shutdown reported failure."
+            )
+            return False
+
+        return bool(ok)
+
     # Bluetoothctl SUCCESS
     # ----------------------------------------
 
@@ -1269,6 +1339,9 @@ class QBLESerial(QObject):
         bleakThread = getattr(self, "bleakThread", None)
         btWorker    = getattr(self, "bluetoothctlWorker", None)
         btThread    = getattr(self, "bluetoothctlThread", None)
+
+        # Explicit disconnect must happen before the worker thread is asked to finish.
+        self.disconnect_before_shutdown(timeout_ms=5000)
 
         # Request both workers to finish (single signal wired to both)
         self.finishWorkerRequest.emit()
@@ -1926,17 +1999,35 @@ class BleakWorker(QObject):
             )
         
         self.NSUdevices = []
+        seen_addresses = set()
+        known_addresses = {
+            getattr(self.device, "address", None),
+            getattr(self.device_backup, "address", None),
+        }
+        known_addresses = {address for address in known_addresses if address}
+        known_names = {
+            getattr(self.device, "name", None),
+            getattr(self.device_backup, "name", None),
+            DEFAULT_TARGET_DEVICE_NAME,
+        }
+        known_names = {name.strip() for name in known_names if isinstance(name, str) and name.strip()}
         for device, adv in devices.values():
             self.logSignal.emit(logging.INFO, 
                 f"[{self.instance_name[:15]:<15}]: Found device: {device.name} ({device.address}) RSSI: {adv.rssi} dBm"
             )
             suids = adv.service_uuids or ()
-            for service_uuid in suids:
-                # self.logSignal.emit(logging.INFO, 
-                #     f"[{self.instance_name[:15]:<15}]: Found service UUID: {service_uuid}"
-                # )
-                if service_uuid.lower() == SERVICE_UUID.lower():
+            service_match = any(service_uuid.lower() == SERVICE_UUID.lower() for service_uuid in suids)
+            name_match = bool(device.name and device.name.strip() in known_names)
+            address_match = bool(device.address and device.address in known_addresses)
+
+            if service_match or name_match or address_match:
+                if device.address not in seen_addresses:
                     self.NSUdevices.append(device)
+                    seen_addresses.add(device.address)
+                if not service_match and (name_match or address_match):
+                    self.logSignal.emit(logging.INFO,
+                        f"[{self.instance_name[:15]:<15}]: Keeping known BLE device without advertised NUS UUID: {device.name} ({device.address})"
+                    )
 
         if not self.NSUdevices:
             self.logSignal.emit(logging.INFO, 

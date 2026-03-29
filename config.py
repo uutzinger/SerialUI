@@ -6,7 +6,7 @@ import re
 from helpers.colors import color_names_sweet16 as COLORS
 ################################################################################################################################
 # Constants General
-VERSION                 = "1.4.13"               # this version
+VERSION                 = "1.5.0"               # this version
 AUTHOR                  = "Urs Utzinger"         # me
 DATE                    = "2026"                 # year of last update
 ################################################################################################################################
@@ -52,7 +52,7 @@ CACHE_FILE              = "wgpu_pipeline.cache"  # once GPU cache read and write
 ################################################################################################################################
 # Constants BLE
 # Medibrick
-DEFAULT_TARGET_DEVICE_NAME = "MediBrick"        # The name of the BLE device to search for,  
+DEFAULT_TARGET_DEVICE_NAME = "BLESerialDevice"  # The name of the BLE device to search for if its already connected  
                                                 # Program searches for all Nordic Serial UART service by default
 BLEPIN                  = "123456"              # Known pairing pin for Medibrick_BLE
 # UUIDs for the Nordic Serial UART service and characteristics
