@@ -916,20 +916,27 @@ class QSerial(QObject):
         self.serialPortHWIDs = portHWIDs
         
         lenPortNames = len(self.serialPortNames)
+        selected_index = -1
         self.ui.comboBoxDropDown_SerialPorts.blockSignals(True)                # block the box from emitting changed index signal when items are added
         # populate new items
         self.ui.comboBoxDropDown_SerialPorts.clear()
         self.ui.comboBoxDropDown_SerialPorts.addItems(self.serialPorts + ["None"])
         index = self.ui.comboBoxDropDown_SerialPorts.findText(self.serialPort)
         if index > -1:                                                         # if we found previously selected item
+            selected_index = index
             self.ui.comboBoxDropDown_SerialPorts.setCurrentIndex(index)
         elif self.serialPorts:                                                 # default to the first available real port
+            selected_index = 0
             self.ui.comboBoxDropDown_SerialPorts.setCurrentIndex(0)
         else:                                                                  # no serial ports available, keep box on "None"
+            selected_index = lenPortNames
             self.ui.comboBoxDropDown_SerialPorts.setCurrentIndex(lenPortNames)
             self.serialPort_previous = ""
         # enable signals again
         self.ui.comboBoxDropDown_SerialPorts.blockSignals(False)
+        self.ui.pushButton_SerialOpenClose.setEnabled(
+            self.serialConnected or 0 <= selected_index < len(self.serialPorts)
+        )
 
         self.logSignal.emit(logging.DEBUG,
             f"[{self.instance_name[:15]:<15}]: Port list received."
