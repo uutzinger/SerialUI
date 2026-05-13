@@ -25,7 +25,7 @@ except Exception:
 try:
     from PyQt6.QtCore import (QEventLoop, pyqtSignal, QTimer, pyqtSlot, QStandardPaths, 
                               QObject, Qt, QEvent)
-    from PyQt6.QtGui import QColor, QOpenGLContext, QSurfaceFormat, QOffscreenSurface
+    from PyQt6.QtGui import QColor, QOpenGLContext, QPalette, QSurfaceFormat, QOffscreenSurface
     from PyQt6.QtWidgets import (QFileDialog, QDialogButtonBox, QMessageBox, QApplication, 
                                  QWidget, QMainWindow, QGraphicsView)
     ConnectionType= Qt.ConnectionType
@@ -47,7 +47,7 @@ try:
 except Exception:
     from PyQt5.QtCore import (QEventLoop, pyqtSignal, QTimer, pyqtSlot, QStandardPaths, 
                               QObject, Qt, QEvent)
-    from PyQt5.QtGui import QColor
+    from PyQt5.QtGui import QColor, QPalette
     from PyQt5.QtWidgets import (QFileDialog, QDialogButtonBox, QMessageBox, QApplication,
                                  QWidget, QMainWindow, QGraphicsView)
     ConnectionType= Qt
@@ -67,6 +67,27 @@ except Exception:
     EV_EXPOSE      = getattr(QEvent, "Expose", None)
 #
 WATCH_EVENTS = tuple(ev for ev in (EV_SHOW, EV_PARENTCHG, EV_RESIZE, EV_MOVE, EV_EXPOSE) if ev is not None)
+
+try:
+    PALETTE_ROLE = QPalette.ColorRole
+except AttributeError:
+    PALETTE_ROLE = QPalette
+
+PAL_WINDOW         = PALETTE_ROLE.Window
+PAL_WINDOW_TEXT    = PALETTE_ROLE.WindowText
+PAL_BASE           = PALETTE_ROLE.Base
+PAL_ALT_BASE       = PALETTE_ROLE.AlternateBase
+PAL_TEXT           = PALETTE_ROLE.Text
+PAL_MID            = PALETTE_ROLE.Mid
+PAL_MIDLIGHT       = PALETTE_ROLE.Midlight
+
+from config import (
+    CHART_BACKGROUND_FALLBACK, AXIS_COLOR_FALLBACK, POINT_COLOR_FALLBACK,
+    GRID_COLOR_FALLBACK, GRID_MINOR_COLOR_FALLBACK, TICK_COLOR_FALLBACK,
+    FRAME_TITLE_COLOR_FALLBACK, FRAME_PLANE_COLOR_FALLBACK,
+    LEGEND_BACKGROUND_FALLBACK, AXIS_FONT_COLOR_FALLBACK,
+    TITLE_FONT_COLOR_FALLBACK, LEGEND_FONT_COLOR_FALLBACK,
+)
 #
 
 # ==============================================================================
@@ -242,6 +263,86 @@ def color_to_rgba(name: str) -> tuple[float, float, float, float]:
 
 def rgbafloat_to_rgbaint(color: tuple[float, float, float, float]) -> tuple[int, int, int, int]:
     return tuple(int(c * 255) for c in color)
+
+def qcolor_to_rgba(qcolor: QColor) -> tuple[float, float, float, float]:
+    """Convert QColor into an RGBA float tuple in the 0..1 range."""
+    return (qcolor.redF(), qcolor.greenF(), qcolor.blueF(), qcolor.alphaF())
+
+def with_alpha(color: tuple[float, float, float, float], alpha: float) -> tuple[float, float, float, float]:
+    """Return a copy of color with the provided alpha, clipped to 0..1."""
+    r, g, b, _ = color
+    return (r, g, b, clip_value(alpha, 0.0, 1.0))
+
+def blend_colors(
+    color_a: tuple[float, float, float, float],
+    color_b: tuple[float, float, float, float],
+    amount: float,
+) -> tuple[float, float, float, float]:
+    """
+    Blend two RGBA float tuples.
+    amount=0 returns color_a, amount=1 returns color_b.
+    """
+    t = clip_value(amount, 0.0, 1.0)
+    return tuple((1.0 - t) * a + t * b for a, b in zip(color_a, color_b))
+
+def build_chart_theme(palette: Optional[QPalette] = None) -> dict:
+    """
+    Build a chart color theme from the active Qt palette.
+    Returns fallback colors when no QApplication or palette is available.
+    """
+    fallback = {
+        "chart_background": CHART_BACKGROUND_FALLBACK,
+        "axis_color": AXIS_COLOR_FALLBACK,
+        "point_color": POINT_COLOR_FALLBACK,
+        "grid_color": GRID_COLOR_FALLBACK,
+        "grid_minor_color": GRID_MINOR_COLOR_FALLBACK,
+        "tick_color": TICK_COLOR_FALLBACK,
+        "frame_title_color": FRAME_TITLE_COLOR_FALLBACK,
+        "frame_plane_color": FRAME_PLANE_COLOR_FALLBACK,
+        "legend_background_color": LEGEND_BACKGROUND_FALLBACK,
+        "axis_font_color": AXIS_FONT_COLOR_FALLBACK,
+        "title_color": TITLE_FONT_COLOR_FALLBACK,
+        "legend_font_color": LEGEND_FONT_COLOR_FALLBACK,
+        "is_dark": False,
+    }
+
+    app = QApplication.instance()
+    if palette is None and app is not None:
+        palette = app.palette()
+    if palette is None:
+        return fallback
+
+    window = qcolor_to_rgba(palette.color(PAL_WINDOW))
+    window_text = qcolor_to_rgba(palette.color(PAL_WINDOW_TEXT))
+    base = qcolor_to_rgba(palette.color(PAL_BASE))
+    alt_base = qcolor_to_rgba(palette.color(PAL_ALT_BASE))
+    text = qcolor_to_rgba(palette.color(PAL_TEXT))
+    mid = qcolor_to_rgba(palette.color(PAL_MID))
+    midlight = qcolor_to_rgba(palette.color(PAL_MIDLIGHT))
+
+    luminance = 0.2126 * base[0] + 0.7152 * base[1] + 0.0722 * base[2]
+    is_dark = luminance < 0.5
+
+    frame_plane = blend_colors(window, alt_base, 0.35)
+    legend_bg = with_alpha(blend_colors(base, alt_base, 0.55), 0.88)
+    grid_major = with_alpha(blend_colors(base, mid, 0.72), 0.65 if is_dark else 0.45)
+    grid_minor = with_alpha(blend_colors(base, midlight, 0.65), 0.45 if is_dark else 0.30)
+
+    return {
+        "chart_background": base,
+        "axis_color": window_text,
+        "point_color": text,
+        "grid_color": grid_major,
+        "grid_minor_color": grid_minor,
+        "tick_color": window_text,
+        "frame_title_color": window_text,
+        "frame_plane_color": frame_plane,
+        "legend_background_color": legend_bg,
+        "axis_font_color": text,
+        "title_color": window_text,
+        "legend_font_color": text,
+        "is_dark": is_dark,
+    }
 
 def rgba_tuple_to_qt(rgba):
     """

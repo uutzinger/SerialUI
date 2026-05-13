@@ -129,11 +129,45 @@ void trim_range(std::string_view sv, size_t &lo, size_t &hi)
     }
 }
 
+static FORCE_INLINE
+bool is_header_token_char(unsigned char c)
+{
+    return std::isalnum(c) || c == '_' || c == '/' || c == '[' || c == ']';
+}
+
+static FORCE_INLINE
+bool is_unquoted_header_token(std::string_view sv, size_t start, size_t end)
+{
+    if (start >= end) {
+        return false;
+    }
+
+    unsigned char first = static_cast<unsigned char>(sv[start]);
+    if (std::isalpha(first) || first == '_') {
+        return true;
+    }
+
+    // Permit bracketed unit tokens such as "[mV]" at the end of a header.
+    // Require at least one alphabetic character inside the brackets so
+    // numeric prefixes like "1 2 [3]:" do not become headers.
+    if (sv[start] == '[' && sv[end - 1] == ']') {
+        for (size_t i = start + 1; i + 1 < end; ++i) {
+            unsigned char c = static_cast<unsigned char>(sv[i]);
+            if (std::isalpha(c)) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 //------------------------------------------------------------------------
 // Split Headers and Data Segments:
 //   split segment into header, data
-//   header tokens can contain (A–Z or a–z) or a digit (0–9) or underscore (_) or slash (/)
-//   header can also be enclosed in quotes '' or "" to allow any character (not yet supported)
+//   header tokens can contain (A–Z or a–z), digits (0–9), underscore (_),
+//   slash (/), or bracketed unit suffixes such as [mV]
+//   header can also be enclosed in quotes '' or "" to allow delimiter characters
 //   headerless chunk can ocur at beginning when header with colon is not present
 // Example
 // "  α=123, β:45 ,  γ:hello, `xyz`  , trailing beta_1: 1,2 3,4"
@@ -184,16 +218,17 @@ split_headers(std::string_view sv)
                     }
                 }
                 if (found && start < pos - 1) {
-                    // We have quotes from start..(pos-1).  The actual header text is
-                    // inside them (start+1 .. pos-1).  We'll return that without quotes.
-                    hdrs.push_back({ start + 1, pos, true });
+                    // We have quotes from start..(pos-1).  Store the opening quote
+                    // as hdr_start so any prefix stops before the quoted header.
+                    hdrs.push_back({ start, pos, true });
                     continue; 
                 } // If we didn’t find a matching quote, fall through to the unquoted logic.
             }
 
             // Unquoted header case:
-            //   allow multi-word headers like "Blood Pressure:" as long as each word
-            //   starts with [A-Za-z_] and then [A-Za-z0-9_/]*.
+            //   allow multi-word headers like "Blood Pressure:" as long as each
+            //   regular word starts with [A-Za-z_], and allow bracketed unit
+            //   words like "[mV]".
             //   This avoids consuming numeric data prefixes such as "1 2 A:".
             size_t end = pos;
             while (end > 0 && std::isspace(static_cast<unsigned char>(sv[end - 1]))) {
@@ -208,7 +243,7 @@ split_headers(std::string_view sv)
             size_t tok_start = tok_end;
             while (tok_start > 0) {
                 unsigned char c = static_cast<unsigned char>(sv[tok_start - 1]);
-                if (std::isalnum(c) || c == '_' || c == '/') {
+                if (is_header_token_char(c)) {
                     --tok_start;
                 } else {
                     break;
@@ -217,14 +252,13 @@ split_headers(std::string_view sv)
             if (tok_start == tok_end) {
                 continue;
             }
-            unsigned char first = static_cast<unsigned char>(sv[tok_start]);
-            if (!(std::isalpha(first) || first == '_')) {
+            if (!is_unquoted_header_token(sv, tok_start, tok_end)) {
                 continue;
             }
 
             size_t start = tok_start;
             size_t scan = tok_start;
-            // Extend left across "<spaces><token>" where token also starts with [A-Za-z_].
+            // Extend left across "<spaces><token>" where token is also header-like.
             while (scan > 0) {
                 size_t ws_end = scan;
                 while (ws_end > 0 && std::isspace(static_cast<unsigned char>(sv[ws_end - 1]))) {
@@ -238,7 +272,7 @@ split_headers(std::string_view sv)
                 size_t prev_start = prev_end;
                 while (prev_start > 0) {
                     unsigned char c = static_cast<unsigned char>(sv[prev_start - 1]);
-                    if (std::isalnum(c) || c == '_' || c == '/') {
+                    if (is_header_token_char(c)) {
                         --prev_start;
                     } else {
                         break;
@@ -247,8 +281,7 @@ split_headers(std::string_view sv)
                 if (prev_start == prev_end) {
                     break;
                 }
-                unsigned char prev_first = static_cast<unsigned char>(sv[prev_start]);
-                if (!(std::isalpha(prev_first) || prev_first == '_')) {
+                if (!is_unquoted_header_token(sv, prev_start, prev_end)) {
                     break;
                 }
 
@@ -295,10 +328,15 @@ split_headers(std::string_view sv)
 
         // a) Extract “header” 
         //  - if quoted, that range is exactly the inner-quote text
-        //  - if unquoted, that range is the  run[A-Za-z0-9_]+
+        //  - if unquoted, that range is the full accepted header text
         size_t hlo = H.hdr_start;
         size_t hhi = H.colon_pos;
-        if (!H.quoted) {
+        if (H.quoted) {
+            ++hlo;
+            if (hhi > hlo && sv[hhi - 1] == sv[H.hdr_start]) {
+                --hhi;
+            }
+        } else {
             trim_range(sv, hlo, hhi);
         }
         std::string_view header_sv =

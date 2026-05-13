@@ -30,6 +30,19 @@ require_cmd() {
   fi
 }
 
+collect_release_assets() {
+  local version="$1"
+  local -n out_ref="$2"
+  out_ref=()
+
+  shopt -s nullglob
+  out_ref=(
+    "dist/SerialUI-${version}-"*.zip
+    "dist/SerialUI-${version}-"*.tar.gz
+  )
+  shopt -u nullglob
+}
+
 validate_version_format() {
   local version="$1"
   if [[ ! "${version}" =~ ^[0-9]+(\.[0-9]+){2}([a-zA-Z0-9._-]*)?$ ]]; then
@@ -89,11 +102,9 @@ create_github_release() {
 
   if [[ "${with_assets}" -eq 1 ]]; then
     require_dir "dist"
-    shopt -s nullglob
-    assets=(dist/*.tar.gz dist/*.zip)
-    shopt -u nullglob
+    collect_release_assets "${version}" assets
     if [[ "${#assets[@]}" -eq 0 ]]; then
-      echo "Error: no release assets found in dist/ (expected *.tar.gz or *.zip)." >&2
+      echo "Error: no release assets found in dist/ for version ${version} (expected SerialUI-${version}-*.zip or *.tar.gz)." >&2
       exit 2
     fi
   fi
@@ -135,11 +146,9 @@ upload_release_assets() {
     exit 2
   fi
 
-  shopt -s nullglob
-  assets=(dist/*.tar.gz dist/*.zip)
-  shopt -u nullglob
+  collect_release_assets "${version}" assets
   if [[ "${#assets[@]}" -eq 0 ]]; then
-    echo "Error: no uploadable assets found in dist/ (expected *.tar.gz or *.zip)." >&2
+    echo "Error: no uploadable assets found in dist/ for version ${version} (expected SerialUI-${version}-*.zip or *.tar.gz)." >&2
     exit 2
   fi
 

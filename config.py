@@ -6,7 +6,7 @@ import re
 from helpers.colors import color_names_sweet16 as COLORS
 ################################################################################################################################
 # Constants General
-VERSION                 = "1.5.1"                # this version
+VERSION                 = "1.5.2"                # this version
 AUTHOR                  = "Urs Utzinger"         # me
 DATE                    = "2026"                 # year of last update
 ################################################################################################################################
@@ -73,9 +73,8 @@ BLEMTUDEFAULT           =  23                   # Default MTU size
 # be lower than what we request.
 ################################################################################################################################
 # Constants Text Display
-BACKGROUNDCOLOR         = "#ffffff"
-BACKGROUNDCOLOR_LOG     = "#f0f0f0"
-BACKGROUNDCOLOR_TABS    = "#f0f0ff"
+# Standard Qt widgets should inherit the active application palette.
+# Avoid hard-coded widget backgrounds here so OS light/dark themes remain readable.
 # Remove ANSI escape sequences
 ANSI_ESCAPE             = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 ENCODING                = "utf-8"               # default encoding for text display
@@ -155,19 +154,21 @@ DEBUG_LEVEL = LOG_DEFAULT_NAME
 # Constants for CHART Options
 LINEWIDTH               = 2
 AXIS_LINEWIDTH          = 2
-CHART_BACKGROUND_COLOR  = WHITE
-AXIS_COLOR              = BLACK
-POINT_COLOR             = BLACK
-GRID_COLOR              = DARK_GRAY
-GRID_MINOR_COLOR        = LIGHT_GRAY
+# Charts are custom-rendered and do not fully inherit Qt widget styling.
+# These values act as palette-independent fallbacks when no Qt palette is available.
+CHART_BACKGROUND_FALLBACK  = WHITE
+AXIS_COLOR_FALLBACK        = BLACK
+POINT_COLOR_FALLBACK       = BLACK
+GRID_COLOR_FALLBACK        = DARK_GRAY
+GRID_MINOR_COLOR_FALLBACK  = LIGHT_GRAY
 GRID_ALPHA              = 0.3
-TICK_COLOR              = BLACK
-FRAME_TITLE_COLOR       = BLACK
-FRAME_PLANE_COLOR       = LIGHT_GRAY
-LEGEND_BACKGROUND_COLOR = TRANSPARENT_LIGHT_GRAY
-AXIS_FONT_COLOR         = BLACK
-TITLE_FONT_COLOR        = BLACK
-LEGEND_FONT_COLOR       = BLACK
+TICK_COLOR_FALLBACK        = BLACK
+FRAME_TITLE_COLOR_FALLBACK = BLACK
+FRAME_PLANE_COLOR_FALLBACK = LIGHT_GRAY
+LEGEND_BACKGROUND_FALLBACK = TRANSPARENT_LIGHT_GRAY
+AXIS_FONT_COLOR_FALLBACK   = BLACK
+TITLE_FONT_COLOR_FALLBACK  = BLACK
+LEGEND_FONT_COLOR_FALLBACK = BLACK
 CAMERA_PAD              = 1.05                  #  5% padding for camera view
 SMALLEST                = 1e-18
 REL_TOL                 = 0.03

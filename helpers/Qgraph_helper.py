@@ -14,10 +14,7 @@
 from config import ( MAX_ROWS, MAX_COLS, MAX_ROWS_LINEDATA,
                      USE_FASTPLOTLIB, USE_PARSERACCEL, CACHE_FILE,
                      DEBUGCHART, PROFILEME, DEBUG_LEVEL, DEBUGFASTPLOTLIB,
-                     COLORS, AXIS_FONT_COLOR, AXIS_COLOR, GRID_COLOR, GRID_MINOR_COLOR,
-                     FRAME_PLANE_COLOR, FRAME_TITLE_COLOR, LEGEND_FONT_COLOR,
-                     GRID_ALPHA, TICK_COLOR, POINT_COLOR, 
-                     CHART_BACKGROUND_COLOR, LEGEND_BACKGROUND_COLOR,
+                     COLORS, GRID_ALPHA,
                      MAJOR_TICKS, MINOR_TICKS,
                      LINEWIDTH, AXIS_LINEWIDTH,
                      PARSE_OPTIONS, PARSE_DEFAULT_NAME, PARSE_OPTIONS_INV,
@@ -220,6 +217,7 @@ from helpers.Circular_Buffer import (
 )
 #
 from helpers.General_helper import (clip_value, rotate, color_to_rgba, rgbafloat_to_rgbaint,
+                                    build_chart_theme,
                                     select_file, confirm_overwrite_append, is_widget_gl_free,
                                     connect, disconnect)
 #
@@ -451,6 +449,9 @@ class QChart(QObject):
 
         self.warning = True                                                    # flag to only warn once about binary data with separator
         self._accel_status_reported = False
+        self.chart_theme = build_chart_theme()
+        self.fpl_bottom_label = None
+        self.fpl_left_label = None
 
         # Report startup capability state immediately. Route to parent log handler
         # when available; otherwise fall back to local console logger.
@@ -460,6 +461,35 @@ class QChart(QObject):
             logging.INFO, 
             f"[{self.instance_name[:15]:<15}]: QChart initialized."
         )
+
+    def refresh_theme(self, palette=None) -> None:
+        """Recompute theme colors from the active Qt palette and apply them."""
+        self.chart_theme = build_chart_theme(palette)
+
+        if getattr(self, "chartPGInitialized", False):
+            self.pg_apply_theme()
+        if getattr(self, "chartFPLInitialized", False):
+            self.fpl_apply_theme()
+
+    def _theme_qcolor(self, key: str) -> QColor:
+        return QColor(*rgbafloat_to_rgbaint(self.chart_theme[key]))
+
+    def _apply_fpl_color(self, obj, color_key: str) -> None:
+        if obj is None:
+            return
+        c = pygfx.Color(self.chart_theme[color_key])
+        if hasattr(obj, "material"):
+            if hasattr(obj.material, "color"):
+                obj.material.color = c
+            if hasattr(obj.material, "outline_color"):
+                obj.material.outline_color = c
+            if hasattr(obj.material, "edge_color"):
+                obj.material.edge_color = c
+        if hasattr(obj, "color"):
+            try:
+                obj.color = c
+            except Exception:
+                pass
 
     def _acceleration_status_messages(self):
         """Build one-time capability status messages for parser and numba paths."""
@@ -633,6 +663,164 @@ class QChart(QObject):
     # pyqtgraph functions
     # ==========================================================================
 
+    def pg_apply_theme(self) -> None:
+        """Apply the current palette-derived theme to an existing PyQtGraph chart."""
+        fg_qcolor = self._theme_qcolor("axis_font_color")
+        pg.setConfigOptions(
+            antialias=False,
+            foreground=fg_qcolor,
+        )
+
+        chart_widget = getattr(self, "chartWidgetPG", None)
+        if chart_widget is None:
+            return
+
+        chart_widget.setBackground(rgbafloat_to_rgbaint(self.chart_theme["chart_background"]))
+
+        try:
+            plot_item = chart_widget.getPlotItem()
+        except Exception:
+            plot_item = None
+
+        if plot_item is not None:
+            axis_pen = pg.mkPen(self._theme_qcolor("axis_color"), width=AXIS_LINEWIDTH)
+            text_pen = self._theme_qcolor("axis_font_color")
+            title_color = self._theme_qcolor("title_color")
+            plot_item.setLabel("left", "Signal", color=text_pen.name())
+            plot_item.setLabel("bottom", "Sample", color=text_pen.name())
+            plot_item.setTitle("Chart", color=title_color.name())
+
+            for axis_name in ("left", "bottom"):
+                axis_item = plot_item.getAxis(axis_name)
+                if axis_item is None:
+                    continue
+                try:
+                    axis_item.setPen(axis_pen)
+                except Exception:
+                    pass
+                if hasattr(axis_item, "setTextPen"):
+                    try:
+                        axis_item.setTextPen(text_pen)
+                    except Exception:
+                        pass
+
+        legend = getattr(self, "legend", None)
+        if legend is not None:
+            bg_qc = self._theme_qcolor("legend_background_color")
+            font_qc = self._theme_qcolor("legend_font_color")
+            try:
+                legend.setBrush(QBrush(bg_qc))
+                legend.setPen(pg.mkPen(bg_qc))
+            except Exception:
+                pass
+            if hasattr(legend, "setLabelTextColor"):
+                try:
+                    legend.setLabelTextColor(font_qc)
+                except Exception:
+                    pass
+
+    def fpl_apply_theme(self) -> None:
+        """Apply the current palette-derived theme to an existing FastPlotLib chart."""
+        if pygfx is None:
+            return
+
+        subplot = getattr(self, "fpl_subplot", None)
+        if subplot is None:
+            return
+
+        theme = self.chart_theme
+        subplot.background_color = pygfx.Color(theme["chart_background"])
+
+        frame = getattr(subplot, "frame", None)
+        if frame is not None and hasattr(frame, "plane"):
+            frame.plane.material.color = pygfx.Color(theme["frame_plane_color"])
+            pc = getattr(frame, "plane_color", None)
+            if pc is not None:
+                base = theme["frame_plane_color"]
+
+                def _mod(col, factor):
+                    r, g, b, a = (col + (1.0,))[:4]
+                    return (
+                        clip_value(r * factor, 0.0, 1.0),
+                        clip_value(g * factor, 0.0, 1.0),
+                        clip_value(b * factor, 0.0, 1.0),
+                        a,
+                    )
+
+                idle_factor = 1.15 if theme["is_dark"] else 0.85
+                action_factor = 1.35 if theme["is_dark"] else 1.15
+                idle_color = _mod(base, idle_factor)
+                highlight_color = base
+                action_color = _mod(base, action_factor)
+                if hasattr(pc, "_replace") and hasattr(pc, "idle") and hasattr(pc, "highlight"):
+                    subplot.frame.plane_color = pc._replace(
+                        idle=pygfx.Color(idle_color),
+                        highlight=pygfx.Color(highlight_color),
+                        action=pygfx.Color(action_color),
+                    )
+                else:
+                    for attr_name, clr in (
+                        ("idle", idle_color),
+                        ("highlight", highlight_color),
+                        ("action", action_color),
+                        ("normal", base),
+                        ("base", base),
+                        ("hover", highlight_color),
+                    ):
+                        if hasattr(pc, attr_name):
+                            setattr(pc, attr_name, pygfx.Color(clr))
+
+        title = getattr(subplot, "title", None)
+        if title is not None:
+            title_color = pygfx.Color(theme["frame_title_color"])
+            if hasattr(title, "face_color"):
+                title.face_color = title_color
+            if hasattr(title, "outline_color"):
+                title.outline_color = title_color
+
+        for dock_name in ("bottom", "left", "right"):
+            dock = subplot.docks.get(dock_name)
+            if dock is not None:
+                dock.background_color = pygfx.Color(
+                    theme["legend_background_color"] if dock_name == "right" else theme["chart_background"]
+                )
+
+        self._apply_fpl_color(getattr(self, "fpl_bottom_label", None), "axis_font_color")
+        self._apply_fpl_color(getattr(self, "fpl_left_label", None), "axis_font_color")
+
+        ax = getattr(subplot, "axes", None)
+        if ax is not None:
+            if hasattr(ax.x, "line") and hasattr(ax.x.line, "material"):
+                ax.x.line.material.thickness = AXIS_LINEWIDTH
+            if hasattr(ax.y, "line") and hasattr(ax.y.line, "material"):
+                ax.y.line.material.thickness = AXIS_LINEWIDTH
+            self._apply_fpl_color(ax.x.line, "axis_color")
+            self._apply_fpl_color(getattr(ax.x, "ticks", None), "tick_color")
+            self._apply_fpl_color(getattr(ax.x, "minor_ticks", None), "grid_minor_color")
+            self._apply_fpl_color(getattr(ax.x, "points", None), "point_color")
+            self._apply_fpl_color(getattr(ax.x, "text", None), "axis_font_color")
+            self._apply_fpl_color(ax.y.line, "axis_color")
+            self._apply_fpl_color(getattr(ax.y, "ticks", None), "tick_color")
+            self._apply_fpl_color(getattr(ax.y, "minor_ticks", None), "grid_minor_color")
+            self._apply_fpl_color(getattr(ax.y, "points", None), "point_color")
+            self._apply_fpl_color(getattr(ax.y, "text", None), "axis_font_color")
+
+            if hasattr(ax.grids.xy, "material"):
+                ax.grids.xy.material.major_color = pygfx.Color(theme["grid_color"])
+                ax.grids.xy.material.minor_color = pygfx.Color(theme["grid_minor_color"])
+                ax.grids.xy.material.major_thickness = AXIS_LINEWIDTH
+                ax.grids.xy.material.minor_thickness = AXIS_LINEWIDTH / 2
+
+        legend = getattr(self, "legend", None)
+        if legend is not None:
+            try:
+                self.fpl_updateLegend(self.data_traces, self.channel_names)
+            except Exception:
+                pass
+
+        if getattr(self, "fpl_fig", None) is not None:
+            self.fpl_fig.canvas.request_draw()
+
     def initChartPG(self) -> bool:
         """
         Initialize the pyqtgraph chart. 
@@ -646,7 +834,8 @@ class QChart(QObject):
         self.ui.radioButton_useFPL.setEnabled(False)
         self.ui.pushButton_ChartSaveFigure.setText("Save Figure SVG")
         
-        fg_rgba = rgbafloat_to_rgbaint(AXIS_FONT_COLOR)
+        self.chart_theme = build_chart_theme()
+        fg_rgba = rgbafloat_to_rgbaint(self.chart_theme["axis_font_color"])
         pg.setConfigOptions(
             antialias = False,
             foreground = QColor(*fg_rgba)
@@ -667,7 +856,7 @@ class QChart(QObject):
             layoutPG.addWidget(self.chartWidgetPG)
 
             # Setting the pyQtGraph Widget features
-            self.chartWidgetPG.setBackground(rgbafloat_to_rgbaint(CHART_BACKGROUND_COLOR))
+            self.chartWidgetPG.setBackground(rgbafloat_to_rgbaint(self.chart_theme["chart_background"]))
             self.chartWidgetPG.showGrid(x=True, y=True, alpha=GRID_ALPHA)
             self.chartWidgetPG.setLabel("left", "Signal", units="")
             self.chartWidgetPG.setLabel("bottom", "Sample", units="")
@@ -697,6 +886,7 @@ class QChart(QObject):
             # Create legend once (styled) so it’s ready before first update
             self.legend = self.pg_createLegend()
             self.legend_entries = []
+            self.pg_apply_theme()
 
             # Tick marks and grid
             # self.pg_updateAxesTicks(axis="x",n_major=MAJOR_TICKS, n_minor=MINOR_TICKS)
@@ -720,8 +910,8 @@ class QChart(QObject):
 
     def pg_createLegend(self):
         """Create a styled PyQtGraph legend once."""
-        bg_rgba  = rgbafloat_to_rgbaint(LEGEND_BACKGROUND_COLOR)
-        font_rgba = rgbafloat_to_rgbaint(LEGEND_FONT_COLOR)
+        bg_rgba  = rgbafloat_to_rgbaint(self.chart_theme["legend_background_color"])
+        font_rgba = rgbafloat_to_rgbaint(self.chart_theme["legend_font_color"])
         bg_qc    = QColor(*bg_rgba)
         font_qc  = QColor(*font_rgba)
         # Try to set style at creation (newer pyqtgraph supports labelTextColor)
@@ -771,7 +961,7 @@ class QChart(QObject):
             labels = []
 
         # Set global label text color once
-        font_rgba = rgbafloat_to_rgbaint(LEGEND_FONT_COLOR)
+        font_rgba = rgbafloat_to_rgbaint(self.chart_theme["legend_font_color"])
         font_qc   = QColor(*font_rgba)
         
         if hasattr(legend, "setLabelTextColor"):
@@ -1092,6 +1282,7 @@ class QChart(QObject):
         self.ui.radioButton_useFPL.setChecked(True)
         self.ui.radioButton_useFPL.setEnabled(False)
         self.ui.pushButton_ChartSaveFigure.setText("Save Figure PNG")
+        self.chart_theme = build_chart_theme()
 
         if DEBUGFASTPLOTLIB:
             self.logSignal.emit(logging.DEBUG, f"[{self.instance_name[:15]:<15}]: Thread={QThread.currentThread()}, GUI Thread={QCoreApplication.instance().thread() if QCoreApplication.instance() else None}")
@@ -1204,21 +1395,29 @@ class QChart(QObject):
         # Create the Fastplotlib subplot
         self.fpl_subplot = self.fpl_fig[0, 0]
         self.fpl_subplot.axes.visible = True
-        self.fpl_subplot.background_color = pygfx.Color(CHART_BACKGROUND_COLOR)
+        self.fpl_subplot.background_color = pygfx.Color(self.chart_theme["chart_background"])
 
         # Camera for the subplot
         self.fpl_camera = self.fpl_subplot.camera
 
         # Set figure background color (affects title bar and figure tools background)
-        self.fpl_subplot.frame.plane.material.color = pygfx.Color(FRAME_PLANE_COLOR)
+        self.fpl_subplot.frame.plane.material.color = pygfx.Color(self.chart_theme["frame_plane_color"])
         pc = getattr(self.fpl_subplot.frame, "plane_color", None)
         if pc is not None:
             def _mod(col, f):
                 r, g, b, a = (col + (1.0,))[:4]
-                return (min(r * f, 1.0), min(g * f, 1.0), min(b * f, 1.0), a)
-            idle_color      = _mod(FRAME_PLANE_COLOR, 0.85)
-            highlight_color = _mod(FRAME_PLANE_COLOR, 1.00)
-            action_color    = _mod(FRAME_PLANE_COLOR, 1.15)
+                return (
+                    clip_value(r * f, 0.0, 1.0),
+                    clip_value(g * f, 0.0, 1.0),
+                    clip_value(b * f, 0.0, 1.0),
+                    a,
+                )
+            frame_plane_color = self.chart_theme["frame_plane_color"]
+            idle_factor = 1.15 if self.chart_theme["is_dark"] else 0.85
+            action_factor = 1.35 if self.chart_theme["is_dark"] else 1.15
+            idle_color      = _mod(frame_plane_color, idle_factor)
+            highlight_color = frame_plane_color
+            action_color    = _mod(frame_plane_color, action_factor)
             if hasattr(pc, "_replace") and hasattr(pc, "idle") and hasattr(pc, "highlight"):
                 self.fpl_subplot.frame.plane_color = pc._replace(
                     idle      = pygfx.Color(idle_color),
@@ -1231,8 +1430,8 @@ class QChart(QObject):
                     ("idle",      idle_color),
                     ("highlight", highlight_color),
                     ("action",    action_color),
-                    ("normal",    FRAME_PLANE_COLOR),
-                    ("base",      FRAME_PLANE_COLOR),
+                    ("normal",    frame_plane_color),
+                    ("base",      frame_plane_color),
                     ("hover",     highlight_color),
                 ):
                     if hasattr(pc, attr_name):
@@ -1244,83 +1443,65 @@ class QChart(QObject):
         # Title
 
         self.fpl_subplot.title = "Line Plots"
-        self.fpl_subplot.title.face_color    = pygfx.Color(FRAME_TITLE_COLOR)
-        self.fpl_subplot.title.outline_color = pygfx.Color(FRAME_TITLE_COLOR)
+        self.fpl_subplot.title.face_color    = pygfx.Color(self.chart_theme["frame_title_color"])
+        self.fpl_subplot.title.outline_color = pygfx.Color(self.chart_theme["frame_title_color"])
 
         # X label left → right
 
         self.fpl_subplot.docks["bottom"].size = 30
-        self.fpl_subplot.docks["bottom"].add_text(
+        self.fpl_bottom_label = self.fpl_subplot.docks["bottom"].add_text(
             "Sample",
             font_size=16,
-            face_color=pygfx.Color(AXIS_FONT_COLOR),
+            face_color=pygfx.Color(self.chart_theme["axis_font_color"]),
             anchor="middle-center",
             offset=(0, 0, 0),
         )
-        self.fpl_subplot.docks["bottom"].background_color = pygfx.Color(CHART_BACKGROUND_COLOR)
+        self.fpl_subplot.docks["bottom"].background_color = pygfx.Color(self.chart_theme["chart_background"])
 
         # Y label bottom → top
         
         q = rotate(pi/2.0, 0., 0., 1.)                                         # rotate 90 deg around z-axis
         self.fpl_subplot.docks["left"].size = 30
-        self.fpl_subplot.docks["left"].add_text(
+        self.fpl_left_label = self.fpl_subplot.docks["left"].add_text(
             "Signal",
             font_size=16,
-            face_color=pygfx.Color(AXIS_FONT_COLOR),
+            face_color=pygfx.Color(self.chart_theme["axis_font_color"]),
             anchor="middle-center",
             offset=(0, 0, 0),
             rotation=q,
         )
-        self.fpl_subplot.docks["left"].background_color = pygfx.Color(CHART_BACKGROUND_COLOR)
+        self.fpl_subplot.docks["left"].background_color = pygfx.Color(self.chart_theme["chart_background"])
 
         # Axes
         ax = self.fpl_subplot.axes
 
-        def set_color(obj, value):
-            if not obj:
-                return
-            c = pygfx.Color(value)
-            # common cases
-            if hasattr(obj, "material"):
-                if hasattr(obj.material, "color"):
-                    obj.material.color = c
-                if hasattr(obj.material, "outline_color"):
-                    obj.material.outline_color = c
-                if hasattr(obj.material, "edge_color"):
-                    obj.material.edge_color = c
-
-            if hasattr(obj, "color"):
-                try:
-                    obj.color = c
-                except Exception:
-                    pass
-
         # X axis properties
         ax.x.line.material.thickness = AXIS_LINEWIDTH
-        set_color(ax.x.line,   AXIS_COLOR)
-        set_color(getattr(ax.x, "ticks",       None), TICK_COLOR)
-        set_color(getattr(ax.x, "minor_ticks", None), GRID_MINOR_COLOR)
-        set_color(getattr(ax.x, "points",      None), POINT_COLOR)
-        set_color(getattr(ax.x, "text",        None), AXIS_FONT_COLOR)
+        self._apply_fpl_color(ax.x.line,   "axis_color")
+        self._apply_fpl_color(getattr(ax.x, "ticks",       None), "tick_color")
+        self._apply_fpl_color(getattr(ax.x, "minor_ticks", None), "grid_minor_color")
+        self._apply_fpl_color(getattr(ax.x, "points",      None), "point_color")
+        self._apply_fpl_color(getattr(ax.x, "text",        None), "axis_font_color")
 
         # Y axis properties
         ax.y.line.material.thickness = AXIS_LINEWIDTH
-        set_color(ax.y.line,   AXIS_COLOR)
-        set_color(getattr(ax.y, "ticks",       None), TICK_COLOR)
-        set_color(getattr(ax.y, "minor_ticks", None), GRID_MINOR_COLOR)
-        set_color(getattr(ax.y, "points",      None), POINT_COLOR)
-        set_color(getattr(ax.y, "text",        None), AXIS_FONT_COLOR)
+        self._apply_fpl_color(ax.y.line,   "axis_color")
+        self._apply_fpl_color(getattr(ax.y, "ticks",       None), "tick_color")
+        self._apply_fpl_color(getattr(ax.y, "minor_ticks", None), "grid_minor_color")
+        self._apply_fpl_color(getattr(ax.y, "points",      None), "point_color")
+        self._apply_fpl_color(getattr(ax.y, "text",        None), "axis_font_color")
 
         # Grid
         ax.grids.xy.visible = True
         if hasattr(ax.grids.xy, "material"):
-            ax.grids.xy.material.major_color     = pygfx.Color(GRID_COLOR)
-            ax.grids.xy.material.minor_color     = pygfx.Color(GRID_MINOR_COLOR)
+            ax.grids.xy.material.major_color     = pygfx.Color(self.chart_theme["grid_color"])
+            ax.grids.xy.material.minor_color     = pygfx.Color(self.chart_theme["grid_minor_color"])
             ax.grids.xy.material.major_thickness = AXIS_LINEWIDTH
             ax.grids.xy.material.minor_thickness = AXIS_LINEWIDTH / 2
 
         # Legend
         self.legend=self.fpl_createLegend()
+        self.fpl_apply_theme()
 
         # ─── Controller and Events ──────────────────────────────────────
         self.fpl_controller = getattr(self.fpl_subplot, "controller", None) or getattr(self.fpl_fig, "controller", None)
@@ -1569,14 +1750,14 @@ class QChart(QObject):
             return                                                             # can not crete legend if there is no axis
 
         legend_dock = self.fpl_subplot.docks["right"]                          # options are right, left, top, bottom
-        legend_dock.background_color = pygfx.Color(LEGEND_BACKGROUND_COLOR)
+        legend_dock.background_color = pygfx.Color(self.chart_theme["legend_background_color"])
         legend_dock.size = 80                                                  # if top/bottom dock that is the height of dock in pixels, 
                                                                                # if left/right dock that is the width of the dock in pixels,
         return Legend(
             plot_area=legend_dock,                                             # the plot area to attach the legend to
             max_rows = 5,                                                      # how many items per column before wrapping
-            background_color = pygfx.Color(LEGEND_BACKGROUND_COLOR),           # optional: the background color of the legend
-            label_color      = pygfx.Color(LEGEND_FONT_COLOR),
+            background_color = pygfx.Color(self.chart_theme["legend_background_color"]),  # optional: the background color of the legend
+            label_color      = pygfx.Color(self.chart_theme["legend_font_color"]),
         )
 
     @profile
@@ -1589,7 +1770,7 @@ class QChart(QObject):
             return                                                             # nothing to update when we dont have a legend
         self.fpl_clearLegend()                                                 # Clear the legend before updating
         for line, label in zip(lines, labels):
-            self.legend.add_graphic(line, label, label_color = pygfx.Color(LEGEND_FONT_COLOR))
+            self.legend.add_graphic(line, label, label_color = pygfx.Color(self.chart_theme["legend_font_color"]))
         # self.legend.update_using_camera()
 
     def fpl_clearLegend(self):
@@ -2695,10 +2876,25 @@ class QChart(QObject):
         Split one line into (header, data) pairs.
         Mirrors C parser behavior:
         - supports spaced headers: "Blood Pressure: 120"
+        - supports bracketed unit suffixes: "ECG Cal [mV]: 0.1"
         - preserves headerless prefix before first header
-        - requires each unquoted header word to start with [A-Za-z_]
+        - requires each regular unquoted header word to start with [A-Za-z_]
           and continue with [A-Za-z0-9_/]*
         """
+        def is_header_token_char(ch: str) -> bool:
+            return ch.isalnum() or ch in "_/[]"
+
+        def is_unquoted_header_token(start: int, end: int) -> bool:
+            if start >= end:
+                return False
+            first = line[start]
+            if first.isalpha() or first == "_":
+                return True
+            token = line[start:end]
+            if token.startswith("[") and token.endswith("]"):
+                return any(ch.isalpha() for ch in token[1:-1])
+            return False
+
         hdrs = []  # (header_start, colon_pos, quoted)
         n = len(line)
 
@@ -2719,7 +2915,7 @@ class QChart(QObject):
                         break
                     start -= 1
                 if found and start < (pos - 1):
-                    hdrs.append((start + 1, pos, True))
+                    hdrs.append((start, pos, True))
                     pos += 1
                     continue
 
@@ -2733,16 +2929,12 @@ class QChart(QObject):
 
             tok_end = end
             tok_start = tok_end
-            while tok_start > 0 and (
-                line[tok_start - 1].isalnum()
-                or line[tok_start - 1] == '_'
-                or line[tok_start - 1] == '/'
-            ):
+            while tok_start > 0 and is_header_token_char(line[tok_start - 1]):
                 tok_start -= 1
             if tok_start == tok_end:
                 pos += 1
                 continue
-            if not (line[tok_start].isalpha() or line[tok_start] == '_'):
+            if not is_unquoted_header_token(tok_start, tok_end):
                 pos += 1
                 continue
 
@@ -2757,15 +2949,11 @@ class QChart(QObject):
 
                 prev_end = ws_end
                 prev_start = prev_end
-                while prev_start > 0 and (
-                    line[prev_start - 1].isalnum()
-                    or line[prev_start - 1] == '_'
-                    or line[prev_start - 1] == '/'
-                ):
+                while prev_start > 0 and is_header_token_char(line[prev_start - 1]):
                     prev_start -= 1
                 if prev_start == prev_end:
                     break
-                if not (line[prev_start].isalpha() or line[prev_start] == '_'):
+                if not is_unquoted_header_token(prev_start, prev_end):
                     break
 
                 start = prev_start
@@ -2784,10 +2972,15 @@ class QChart(QObject):
         if hdrs[0][0] > 0:
             prefix = line[:hdrs[0][0]].strip()
             if prefix:
+                if prefix.endswith(",") and prefix[:-1].strip() != "":
+                    prefix = prefix[:-1].rstrip()
                 out.append(("", prefix))
 
         for i, (hdr_start, colon_pos, quoted) in enumerate(hdrs):
-            raw_header = line[hdr_start:colon_pos]
+            if quoted:
+                raw_header = line[hdr_start + 1:colon_pos - 1]
+            else:
+                raw_header = line[hdr_start:colon_pos]
             header = raw_header if quoted else raw_header.strip()
             dlo = colon_pos + 1
             dhi = hdrs[i + 1][0] if i + 1 < len(hdrs) else n

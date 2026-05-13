@@ -201,7 +201,7 @@ from config import (
     VERSION, AUTHOR, DATE,
     DEFAULT_TEXT_LINES, MAX_TEXT_LINES, MAX_ROWS,
     DEBUGKEYINPUT, DEBUG_LEVEL, DEBUGRECEIVER, DEBUGCHART,
-    ENCODING, BACKGROUNDCOLOR, BACKGROUNDCOLOR_LOG, BACKGROUNDCOLOR_TABS,
+    ENCODING,
     BLESCAN_SHORT,
     EOL_DICT, EOL_DICT_INV, EOL_DEFAULT_LABEL, EOL_DEFAULT_BYTES, DEFAULT_LINETERMINATOR,
     PARSE_OPTIONS, PARSE_OPTIONS_INV, PARSE_DEFAULT_LABEL, PARSE_DEFAULT_NAME,
@@ -245,7 +245,7 @@ import logging
 try:
     from PyQt6 import uic
     from PyQt6.QtCore import (
-        QTimer, Qt, pyqtSlot, pyqtSignal, QStandardPaths, QCoreApplication
+        QEvent, QTimer, Qt, pyqtSlot, pyqtSignal, QStandardPaths, QCoreApplication
     )
     from PyQt6.QtWidgets import (
         QMainWindow, QLineEdit, QSlider, 
@@ -266,7 +266,7 @@ try:
 except Exception:
     from PyQt5 import uic
     from PyQt5.QtCore import (
-        QTimer, Qt, pyqtSlot, pyqtSignal, QStandardPaths, QCoreApplication
+        QEvent, QTimer, Qt, pyqtSlot, pyqtSignal, QStandardPaths, QCoreApplication
     )
     from PyQt5.QtWidgets import (
         QMainWindow, QLineEdit, QSlider, 
@@ -286,6 +286,15 @@ except Exception:
     KEY_DOWN      = QKeySequence(Qt.Key_Down)
     DOCUMENTS     = QStandardPaths.DocumentsLocation
     hasQt6        = False
+
+_QEVENT_TYPE = getattr(QEvent, "Type", QEvent)
+THEME_CHANGE_EVENTS = tuple(
+    ev for ev in (
+        getattr(_QEVENT_TYPE, "PaletteChange", None),
+        getattr(_QEVENT_TYPE, "ApplicationPaletteChange", None),
+        getattr(_QEVENT_TYPE, "ThemeChange", None),
+    ) if ev is not None
+)
 #
 # # Set HiDPI rounding policy early (before creating QApplication). Safe for Qt5/Qt6.
 # NOT enabled as environment variables should take care of this
@@ -431,7 +440,6 @@ class mainWindow(QMainWindow):
         # Needs to be setup first, otherwise logging is not available
 
         self.log_widget = self.ui.plainTextEdit_Log
-        self.log_widget.setStyleSheet(f"background-color: {BACKGROUNDCOLOR_LOG};")
         if hasQt6:
             log_font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
         else:
@@ -480,7 +488,6 @@ class mainWindow(QMainWindow):
         # ----------------------------------------
         self.tabs: QTabWidget = self.findChild(QTabWidget, "tabWidget_MainWindow")
         self.tabs.currentChanged.connect(self.on_tab_change)
-        self.tabs.setStyleSheet(f"QWidget {{ background-color: {BACKGROUNDCOLOR_TABS}; }}")
 
         # Configure Drop Down Menus
         # ----------------------------------------
@@ -711,8 +718,6 @@ class mainWindow(QMainWindow):
         self.lineEdit_History.setText(str(self.maxlines))
 
         self.text_widget = self.ui.plainTextEdit_Text
-
-        self.text_widget.setStyleSheet(f"background-color: {BACKGROUNDCOLOR};")
 
         # Modify text display window on serial text display
         self.text_widget.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
@@ -1091,6 +1096,15 @@ class mainWindow(QMainWindow):
             dialog.exec()
         except AttributeError:
             dialog.exec_()
+
+    def changeEvent(self, event) -> None:
+        """Refresh chart colors when the Qt application palette changes."""
+        super().changeEvent(event)
+        if event is None or event.type() not in THEME_CHANGE_EVENTS:
+            return
+        chart = getattr(self, "chart", None)
+        if chart is not None:
+            chart.refresh_theme(QGuiApplication.palette())
 
     @pyqtSlot(int)
     def on_tab_change(self, index: int) -> None:

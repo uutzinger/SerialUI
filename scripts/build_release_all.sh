@@ -63,6 +63,26 @@ require_file() {
   fi
 }
 
+clear_release_assets_for_version() {
+  local version="$1"
+  shopt -s nullglob
+  local assets=(
+    "dist/SerialUI-${version}-"*.zip
+    "dist/SerialUI-${version}-"*.tar.gz
+  )
+  shopt -u nullglob
+
+  if [[ "${#assets[@]}" -eq 0 ]]; then
+    return
+  fi
+
+  echo "Removing stale local dist assets for ${version}:"
+  for asset in "${assets[@]}"; do
+    rm -f "${asset}"
+    echo "  removed: ${asset}"
+  done
+}
+
 project_version() {
   python3 - <<'PY'
 import ast
@@ -133,6 +153,8 @@ bash scripts/release.sh --create-release
 
 echo ""
 echo "Step 2/3: Running runner builds on tag ${VERSION}"
+mkdir -p dist
+clear_release_assets_for_version "${VERSION}"
 if [[ "${RUN_LINUX}" -eq 1 ]]; then
   bash scripts/run_github_linux_build.sh --ref "${VERSION}"
 fi

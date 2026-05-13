@@ -54,7 +54,7 @@ Creates:
 - __unnamed_1 = [1, 2]
 - HeaderA = [3, 4]
 
-Variable names can include `[A-Za-z0-9_/]` and include spaces such as `Blood Pressure:`
+Variable names can include `[A-Za-z0-9_/]`, bracketed unit suffixes such as `[mV]`, and spaces such as `Blood Pressure:`
  
 ## Core Concepts
 - A **line** is the atomic input unit.
@@ -90,9 +90,11 @@ Header mode parses `<header>: <data>` segments within each line.
 ### Header detection
 - Colon (`:`) separates header from data.
 - Unquoted headers support multi-word names (for example `Blood Pressure:`).
-- For unquoted headers, each header word must start with `[A-Za-z_]`.
-- For unquoted headers, the remaining characters in each word may be `[A-Za-z0-9_/]`.
+- For unquoted headers, regular words must start with `[A-Za-z_]`.
+- For unquoted headers, the remaining characters in each regular word may be `[A-Za-z0-9_/]`.
   Examples: `frame/s`, `m/s`, `rpm_1`.
+- Bracketed unit words such as `[mV]` are accepted as part of an unquoted header.
+  Example: `ECG Cal [mV]: 0.1`.
 - Delimiters are still reserved and not part of unquoted names: `:`, `,`, and whitespace.
 - Quoted headers are also supported before `:` using matching quotes.
 
