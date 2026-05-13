@@ -100,3 +100,22 @@ When the operating system is using a dark theme, parts of the SerialUI interface
 - `with_alpha`
 - `blend_colors`
 - `build_chart_theme`
+
+## Plotting of isolated values
+When occasional values are received interspersed with frequent values from another measurement, the parser and ring buffer correctly keep all channels on the same sample timeline and leave missing entries as `NaN`. This preserves alignment between slow and fast measurements, but sparse channels then appear as isolated finite values surrounded by `NaN`. In pyqtgraph, those `NaN` values break line segments. In fastplotlib, the current compaction of finite values risks connecting points across time gaps. We need a plotting approach that displays sparse event-like values together with dense continuous signals while keeping plotting fast and efficient.
+
+[Status: implemented for pyqtgraph and fastplotlib automatic mode]
+[Plan:
+- Keep the current parser and circular buffer structure unchanged so all channels remain aligned on the same sample-number axis and sparse channels continue to be represented by `NaN` gaps.
+- Add a plotting-level render mode concept for traces, with at least `line`, `scatter`, and `hybrid` behavior.
+- Use `auto` as the default engagement mode and do not add new main-window controls in the first implementation.
+- In `auto`, classify each visible trace from the current data pattern and choose between line-only, scatter-only, or hybrid behavior.
+- Keep the first rollout UI-free. If manual override is needed later, add it as a context-menu action on the plot or legend rather than consuming permanent screen space.
+- In pyqtgraph, keep the existing line trace with `connect='finite'` for continuous data and add a scatter overlay for isolated points detected from the visible `NaN` pattern. Done.
+- Detect isolated values efficiently per channel using finite-neighbor checks, for example a point that is finite while both the previous and next samples are non-finite.
+- Keep pyqtgraph legend and visibility behavior tied to the main line item while the scatter overlay remains an internal helper trace. Done.
+- In fastplotlib, stop treating all finite values as a single compacted line when that would bridge time gaps. Preserve segment breaks by inserting separator rows for discontinuities and render isolated samples with a native scatter overlay. Done.
+- Add a simple heuristic or per-channel mode selection so dense channels remain line plots while sparse channels can automatically switch to scatter or hybrid display.
+- In fastplotlib, rebuild the visible trace buffer from the current window so line continuity follows the original sample timeline instead of the old compacted append-only representation. Done.
+- Keep autoscaling and legend behavior consistent across both backends, including visibility toggles and efficient min/max computation for sparse channels.
+- Implement the pyqtgraph version first because it already preserves `NaN` segment breaks cleanly, then bring fastplotlib to feature parity with the same visual behavior.]

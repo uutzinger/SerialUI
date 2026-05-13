@@ -384,8 +384,12 @@ class QChart(QObject):
 
         # Data traces
         self.data_traces = []                                                  # handles to the data traces in the plot
+        self.pg_marker_traces = []                                             # optional pyqtgraph scatter overlays for sparse traces
+        self.fpl_marker_traces = []                                            # optional fastplotlib scatter overlays for sparse traces
+        self.fpl_marker_writeidx = []                                          # point to next free location in the fastplotlib marker arrays
+        self.trace_render_modes = []                                           # per-trace render policy; currently defaults to "auto"
         self.data_traces_writeidx = []                                         # point to next free location in the data_traces array
-        self.data_trace_capacity = self.maxPoints                              # current capacity of each data trace (all traces have same capacity)
+        self.data_trace_capacity = self.fpl_capacity_for_max_points(self.maxPoints) if USE_FASTPLOTLIB else self.maxPoints  # current capacity of each data trace
 
         # Initialize the circular buffer to store the incoming data
         self.buffer = CircularBuffer(MAX_ROWS, MAX_COLS, dtype=np.float64)     # to match the GPU vertex buffer
@@ -1267,6 +1271,85 @@ class QChart(QObject):
                 visible.append(i)
         return visible
 
+    def pg_isolated_mask(self, y_vals: np.ndarray) -> np.ndarray:
+        """Return mask for finite samples without finite neighbors on either side."""
+        finite = np.isfinite(y_vals)
+        if finite.size == 0:
+            return finite
+
+        prev_finite = np.empty_like(finite)
+        next_finite = np.empty_like(finite)
+        prev_finite[0] = False
+        prev_finite[1:] = finite[:-1]
+        next_finite[-1] = False
+        next_finite[:-1] = finite[1:]
+        return finite & ~prev_finite & ~next_finite
+
+    def pg_classify_render_mode(self, y_vals: np.ndarray) -> str:
+        """Auto-select the render mode for a visible pyqtgraph trace window."""
+        finite = np.isfinite(y_vals)
+        finite_count = int(np.count_nonzero(finite))
+        if finite_count == 0:
+            return "line"
+
+        isolated = self.pg_isolated_mask(y_vals)
+        isolated_count = int(np.count_nonzero(isolated))
+        if isolated_count == 0:
+            return "line"
+        if isolated_count == finite_count:
+            return "scatter"
+        return "hybrid"
+
+    def pg_remove_marker_traces(self) -> None:
+        """Remove pyqtgraph scatter overlays created for sparse-trace rendering."""
+        for marker_trace in getattr(self, "pg_marker_traces", []):
+            try:
+                self.chartWidgetPG.removeItem(marker_trace)
+            except Exception:
+                pass
+        self.pg_marker_traces.clear()
+
+    def fpl_capacity_for_max_points(self, max_points: int) -> int:
+        """Return fixed fastplotlib buffer capacity for a visible window."""
+        return max(16, int(max_points))
+
+    def fpl_build_line_vertices(self, x_vals: np.ndarray, y_vals: np.ndarray, render_mode: str) -> np.ndarray:
+        """Build line vertices for fastplotlib while preserving NaN gap breaks."""
+        if render_mode == "scatter":
+            return np.empty((0, 2), dtype=np.float32)
+
+        line_y = np.asarray(y_vals, dtype=np.float32).copy()
+        if render_mode == "hybrid":
+            line_y[self.pg_isolated_mask(y_vals)] = np.float32(np.nan)
+        line_x = np.asarray(x_vals, dtype=np.float32)
+        return np.column_stack((line_x, line_y)).astype(np.float32, copy=False)
+
+    def fpl_build_scatter_vertices(self, x_vals: np.ndarray, y_vals: np.ndarray, render_mode: str) -> np.ndarray:
+        """Build scatter vertices for fastplotlib sparse-trace overlays."""
+        finite = np.isfinite(y_vals)
+        if render_mode == "scatter":
+            scatter_mask = finite
+        elif render_mode == "hybrid":
+            scatter_mask = self.pg_isolated_mask(y_vals)
+        else:
+            scatter_mask = np.zeros_like(finite, dtype=bool)
+
+        if not np.any(scatter_mask):
+            return np.empty((0, 2), dtype=np.float32)
+
+        scatter_x = np.asarray(x_vals[scatter_mask], dtype=np.float32)
+        scatter_y = np.asarray(y_vals[scatter_mask], dtype=np.float32)
+        return np.column_stack((scatter_x, scatter_y)).astype(np.float32, copy=False)
+
+    def fpl_remove_marker_traces(self) -> None:
+        """Remove fastplotlib scatter overlays created for sparse-trace rendering."""
+        for marker_trace in getattr(self, "fpl_marker_traces", []):
+            try:
+                self.fpl_subplot.delete_graphic(marker_trace)
+            except Exception:
+                pass
+        self.fpl_marker_traces.clear()
+
     # ==========================================================================
     # fastplotlib functions
     # ==========================================================================
@@ -1584,9 +1667,12 @@ class QChart(QObject):
         for i, line in enumerate(list(self.data_traces)):
             new_arr = np.full((new_capacity, 3), np.nan, dtype=np.float32)
             new_arr[:, 2] = 0.0                                                # (z)
+            new_marker_arr = np.full((new_capacity, 3), np.nan, dtype=np.float32)
+            new_marker_arr[:, 2] = 0.0
 
             # robust capacity read across versions
             old_feature  = self.data_traces[i].data
+            old_marker_feature = self.fpl_marker_traces[i].data if i < len(self.fpl_marker_traces) else None
             try:
                 old_capacity = int(len(old_feature))
             except Exception:
@@ -1641,6 +1727,39 @@ class QChart(QObject):
                 thickness=LINEWIDTH
             )
             self.data_traces[i] = new_line
+
+            if old_marker_feature is not None:
+                try:
+                    old_marker_capacity = int(len(old_marker_feature))
+                except Exception:
+                    old_marker_capacity = int(old_marker_feature.value.shape[0])
+                marker_end = min(self.fpl_marker_writeidx[i], old_marker_capacity)
+                marker_copy_len = min(marker_end, new_capacity)
+                if marker_copy_len > 0:
+                    src_marker = old_marker_feature.value
+                    src_marker_head = src_marker[marker_end - marker_copy_len:marker_end, :2]
+                    new_marker_arr[0:marker_copy_len, :2] = src_marker_head
+                try:
+                    self.fpl_subplot.delete_graphic(self.fpl_marker_traces[i])
+                except Exception:
+                    pass
+                new_marker = self.fpl_subplot.add_scatter(
+                    new_marker_arr,
+                    isolated_buffer=False,
+                    colors=pygfx.Color(color),
+                    uniform_color=True,
+                    sizes=6.0,
+                    uniform_size=True,
+                    markers="o",
+                    uniform_marker=True,
+                    size_space="screen",
+                )
+                self.fpl_marker_traces[i] = new_marker
+                self.fpl_marker_writeidx[i] = marker_copy_len
+                try:
+                    new_marker.visible = new_line.visible
+                except Exception:
+                    pass
         
         self.data_trace_capacity = new_capacity
 
@@ -2025,14 +2144,9 @@ class QChart(QObject):
         if delta_samples >= self.maxPoints:
             delta_samples = self.maxPoints                                     # too much new data, only take the last maxPoints and skip the rest 
 
-        if not USE_FASTPLOTLIB:
-            # PyQtGraph does not support sliced data update
-            # Need to obtain full display range of data
-            data = self.buffer.last(self.maxPoints)
-        else:
-            # FastPlotLib supports sliced data update
-            # Need to obtain only the new data
-            data = self.buffer.last(delta_samples)
+        # Both backends now operate on the full visible window so sparse traces
+        # can preserve original NaN gaps and mixed-rate alignment.
+        data = self.buffer.last(self.maxPoints)
 
         num_rows, num_cols = data.shape
 
@@ -2048,12 +2162,15 @@ class QChart(QObject):
             # ─── Grow numbers of data traces ─────────────
 
             for idx in range(delta_data_traces):
+                trace_idx = idx + num_traces
                 if not USE_FASTPLOTLIB:
                     # PyQtGraph ─────────────────────────────────
+                    line_pen = self.pensPG[trace_idx % len(self.pensPG)]
+                    marker_color = line_pen.color() if hasattr(line_pen, "color") else QColor(COLORS[trace_idx % len(COLORS)])
                     new_data_trace = self.chartWidgetPG.plot(
                         [], 
                         [], 
-                        pen=self.pensPG[(idx+num_traces) % len(self.pensPG)], 
+                        pen=line_pen,
                         name=f"Trace {idx}",
                         antialias=False,                                       # AA is expensive; keep it off for streams
                         clipToView=True,                                       # do less work: only process visible vertices
@@ -2061,19 +2178,48 @@ class QChart(QObject):
                         downsampleMethod='peak',                               # preserves spikes; good for signals
                         connect='finite',                                      # cheap segmentation around NaNs
                     )
+                    new_marker_trace = self.chartWidgetPG.plot(
+                        [],
+                        [],
+                        pen=None,
+                        symbol="o",
+                        symbolSize=6,
+                        symbolBrush=marker_color,
+                        symbolPen=pg.mkPen(marker_color),
+                        pxMode=True,
+                    )
                 else:
                     # FastPlotLib ─────────────────────────────────
                     #   uses 3D points (x,y,z), for 2D plots we set z=0
                     new_arr = np.full((self.data_trace_capacity, 3), np.nan, dtype=np.float32)
                     new_arr[:, 2] = 0.0                                        # (z) value is zero everywhere
+                    new_marker_arr = np.full((self.data_trace_capacity, 3), np.nan, dtype=np.float32)
+                    new_marker_arr[:, 2] = 0.0
                     new_data_trace = self.fpl_subplot.add_line(
                         new_arr, 
                         isolated_buffer=False,                                 # since we already allocated the buffer above, we use shared buffers for better performance
-                        colors=pygfx.Color(self.pensFPL[(idx+num_traces) % len(self.pensFPL)]), # color for the line
+                        colors=pygfx.Color(self.pensFPL[trace_idx % len(self.pensFPL)]), # color for the line
                         thickness=LINEWIDTH                                    # line width
                     )
+                    new_marker_trace = self.fpl_subplot.add_scatter(
+                        new_marker_arr,
+                        isolated_buffer=False,
+                        colors=pygfx.Color(self.pensFPL[trace_idx % len(self.pensFPL)]),
+                        uniform_color=True,
+                        sizes=6.0,
+                        uniform_size=True,
+                        markers="o",
+                        uniform_marker=True,
+                        size_space="screen",
+                    )
                 self.data_traces.append(new_data_trace)
+                if not USE_FASTPLOTLIB:
+                    self.pg_marker_traces.append(new_marker_trace)
+                else:
+                    self.fpl_marker_traces.append(new_marker_trace)
+                    self.fpl_marker_writeidx.append(0)
                 self.data_traces_writeidx.append(0)
+                self.trace_render_modes.append("auto")
 
         elif delta_data_traces < 0:
 
@@ -2083,10 +2229,20 @@ class QChart(QObject):
                 # Remove oldest trace
                 old_data_trace = self.data_traces.pop()
                 _ = self.data_traces_writeidx.pop()
+                if self.trace_render_modes:
+                    _ = self.trace_render_modes.pop()
                 if not USE_FASTPLOTLIB:
                     self.chartWidgetPG.removeItem(old_data_trace)
+                    if self.pg_marker_traces:
+                        marker_trace = self.pg_marker_traces.pop()
+                        self.chartWidgetPG.removeItem(marker_trace)
                 else:
                     self.fpl_subplot.delete_graphic(old_data_trace)
+                    if self.fpl_marker_traces:
+                        marker_trace = self.fpl_marker_traces.pop()
+                        self.fpl_subplot.delete_graphic(marker_trace)
+                    if self.fpl_marker_writeidx:
+                        _ = self.fpl_marker_writeidx.pop()
 
         #                 
         # Plot data
@@ -2150,133 +2306,81 @@ class QChart(QObject):
             # PyQtGraph
 
             for i in range(num_cols):
-                self.data_traces[i].setData(x_vals,y_vals[:, i])               # 40%
-                total_points_uploaded += num_samples
+                y_col = y_vals[:, i]
+                configured_mode = self.trace_render_modes[i] if i < len(self.trace_render_modes) else "auto"
+                render_mode = self.pg_classify_render_mode(y_col) if configured_mode == "auto" else configured_mode
+                marker_trace = self.pg_marker_traces[i] if i < len(self.pg_marker_traces) else None
+
+                if render_mode == "scatter":
+                    finite_mask = np.isfinite(y_col)
+                    self.data_traces[i].setData([], [])
+                    if marker_trace is not None:
+                        marker_trace.setData(x_vals[finite_mask], y_col[finite_mask])
+                    total_points_uploaded += int(np.count_nonzero(finite_mask))
+                elif render_mode == "hybrid":
+                    isolated_mask = self.pg_isolated_mask(y_col)
+                    self.data_traces[i].setData(x_vals, y_col)                 # 40%
+                    if marker_trace is not None:
+                        marker_trace.setData(x_vals[isolated_mask], y_col[isolated_mask])
+                    total_points_uploaded += num_samples + int(np.count_nonzero(isolated_mask))
+                else:
+                    self.data_traces[i].setData(x_vals, y_col)                # 40%
+                    if marker_trace is not None:
+                        marker_trace.setData([], [])
+                    total_points_uploaded += num_samples
+
+                if marker_trace is not None:
+                    try:
+                        marker_trace.setVisible(self.data_traces[i].isVisible())
+                    except Exception:
+                        pass
 
         else:
             # FastPlotLib ─────────────────────────────────
+            trace_cols = list(range(num_cols))
+            if trace_cols:
+                y_visible = y_vals[:, trace_cols]
+                self.y_min = float(np.nanmin(y_visible))
+                self.y_max = float(np.nanmax(y_visible))
+            else:
+                self.y_min = -1.0
+                self.y_max = 1.0
 
-            # We use partial updates
-            # Since fastplotlib requires a fixed size buffer, unused data points are NaN
-            # Unused data points are at the end of the data trace
-            # We use NaN filtering when adding new data to the buffer
-            #   if we were to keep NaNs they break the plot lines in fastplotlib 
-            #   this will result in data traces with different lengths of valid data
-            #   we keep track of valid data in the data trace with write_idx
-            # Therefore we implement for each data trace:
-            #  - trimming old data from buffer (anything older than newest_sample - maxPoints)
-            #  - appending new data to buffer at write index
-            #  - computing y min/max from the data trace (not just the added data)
-            #  - updating write index
-
-            mask = np.isfinite(y_vals)                                         # mask of valid (non-NaN) data points
-
-            for i in range(num_cols):
-
-                # Trim Data
-                # ----------------------------------------
-
-                # Need to trim data in chart that is older than requested history (newest_sample - maxPoints)
-                # And move the remaining data to the beginning of data trace
-                line      = self.data_traces[i].data                           # make code more readable
-                write_idx = self.data_traces_writeidx[i]                       # make code more readable
-                capacity  = self.data_trace_capacity                           # make code more readable
-
-                if write_idx > 0:
-                    # trim only traces with data
-                    xmin_allowed = newest_sample - self.maxPoints + 1
-                    filled_x = line.value[:write_idx, 0]
-                    trim_mask = np.isfinite(filled_x) & (filled_x < xmin_allowed)
-                    trim_len = int(trim_mask.sum())
-                    if trim_len > 0:
-                        # we need to trim
-                        keep_start = trim_len
-                        keep_end   = write_idx
-                        keep_len   = keep_end - keep_start
-                        if keep_len > 0:
-                            # partial replace, shift valid data to left
-                            line[0:keep_len, 0:2] = line.value[keep_start:keep_end,0:2] # only copy x,y, z is zero everywhere
-                            # clear tail
-                            line[keep_len:keep_end, 0:2] = np.nan
-                            write_idx = keep_len
-                            total_points_uploaded += keep_len # if we copy data in the buffer that section will be "dirty" and reuploaded to plotter
-                        else:
-                            # full replace, clear entire buffer
-                            #    setting to NaN is optional since we will overwrite it below, but it is good for debugging and visualization to see the cleared area
-                            line[:write_idx,0:2] = np.nan # we will not count this towards upload as we will count it in append below
-                            write_idx = 0
-
-                # Append new data
-                # ----------------------------------------
-                # GPU vertex buffer is float32, python float is float64
-
-                col_mask  = mask[:, i]
-                x = x_vals[col_mask].astype(np.float32)                        # convert to float32 for GPU vertex rendering
-                y = y_vals[col_mask, i].astype(np.float32)                     # convert to float32 for GPU vertex rendering
-                num_valid_samples = int(x.size)
-
-                if num_valid_samples == 0:
-                    continue
-
-                # Check for buffer overrun
-                room = capacity - write_idx
-
-                if num_valid_samples > capacity:
-                    # Incoming batch alone exceeds the whole buffer:
-                    # keep only the newest `capacity` and overwrite from 0.
-                    x = x[-capacity:]
-                    y = y[-capacity:]
-                    dropped = num_valid_samples - capacity
-                    num_valid_samples = capacity
-                    write_idx = 0
-                    # line[:capacity, 0:2] = np.nan                           # clear before overwrite (optional)
-                    # self.logger.log(logging.WARNING,
-                    #     f"[{self.instance_name[:15]:<15}]: Data trace {i} buffer full, dropped {dropped} samples"
-                    # )
-
-                elif num_valid_samples > room:
-                    # Not enough room to append new data, need to drop oldest samples
-                    shift = num_valid_samples - room
-                    keep = max(0, write_idx - shift)
-                    if keep > 0:
-                        # Move newest existing samples to beginning of buffer
-                        line[0:keep, 0:2] = line.value[shift:shift + keep, 0:2]
-                    if write_idx > keep:
-                        line[keep:write_idx, 0:2] = np.nan
-                    write_idx = keep
-                    # self.logger.log(logging.WARNING,
-                    #     f"[{self.instance_name[:15]:<15}]: Data trace {i} buffer full, dropped {shift} samples"
-                    # )
-
-                # Add new data
-                end = write_idx + num_valid_samples
-                line[write_idx:end, 0] = x
-                line[write_idx:end, 1] = y
-                # line[write_idx:end, 2] = np.float32(0.0) # z value was set to zero previously
-                write_idx = end
-
-                self.data_traces_writeidx[i] = write_idx
-                total_points_uploaded += num_valid_samples
-
-            # Compute Y range from data traces (not just the appended data)
-
-            ymins = np.full((num_cols, 1), np.nan, dtype=np.float32)
-            ymaxs = np.full((num_cols, 1), np.nan, dtype=np.float32)
-            for i in range(num_cols):
-                write_idx = self.data_traces_writeidx[i]
-                if write_idx > 0:
-                    with np.errstate(invalid='ignore', all='ignore'):
-                        seg = self.data_traces[i].data.value[:write_idx, 1]    # y value
-                        if seg.size > 0:
-                            ymins[i] = np.min(seg)                             # should not contain NaNs
-                            ymaxs[i] = np.max(seg)                             # should not contain NaNs
-            self.y_min = float(np.nanmin(ymins))
-            self.y_max = float(np.nanmax(ymaxs))
             if not isfinite(self.y_min):
                 self.y_min = -1.0
             if not isfinite(self.y_max):
-                self.y_max = 1.0    
- 
+                self.y_max = 1.0
+
+            for i in range(num_cols):
+                y_col = y_vals[:, i]
+                configured_mode = self.trace_render_modes[i] if i < len(self.trace_render_modes) else "auto"
+                render_mode = self.pg_classify_render_mode(y_col) if configured_mode == "auto" else configured_mode
+                line_vertices = self.fpl_build_line_vertices(x_vals, y_col, render_mode)
+                marker_vertices = self.fpl_build_scatter_vertices(x_vals, y_col, render_mode)
+                line = self.data_traces[i].data
+                marker_trace = self.fpl_marker_traces[i] if i < len(self.fpl_marker_traces) else None
+                write_idx = min(line_vertices.shape[0], self.data_trace_capacity)
+                marker_write_idx = min(marker_vertices.shape[0], self.data_trace_capacity)
+
+                if write_idx > 0:
+                    line[:write_idx, 0:2] = line_vertices[:write_idx]
+                line[write_idx:, 0:2] = np.nan
+                self.data_traces_writeidx[i] = write_idx
+                total_points_uploaded += write_idx
+
+                if marker_trace is not None:
+                    marker_data = marker_trace.data
+                    if marker_write_idx > 0:
+                        marker_data[:marker_write_idx, 0:2] = marker_vertices[:marker_write_idx]
+                    marker_data[marker_write_idx:, 0:2] = np.nan
+                    if i < len(self.fpl_marker_writeidx):
+                        self.fpl_marker_writeidx[i] = marker_write_idx
+                    try:
+                        marker_trace.visible = bool(self.data_traces[i].visible and marker_write_idx > 0)
+                    except Exception:
+                        pass
+                    total_points_uploaded += marker_write_idx
+
         # Adjust X and Y ranges, Tick marks, Camera View
         # ----------------------------------------
 
@@ -2623,6 +2727,13 @@ class QChart(QObject):
                 else:
                     self.fpl_subplot.delete_graphic(data_trace)
             self.data_traces.clear()
+            self.data_traces_writeidx.clear()
+            self.trace_render_modes.clear()
+        if not USE_FASTPLOTLIB:
+            self.pg_remove_marker_traces()
+        else:
+            self.fpl_remove_marker_traces()
+            self.fpl_marker_writeidx.clear()
         
         # Legend
         if getattr(self, "legend", None) is not None:
@@ -3345,6 +3456,9 @@ class QChart(QObject):
                     for data_trace in self.data_traces:
                         self.chartWidgetPG.removeItem(data_trace) 
                     self.data_traces.clear()
+                    self.pg_remove_marker_traces()
+                    self.data_traces_writeidx.clear()
+                    self.trace_render_modes.clear()
                     self.pg_clearLegend()
                     self.chartWidgetPG.clear()
 
@@ -3381,6 +3495,10 @@ class QChart(QObject):
                     for data_trace in self.data_traces:
                         self.fpl_subplot.delete_graphic(data_trace)
                     self.data_traces.clear()
+                    self.fpl_remove_marker_traces()
+                    self.data_traces_writeidx.clear()
+                    self.fpl_marker_writeidx.clear()
+                    self.trace_render_modes.clear()
                     if self.legend is not None:
                         self.fpl_clearLegend()
 
@@ -3688,10 +3806,12 @@ class QChart(QObject):
             for data_trace in self.data_traces:
                 self.chartWidgetPG.removeItem(data_trace)
             self.data_traces.clear()
+            self.pg_remove_marker_traces()
             self.pg_clearLegend()
             if self.legend is None:
                 self.legend = self.pg_createLegend()
             self.data_traces_writeidx = []
+            self.trace_render_modes = []
 
         else:
             # FastPlotLib ─────────────────────────────────
@@ -3700,8 +3820,11 @@ class QChart(QObject):
                 # self.fpl_canvas.removeItem(data_trace)
                 self.fpl_subplot.delete_graphic(data_trace)
             self.data_traces.clear()
+            self.fpl_remove_marker_traces()
             self.fpl_clearLegend()
             self.data_traces_writeidx = []
+            self.fpl_marker_writeidx = []
+            self.trace_render_modes = []
 
         self.logSignal.emit(
             logging.INFO,
@@ -3902,7 +4025,7 @@ class QChart(QObject):
             self.pg_updateAxesTicks("x", self.x_min, self.x_max, n_major=MAJOR_TICKS, n_minor=MINOR_TICKS)
         else:
             # FastPlotLib
-            self.fpl_resizeTraceCapacity(int(new_value))
+            self.fpl_resizeTraceCapacity(self.fpl_capacity_for_max_points(new_value))
             self.updatePlot()
             self.fpl_subplot.canvas.request_draw()
 
@@ -3948,7 +4071,7 @@ class QChart(QObject):
             self.pg_updateAxesTicks("x", self.x_min, self.x_max, n_major=MAJOR_TICKS, n_minor=MINOR_TICKS)
         else:
             # FastPlotLib
-            self.fpl_resizeTraceCapacity(int(new_value))
+            self.fpl_resizeTraceCapacity(self.fpl_capacity_for_max_points(new_value))
             self.updatePlot()
             self.fpl_subplot.canvas.request_draw()
 

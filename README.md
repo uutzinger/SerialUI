@@ -159,19 +159,19 @@ The following libraries are used:
 - [PyQt5 or 6 - UI](https://www.riverbankcomputing.com/software/pyqt/)
 - [pyqtgraph - charting](https://www.pyqtgraph.org/)
 - [re - regular expression filter](https://docs.python.org/3/library/re.html)
-- [scipy - fft](https://scipy.org/) `***`
+- [scipy - fft](https://scipy.org/) `****`
 - [setuptools](https://github.com/pypa/setuptools)`*`
-- [tamp - compressor](https://github.com/BrianPugh/tamp) `***`
+- [tamp - compressor](https://github.com/BrianPugh/tamp) `****`
 - [textwrap - logging](https://docs.python.org/3/library/textwrap.html)
 - [time](https://docs.python.org/3/library/time.html)
 - [typing](https://docs.python.org/3/library/typing.html)
 - [wmi - USB events](https://timgolden.me.uk/python/wmi/index.html) or [pyudev - USB events](https://pyudev.readthedocs.io/en/latest/)
-- [zlib - compressor](https://docs.python.org/3/library/zlib.html) `***`
+- [zlib - compressor](https://docs.python.org/3/library/zlib.html) `****`
 
 [`*`] not required but will accelerate the program, 
 [`**`] needed if BLE is enabled, 
 [`***`] needed if fastplotlib is enabled,
-[`***`] future version
+[`****`] future version
 
 ## Scripts
 
