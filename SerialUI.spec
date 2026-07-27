@@ -1,5 +1,6 @@
 # Add folders you want to bundle
 import os
+import sysconfig
 from PyInstaller.building.build_main import Analysis, PYZ, EXE, COLLECT, Tree
 from config import USE_FASTPLOTLIB, USE_BLE
 
@@ -16,6 +17,24 @@ datas = [
     ("assets", "assets"),
     ("README.md", "."),
 ]
+
+parser_binaries = []
+parser_dir = os.path.join(proj_root, "helpers", "line_parsers")
+extension_suffix = sysconfig.get_config_var("EXT_SUFFIX")
+if os.path.isdir(parser_dir):
+    for filename in os.listdir(parser_dir):
+        lower_name = filename.lower()
+        is_parser = lower_name.startswith(("simple_parser", "header_parser"))
+        is_native = (
+            filename.endswith(extension_suffix)
+            if extension_suffix
+            else lower_name.endswith((".pyd", ".so", ".dylib"))
+        )
+        if is_parser and is_native:
+            parser_binaries.append((
+                os.path.join(parser_dir, filename),
+                os.path.join("helpers", "line_parsers"),
+            ))
 
 excludes = [
     # Ensure only PyQt6 is collected. The source contains PyQt5 fallback imports,
@@ -81,12 +100,11 @@ if not USE_BLE:
 a = Analysis(
     [entry_script],
     pathex=[proj_root],
-    binaries=[],
+    binaries=parser_binaries,
     datas=datas,
     hiddenimports=[
-        # Add any modules here that PyInstaller might miss, e.g.:
-        # "pkg_resources.py2_warn",
-        # "some_dynamic_imported_module",
+        "helpers.line_parsers.simple_parser",
+        "helpers.line_parsers.header_parser",
     ],
     hookspath=[],
     hooksconfig={

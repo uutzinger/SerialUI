@@ -313,6 +313,29 @@ class QChart(QObject):
         fast_process_lines_simple() C accelerated text to data parser without header
     """
 
+    # Helper functions
+    # ==========================================================================
+
+    @staticmethod
+    def format_scale_factor(scale):
+        if not np.isfinite(scale) or isclose(scale, 1.0, rel_tol=REL_TOL, abs_tol=0):
+            return ""
+        if float(scale).is_integer():
+            return f" x{int(scale)}"
+        return f" x{scale:g}"
+
+    def scaled_channel_labels(self):
+        labels = self.channel_names if getattr(self, "channel_names", None) else []
+        scales = getattr(self, "scale_factors", None)
+        if scales is None:
+            return list(labels)
+
+        return [
+            f"{label}{self.format_scale_factor(scales[i])}"
+            if i < len(scales) else label
+            for i, label in enumerate(labels)
+        ]
+
     # Signals
     # ==========================================================================
     throughputUpdate = pyqtSignal(float, float, str)                           # report rx/tx to main ("chart")
@@ -390,6 +413,7 @@ class QChart(QObject):
         self.trace_render_modes = []                                           # per-trace render policy; currently defaults to "auto"
         self.data_traces_writeidx = []                                         # point to next free location in the data_traces array
         self.data_trace_capacity = self.fpl_capacity_for_max_points(self.maxPoints) if USE_FASTPLOTLIB else self.maxPoints  # current capacity of each data trace
+        self.scale_factors = np.ones(0, dtype=np.float64)                      # per-trace display scaling factors
 
         # Initialize the circular buffer to store the incoming data
         self.buffer = CircularBuffer(MAX_ROWS, MAX_COLS, dtype=np.float64)     # to match the GPU vertex buffer
@@ -449,7 +473,8 @@ class QChart(QObject):
         self.tickGate_interval_ms = 100                                        # default interval in milliseconds
         self.tickGate_timer = QTimer(self)
         self.tickGate_timer.setSingleShot(True)
-        self.tickGate_timer.timeout.connect(lambda: setattr(self, "tickGate", True))
+        self.tickGate_timer.timeout.connect(self.on_tickGate_timeout)
+        self.pg_pending_tick_update = None
 
         self.warning = True                                                    # flag to only warn once about binary data with separator
         self._accel_status_reported = False
@@ -667,6 +692,36 @@ class QChart(QObject):
     # pyqtgraph functions
     # ==========================================================================
 
+    @staticmethod
+    def pg_set_axis_style(axis_item, **styles) -> None:
+        """Apply PyQtGraph AxisItem style options across PyQtGraph versions."""
+        for key, value in styles.items():
+            try:
+                axis_item.setStyle(**{key: value})
+            except Exception:
+                pass
+
+    def pg_configure_axis_ticks(self, axis_item, axis_name: str) -> None:
+        """Keep tick labels sparse enough for live-updating plots."""
+        if axis_item is None:
+            return
+
+        self.pg_set_axis_style(
+            axis_item,
+            maxTickLevel=1,
+            maxTextLevel=0,
+            hideOverlappingLabels=True,
+            textFillLimits=[
+                (0, 0.70),
+                (3, 0.45),
+                (5, 0.25),
+            ],
+        )
+        try:
+            axis_item.setTickDensity(0.75)
+        except Exception:
+            pass
+
     def pg_apply_theme(self) -> None:
         """Apply the current palette-derived theme to an existing PyQtGraph chart."""
         fg_qcolor = self._theme_qcolor("axis_font_color")
@@ -698,6 +753,7 @@ class QChart(QObject):
                 axis_item = plot_item.getAxis(axis_name)
                 if axis_item is None:
                     continue
+                self.pg_configure_axis_ticks(axis_item, axis_name)
                 try:
                     axis_item.setPen(axis_pen)
                 except Exception:
@@ -818,7 +874,7 @@ class QChart(QObject):
         legend = getattr(self, "legend", None)
         if legend is not None:
             try:
-                self.fpl_updateLegend(self.data_traces, self.channel_names)
+                self.fpl_updateLegend(self.data_traces, self.scaled_channel_labels())
             except Exception:
                 pass
 
@@ -1113,13 +1169,7 @@ class QChart(QObject):
         try:
             ax_item.setTickSpacing(major=major, minor=minor)
         except TypeError:
-            ax_item.setTickSpacing(levels=[(major, minor)])
-
-        try:
-            ax_item.setTickSpacing(major=major, minor=minor)
-        except TypeError:
-            # levels expects [(spacing, offset), ...] ordered from most detailed to least
-            ax_item.setTickSpacing(levels=[(minor, 0), (major, 0)])
+            ax_item.setTickSpacing(levels=[(major, 0), (minor, 0)])
 
         # update cache
         prev_state["major"] = major
@@ -1138,8 +1188,24 @@ class QChart(QObject):
         """
 
         if not self.tickGate:
-            # Prevent tick update until gate is released (throttling)
+            self.pg_pending_tick_update = (rng, axis_changed)
             return
+
+        self.pg_apply_tick_update(rng, axis_changed)
+
+    def on_tickGate_timeout(self) -> None:
+        """Release tick throttle and apply the latest deferred PyQtGraph range."""
+        self.tickGate = True
+        pending = getattr(self, "pg_pending_tick_update", None)
+        if pending is None:
+            return
+
+        self.pg_pending_tick_update = None
+        rng, axis_changed = pending
+        self.pg_apply_tick_update(rng, axis_changed)
+
+    def pg_apply_tick_update(self, rng, axis_changed) -> None:
+        """Validate a ViewBox range change and update tick spacing."""
 
         if rng is None:
             self.logSignal.emit(
@@ -1855,7 +1921,7 @@ class QChart(QObject):
         
         # Rebuild legend if present
 
-        labels = self.channel_names if getattr(self, "channel_names", None) else []
+        labels = self.scaled_channel_labels()
         if self.legend is not None and labels:
             try:
                 self.fpl_updateLegend(self.data_traces, labels)
@@ -2267,7 +2333,67 @@ class QChart(QObject):
         # Throughput counter for this update, we keep track of total points uploaded at the end of this function
         total_points_uploaded = 0
 
-        # Compute axis ranges
+        # Y Scaling ────
+        #   Scaling of each trace so that the min/max of each trace is aligned to the global min/max
+        #   Scaling can be 1x, (2x, 5x,) 10x, (20x, 50x,) 100x, etc.
+
+        if not USE_FASTPLOTLIB:
+            trace_cols = self.pg_visible_trace_indices(num_cols)
+            if not trace_cols:
+                trace_cols = list(range(num_cols))
+        else:
+            trace_cols = list(range(num_cols))
+
+        scale = np.ones(num_cols, dtype=np.float64)
+
+        if trace_cols:
+            trace_cols_array = np.asarray(trace_cols, dtype=np.intp)
+            y_visible = y_vals[:, trace_cols_array]
+            y_min_per_trace = np.nanmin(y_visible, axis=0)
+            y_max_per_trace = np.nanmax(y_visible, axis=0)
+
+            y_min_raw = float(np.nanmin(y_min_per_trace))
+            y_max_raw = float(np.nanmax(y_max_per_trace))
+
+            scale_to_min = np.full(len(trace_cols), np.inf)
+            scale_to_max = np.full(len(trace_cols), np.inf)
+
+            np.divide(
+                y_min_raw,
+                y_min_per_trace,
+                out=scale_to_min,
+                where=(y_min_per_trace < 0.0) & (y_min_raw < 0.0),
+            )
+
+            np.divide(
+                y_max_raw,
+                y_max_per_trace,
+                out=scale_to_max,
+                where=(y_max_per_trace > 0.0) & (y_max_raw > 0.0),
+            )
+
+            scale_raw = np.minimum(scale_to_min, scale_to_max)
+            scale_raw[~np.isfinite(scale_raw)] = 1.0
+
+            scale_visible = np.ones_like(scale_raw)
+            valid = np.isfinite(scale_raw) & (scale_raw > 0.0)
+            if np.any(valid):
+                exponent = np.floor(np.log10(scale_raw[valid]))
+                decade = np.power(10.0, exponent)
+                mantissa = scale_raw[valid] / decade
+                nice_mantissa = np.where(
+                    mantissa >= 5.0,
+                    5.0,
+                    np.where(mantissa >= 2.0, 2.0, 1.0),
+                )
+                scale_visible[valid] = nice_mantissa * decade
+
+            scale[trace_cols_array] = scale_visible
+
+        y_plot = y_vals * scale
+        self.scale_factors = scale
+
+        # Compute axis ranges ────
 
         # X Range, length remains fixed to user selected history length: maxPoints
         self.x_min = float(newest_sample - self.maxPoints + 1)                 # left edge of x axis
@@ -2275,30 +2401,19 @@ class QChart(QObject):
 
         # Y Range:
         # ----------------------------------------
-        # - PG updated full window (we can calculate min/max of display window directly here
-        # - FPL updates with latest data only and need to calculate min/max from visible buffers at later time in the code below)
-        if not USE_FASTPLOTLIB:
-            # calculate here
-            trace_cols = self.pg_visible_trace_indices(num_cols)
-            if not trace_cols:
-                trace_cols = list(range(num_cols))
-            if trace_cols:
-                y_visible = y_vals[:, trace_cols]
-                self.y_min = float(np.nanmin(y_visible))                       # 4%
-                self.y_max = float(np.nanmax(y_visible))                       # 2%
-            else:
-                self.y_min = -1.0
-                self.y_max = 1.0
-                    
-            if not isfinite(self.y_min):
-                self.y_min = -1.0
-
-            if not isfinite(self.y_max):
-                self.y_max = 1.0
+        if trace_cols:
+            y_visible_scaled = y_plot[:, trace_cols]
+            self.y_min = float(np.nanmin(y_visible_scaled))
+            self.y_max = float(np.nanmax(y_visible_scaled))
         else:
-            # calculate later in the code because we need to calculate it from the full data traces
-            pass
+            self.y_min = -1.0
+            self.y_max = 1.0
 
+        if not isfinite(self.y_min):
+            self.y_min = -1.0
+        if not isfinite(self.y_max):
+            self.y_max = 1.0
+            
         # Plot
         # ----------------------------------------
 
@@ -2306,7 +2421,7 @@ class QChart(QObject):
             # PyQtGraph
 
             for i in range(num_cols):
-                y_col = y_vals[:, i]
+                y_col = y_plot[:, i]
                 configured_mode = self.trace_render_modes[i] if i < len(self.trace_render_modes) else "auto"
                 render_mode = self.pg_classify_render_mode(y_col) if configured_mode == "auto" else configured_mode
                 marker_trace = self.pg_marker_traces[i] if i < len(self.pg_marker_traces) else None
@@ -2319,7 +2434,7 @@ class QChart(QObject):
                     total_points_uploaded += int(np.count_nonzero(finite_mask))
                 elif render_mode == "hybrid":
                     isolated_mask = self.pg_isolated_mask(y_col)
-                    self.data_traces[i].setData(x_vals, y_col)                 # 40%
+                    self.data_traces[i].setData(x_vals, y_col)                # 40%
                     if marker_trace is not None:
                         marker_trace.setData(x_vals[isolated_mask], y_col[isolated_mask])
                     total_points_uploaded += num_samples + int(np.count_nonzero(isolated_mask))
@@ -2337,22 +2452,8 @@ class QChart(QObject):
 
         else:
             # FastPlotLib ─────────────────────────────────
-            trace_cols = list(range(num_cols))
-            if trace_cols:
-                y_visible = y_vals[:, trace_cols]
-                self.y_min = float(np.nanmin(y_visible))
-                self.y_max = float(np.nanmax(y_visible))
-            else:
-                self.y_min = -1.0
-                self.y_max = 1.0
-
-            if not isfinite(self.y_min):
-                self.y_min = -1.0
-            if not isfinite(self.y_max):
-                self.y_max = 1.0
-
             for i in range(num_cols):
-                y_col = y_vals[:, i]
+                y_col = y_plot[:, i]
                 configured_mode = self.trace_render_modes[i] if i < len(self.trace_render_modes) else "auto"
                 render_mode = self.pg_classify_render_mode(y_col) if configured_mode == "auto" else configured_mode
                 line_vertices = self.fpl_build_line_vertices(x_vals, y_col, render_mode)
@@ -2630,25 +2731,27 @@ class QChart(QObject):
 
         if self.legend is None:
             # No legend, need to initialize and create the legend
+            legend_labels = self.scaled_channel_labels()
             if not USE_FASTPLOTLIB:
                 self.legend = self.pg_createLegend()                           # consolidated creation & styling
-                self.pg_updateLegend(self.data_traces, self.channel_names)
+                self.pg_updateLegend(self.data_traces, legend_labels)
             else:
                 # Should not happen as we create legend at init time
                 self.legend = self.fpl_createLegend()
-                self.fpl_updateLegend(self.data_traces, self.channel_names)
-            self.legend_entries = list(self.channel_names)
+                self.fpl_updateLegend(self.data_traces, legend_labels)
+            self.legend_entries = list(legend_labels)
 
         else:
             # Legend exists
+            legend_labels = self.scaled_channel_labels()
             current = getattr(self, "legend_entries", [])
-            if current != self.channel_names:
-                # Update legend, since channel names changed
+            if current != legend_labels:
+                # Update legend, since channel names or scale labels changed
                 if not USE_FASTPLOTLIB:
-                    self.pg_updateLegend(self.data_traces, self.channel_names)
+                    self.pg_updateLegend(self.data_traces, legend_labels)
                 else:
-                    self.fpl_updateLegend(self.data_traces, self.channel_names)
-                self.legend_entries = list(self.channel_names)
+                    self.fpl_updateLegend(self.data_traces, legend_labels)
+                self.legend_entries = list(legend_labels)
 
         if USE_FASTPLOTLIB:
             self.fpl_fig.canvas.request_draw()

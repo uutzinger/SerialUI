@@ -361,12 +361,12 @@ elif [[ "${DO_BUILD_HELPERS}" -eq 1 || "${DO_BUILD_C_ACCELERATED}" -eq 1 ]]; the
     PYTHONWARNINGS="${PYTHONWARNINGS:-ignore::FutureWarning}" "${PYTHON_BIN}" setup.py build_ext --inplace -v
   fi
 
-  if ! "${PYTHON_BIN}" -m build --help >/dev/null 2>&1; then
-    echo "Error: python build package not found. Install with: ${PYTHON_BIN} -m pip install build" >&2
-    exit 2
+  if "${PYTHON_BIN}" -m build --help >/dev/null 2>&1; then
+    PYTHONWARNINGS="${PYTHONWARNINGS:-ignore::FutureWarning}" "${PYTHON_BIN}" -m build --no-isolation
+  else
+    echo "Warning: python build package not found; falling back to pip wheel." >&2
+    PYTHONWARNINGS="${PYTHONWARNINGS:-ignore::FutureWarning}" "${PYTHON_BIN}" -m pip wheel . --no-deps --no-build-isolation -w dist
   fi
-
-  PYTHONWARNINGS="${PYTHONWARNINGS:-ignore::FutureWarning}" "${PYTHON_BIN}" -m build --no-isolation
 
   shopt -s nullglob
   WHEELS=(dist/*.whl)

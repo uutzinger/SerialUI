@@ -13,9 +13,11 @@ Throughput is similar to other serial terminal programs.
 
 This program is written in python using PyQt <img src="docs/pyqt.png" height="30"/> and Bleak <img src="docs/bleak.png" height="30"/> as well as PyQtGraph <img src="docs/pyqtgraph.png" height="30"/> or fastplotlib <img src="docs/fastplotlib.png" height="30"/>.
 
-Under development are binary data transmission and indicating data with display elements other than a chart.
-
 The main program is `SerialUI.py`. It uses files in the `assets`, `docs` and `helper` folders.
+
+For quick start there are binaries in the Releases link for Windows, Ubuntu and macOS.
+
+Under development are binary data transmission and indicating data with display elements other than a chart.
 
 ## Video
 
@@ -219,4 +221,4 @@ On Windows amr64 platform, llvmlite is not available and numba acceleration is n
 
 - Urs Utzinger, 2022-2026 (University of Arizona)
 - Cameron K Brooks, 2024 (Western University)
-- GPT-5.3,4, (OpenAI)
+- OpenAI Codex

@@ -19,7 +19,7 @@ jobs:
             arch: amd64
             python_version: '3.10'
             pip_packages: "pyqt6 pyqtgraph markdown bleak numpy scipy numba fastplotlib PyOpenGL pybind11 setuptools cobs tamp wmi"
-          - runner: windows-11-arm
+          - runner: windows-11-vs2026-arm
             arch: arm64
             python_version: '3.11'
             pip_packages: "pyqt6 pyqtgraph markdown bleak numpy scipy fastplotlib PyOpenGL pybind11 setuptools cobs tamp wmi"

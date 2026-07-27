@@ -1776,6 +1776,7 @@ class Serial(QObject):
             # 0) Ensure both lines idle (EN=HIGH, GPIO0=HIGH)
             self.QSer.setRequestToSend(False)                                  # RTS → high → EN=HIGH
             self.QSer.setDataTerminalReady(False)                              # DTR → high → GPIO0=HIGH
+            QThread.msleep(50)
 
             # 1) Hard reset: pull EN low
             self.QSer.setRequestToSend(True)                                   # RTS → low → EN=LOW
@@ -1783,6 +1784,7 @@ class Serial(QObject):
 
             # 2) Bootloader select: pull GPIO0 low
             self.QSer.setDataTerminalReady(True)                               # DTR → low → GPIO0=LOW
+            QThread.msleep(50)
 
             # 3) Release reset: EN high → bootloader starts
             self.QSer.setRequestToSend(False)                                  # RTS → high → EN=HIGH
@@ -1790,6 +1792,7 @@ class Serial(QObject):
 
             # 4) Back to idle: GPIO0 high → normal BOOT pin idle
             self.QSer.setDataTerminalReady(False)                              # DTR → high → GPIO0=HIGH
+            QThread.msleep(100)
 
             self.logSignal.emit(logging.INFO, 
                 f"[{self.instance_name[:15]:<15}]: ESP bootloader reset completed."
@@ -1798,7 +1801,63 @@ class Serial(QObject):
             self.logSignal.emit(logging.ERROR, 
                 f"[{self.instance_name[:15]:<15}]: ESP bootloader reset failed, serial port not open!"
             )
-    
+
+    def espTinyUsbBootloader(self) -> None:
+        """
+        ESP32-S3 native USB CDC / TinyUSB reset into ROM download bootloader.
+
+        This is NOT the classic hardware EN/GPIO0 reset circuit.
+
+        TinyUSB / native USB CDC line-state behavior commonly used by ESP32-S3:
+
+            RTS  DTR
+            0    0   Clear download-mode flag / idle
+            0    1   Set download-mode flag
+            1    0   Reset
+            1    1   No action / ignored combination
+
+        Sequence:
+        1. RTS=0, DTR=0  → clear any previous download request
+        2. RTS=0, DTR=1  → request download/bootloader mode
+        3. RTS=1, DTR=0  → request reset
+        4. RTS=0, DTR=0  → release line state back to idle
+
+        Important:
+        This only works if the running firmware's USB CDC/TinyUSB stack is alive
+        enough to receive the RTS/DTR control-line changes.
+        """
+
+        if self.QSer.isOpen():
+            # 0) Idle / clear previous state
+            self.QSer.setRequestToSend(False)                                  # RTS = 0
+            self.QSer.setDataTerminalReady(False)                              # DTR = 0
+            QThread.msleep(50)
+
+            # 1) Set download-mode / bootloader flag
+            self.QSer.setRequestToSend(False)                                  # RTS = 0
+            self.QSer.setDataTerminalReady(True)                               # DTR = 1
+            QThread.msleep(50)
+
+            # 2) Request reset
+            self.QSer.setRequestToSend(True)                                   # RTS = 1
+            self.QSer.setDataTerminalReady(False)                              # DTR = 0
+            QThread.msleep(100)
+
+            # 3) Return to idle
+            self.QSer.setRequestToSend(False)                                  # RTS = 0
+            self.QSer.setDataTerminalReady(False)                              # DTR = 0
+
+            # Native USB device may disconnect/re-enumerate after this.
+            QThread.msleep(500)
+
+            self.logSignal.emit(logging.INFO,
+                f"[{self.instance_name[:15]:<15}]: ESP TinyUSB bootloader reset requested."
+            )
+        else:
+            self.logSignal.emit(logging.ERROR,
+                f"[{self.instance_name[:15]:<15}]: ESP TinyUSB bootloader reset failed, serial port not open!"
+            )
+
     def espHardReset(self) -> None:
         """
         Perform a “hard reset” of the ESP chip (no bootloader entry).
@@ -1816,12 +1875,14 @@ class Serial(QObject):
             # 1) Idle: EN=HIGH (RTS de‑asserted), GPIO0=HIGH (DTR de‑asserted)
             self.QSer.setRequestToSend(False)                                  # RTS=False → EN=HIGH
             self.QSer.setDataTerminalReady(False)                              # DTR=False → GPIO0=HIGH
+            QThread.msleep(50)
 
             # 2) Reset: pull EN low
             self.QSer.setRequestToSend(True)                                   # RTS=True → EN=LOW
-
+            self.QSer.setDataTerminalReady(False)                              # DTR=False → GPIO0=HIGH
+ 
             # 3) Hold reset long enough
-            QThread.msleep(100)
+            QThread.msleep(100) 
 
             # 4) Release reset: EN goes high, chip runs
             self.QSer.setRequestToSend(False)                                  # RTS=False → EN=HIGH

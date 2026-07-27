@@ -42,6 +42,56 @@ function Require-File {
     }
 }
 
+function Show-WindowsCompilerDiagnostics {
+    if ($env:OS -ne "Windows_NT") {
+        return
+    }
+
+    Log "Checking Windows compiler environment"
+    & $PythonBin -c "import platform, sysconfig; print('platform=' + platform.platform()); print('machine=' + platform.machine()); print('EXT_SUFFIX=' + str(sysconfig.get_config_var('EXT_SUFFIX')))"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to query Python build platform"
+    }
+
+    $cl = Get-Command cl.exe -ErrorAction SilentlyContinue
+    if ($cl) {
+        Write-Host "cl.exe on PATH: $($cl.Source)"
+    }
+    else {
+        Write-Host "cl.exe is not on PATH; setuptools may still locate MSVC via Visual Studio discovery."
+    }
+
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path -Path $vswhere -PathType Leaf) {
+        & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+        & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 -property installationPath
+    }
+    else {
+        Write-Host "vswhere.exe not found."
+    }
+}
+
+function Assert-BundledParserExtensions {
+    param([string]$InternalDir)
+
+    $parserDir = Join-Path $InternalDir "helpers\line_parsers"
+    if (-not (Test-Path -Path $parserDir -PathType Container)) {
+        throw "Bundled parser directory is missing: $parserDir"
+    }
+
+    $simple = Get-ChildItem -Path $parserDir -Filter "simple_parser*.pyd" -File -ErrorAction SilentlyContinue | Select-Object -First 1
+    $header = Get-ChildItem -Path $parserDir -Filter "header_parser*.pyd" -File -ErrorAction SilentlyContinue | Select-Object -First 1
+
+    if (-not $simple -or -not $header) {
+        Write-Host "Parser directory contents:"
+        Get-ChildItem -Path $parserDir -ErrorAction SilentlyContinue | Select-Object Name, Length | Format-Table -AutoSize
+        throw "C-accelerated parser extensions were not bundled into $parserDir"
+    }
+
+    Write-Host "Bundled parser extension: $($simple.FullName)"
+    Write-Host "Bundled parser extension: $($header.FullName)"
+}
+
 function Get-ProjectVersion {
     param([string]$Python)
 
@@ -97,6 +147,10 @@ if ($usesSystemSite.Trim() -eq "1") {
     Write-Host "WARNING: Python environment includes system site-packages."
     Write-Host "         This can make PyInstaller bundles very large by pulling unrelated packages."
     Write-Host "         Recommended: build in a clean venv with include-system-site-packages = false."
+}
+
+if ($BuildCAccelerated) {
+    Show-WindowsCompilerDiagnostics
 }
 
 Log "Installing/upgrading build tools"
@@ -219,6 +273,8 @@ $frozenExeCandidates = @(
 $frozenExe = $frozenExeCandidates | Where-Object { Test-Path -Path $_ -PathType Leaf } | Select-Object -First 1
 
 if ($BuildCAccelerated) {
+    Assert-BundledParserExtensions -InternalDir $internalDir
+
     Log "Running frozen executable C-parser subprocess self-test"
 
     if ($frozenExe) {
@@ -228,11 +284,11 @@ if ($BuildCAccelerated) {
             Log "Frozen C-parser probe passed"
         }
         else {
-            Write-Warning "Frozen C-parser probe failed (exit code $probeExit). Executable will fall back to Python parser at runtime."
+            throw "Frozen C-parser probe failed (exit code $probeExit). Refusing to publish a BuildCAccelerated executable without parser acceleration."
         }
     }
     else {
-        Write-Warning "Could not locate frozen executable for C-parser probe test."
+        throw "Could not locate frozen executable for C-parser probe test."
     }
 }
 

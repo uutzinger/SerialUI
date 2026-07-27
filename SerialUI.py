@@ -107,6 +107,25 @@ def resource_path(relative_path: str) -> str:
     return os.path.join(base_path, relative_path)
 # ==============================================================================
 
+APP_NAME = "SerialUI"
+APP_DISPLAY_NAME = "Serial UI"
+APP_DESKTOP_FILE = "SerialUI"
+
+def set_linux_desktop_identity(app) -> None:
+    """
+    Give Linux desktop shells a stable id for matching the running Qt window
+    to linux_app/SerialUI.desktop and its configured icon.
+    """
+    app.setApplicationName(APP_NAME)
+
+    set_display_name = getattr(app, "setApplicationDisplayName", None)
+    if set_display_name is not None:
+        set_display_name(APP_DISPLAY_NAME)
+
+    set_desktop_file_name = getattr(app, "setDesktopFileName", None)
+    if set_desktop_file_name is not None:
+        set_desktop_file_name(APP_DESKTOP_FILE)
+
 def _run_c_parser_selftest_mode() -> int:
     """
     Lightweight self-test mode for parser probing.
@@ -2091,6 +2110,7 @@ if __name__ == "__main__":
     root_logger.propagate = False
     
     app = QApplication(sys.argv)
+    set_linux_desktop_identity(app)
     base_dir = os.path.dirname(os.path.abspath(__file__))
     app.setWindowIcon(QIcon(os.path.join(base_dir, "assets", "icon_48.png")))
 
