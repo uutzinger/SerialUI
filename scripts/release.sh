@@ -30,6 +30,14 @@ require_cmd() {
   fi
 }
 
+git_no_env_token() {
+  env -u GITHUB_TOKEN -u GH_TOKEN git "$@"
+}
+
+gh_no_env_token() {
+  env -u GITHUB_TOKEN -u GH_TOKEN gh "$@"
+}
+
 collect_release_assets() {
   local version="$1"
   local -n out_ref="$2"
@@ -85,17 +93,17 @@ create_github_release() {
 
   require_cmd gh
 
-  if ! gh auth status >/dev/null 2>&1; then
+  if ! gh_no_env_token auth status >/dev/null 2>&1; then
     echo "Error: gh is not authenticated. Run: gh auth login" >&2
     exit 2
   fi
 
-  if ! git rev-parse -q --verify "refs/tags/${tag}" >/dev/null 2>&1; then
+  if ! git_no_env_token rev-parse -q --verify "refs/tags/${tag}" >/dev/null 2>&1; then
     echo "Error: tag ${tag} does not exist locally." >&2
     exit 2
   fi
 
-  if gh release view "${tag}" >/dev/null 2>&1; then
+  if gh_no_env_token release view "${tag}" >/dev/null 2>&1; then
     echo "Error: GitHub release ${tag} already exists." >&2
     exit 2
   fi
@@ -110,12 +118,12 @@ create_github_release() {
   fi
 
   if [[ "${with_assets}" -eq 1 ]]; then
-    gh release create "${tag}" \
+    gh_no_env_token release create "${tag}" \
       "${assets[@]}" \
       --title "${tag}" \
       --generate-notes
   else
-    gh release create "${tag}" \
+    gh_no_env_token release create "${tag}" \
       --title "${tag}" \
       --generate-notes
   fi
@@ -136,12 +144,12 @@ upload_release_assets() {
   require_cmd gh
   require_dir "dist"
 
-  if ! gh auth status >/dev/null 2>&1; then
+  if ! gh_no_env_token auth status >/dev/null 2>&1; then
     echo "Error: gh is not authenticated. Run: gh auth login" >&2
     exit 2
   fi
 
-  if ! gh release view "${tag}" >/dev/null 2>&1; then
+  if ! gh_no_env_token release view "${tag}" >/dev/null 2>&1; then
     echo "Error: GitHub release ${tag} does not exist." >&2
     exit 2
   fi
@@ -152,7 +160,7 @@ upload_release_assets() {
     exit 2
   fi
 
-  gh release upload "${tag}" "${assets[@]}"
+  gh_no_env_token release upload "${tag}" "${assets[@]}"
   echo "Uploaded ${#assets[@]} asset(s) to release ${tag}"
 }
 
@@ -199,6 +207,8 @@ Notes:
   - --build-executable delegates to scripts/build_executable.sh.
     and creates dist/SerialUI-<version>-<os>-<arch>.zip.
   - --release requires GitHub CLI (gh) authentication.
+  - Git and gh commands run with GITHUB_TOKEN and GH_TOKEN unset so stale
+    environment tokens do not override stored SSH/browser authentication.
   - --release and --upload-assets only use compressed files already present in dist/.
   - POSIX shell convention is --long-option; single-dash aliases are accepted for parity with PowerShell.
 EOF
@@ -249,7 +259,7 @@ validate_version_format "${PACKAGE_VERSION}"
 echo "Release version: ${PACKAGE_VERSION}"
 
 if [[ "${DO_RELEASE}" -eq 1 ]]; then
-  if git rev-parse -q --verify "refs/tags/${PACKAGE_VERSION}" >/dev/null 2>&1; then
+  if git_no_env_token rev-parse -q --verify "refs/tags/${PACKAGE_VERSION}" >/dev/null 2>&1; then
     if [[ "${USER_SET_BUILD_EXECUTABLE}" -eq 0 && "${USER_SET_TAG}" -eq 0 && "${USER_SET_PUSH}" -eq 0 ]]; then
       RELEASE_ONLY_MODE=1
       DO_BUILD_EXECUTABLE=0
@@ -277,18 +287,18 @@ if [[ "${DO_CREATE_RELEASE}" -eq 1 ]]; then
   DO_TAG=0
   DO_PUSH=0
 
-  if ! git rev-parse -q --verify "refs/tags/${PACKAGE_VERSION}" >/dev/null 2>&1; then
+  if ! git_no_env_token rev-parse -q --verify "refs/tags/${PACKAGE_VERSION}" >/dev/null 2>&1; then
     echo "Error: --create-release requires existing local tag ${PACKAGE_VERSION}." >&2
     echo "Run: git tag ${PACKAGE_VERSION} && git push origin refs/tags/${PACKAGE_VERSION}" >&2
     exit 2
   fi
 
-  CURRENT_BRANCH="$(git branch --show-current)"
-  CHECK_REMOTE="$(git config --get "branch.${CURRENT_BRANCH}.remote" || true)"
+  CURRENT_BRANCH="$(git_no_env_token branch --show-current)"
+  CHECK_REMOTE="$(git_no_env_token config --get "branch.${CURRENT_BRANCH}.remote" || true)"
   if [[ -z "${CHECK_REMOTE}" ]]; then
     CHECK_REMOTE="origin"
   fi
-  if ! git ls-remote --exit-code --tags "${CHECK_REMOTE}" "refs/tags/${PACKAGE_VERSION}" >/dev/null 2>&1; then
+  if ! git_no_env_token ls-remote --exit-code --tags "${CHECK_REMOTE}" "refs/tags/${PACKAGE_VERSION}" >/dev/null 2>&1; then
     echo "Error: --create-release requires tag ${PACKAGE_VERSION} to be pushed to ${CHECK_REMOTE}." >&2
     echo "Run: git push ${CHECK_REMOTE} refs/tags/${PACKAGE_VERSION}" >&2
     exit 2
@@ -390,23 +400,23 @@ if [[ "${DO_COMMIT}" -eq 1 ]]; then
   if [[ -z "${COMMIT_MSG}" ]]; then
     COMMIT_MSG="release: ${PACKAGE_VERSION}"
   fi
-  git add -A
-  git commit -m "${COMMIT_MSG}"
+  git_no_env_token add -A
+  git_no_env_token commit -m "${COMMIT_MSG}"
 fi
 
 if [[ "${DO_TAG}" -eq 1 ]]; then
-  git tag "${PACKAGE_VERSION}"
+  git_no_env_token tag "${PACKAGE_VERSION}"
 fi
 
 if [[ "${DO_PUSH}" -eq 1 ]]; then
-  CURRENT_BRANCH="$(git branch --show-current)"
-  PUSH_REMOTE="$(git config --get "branch.${CURRENT_BRANCH}.remote" || true)"
+  CURRENT_BRANCH="$(git_no_env_token branch --show-current)"
+  PUSH_REMOTE="$(git_no_env_token config --get "branch.${CURRENT_BRANCH}.remote" || true)"
   if [[ -z "${PUSH_REMOTE}" ]]; then
     PUSH_REMOTE="origin"
   fi
 
-  git push
-  git push "${PUSH_REMOTE}" "refs/tags/${PACKAGE_VERSION}"
+  git_no_env_token push
+  git_no_env_token push "${PUSH_REMOTE}" "refs/tags/${PACKAGE_VERSION}"
 fi
 
 if [[ "${DO_RELEASE}" -eq 1 ]]; then
