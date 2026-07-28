@@ -1,48 +1,48 @@
 # Graphical User Interface for Serial Communication
 
-![Serial Monitor](assets/icon_96.png) **SerialUI** provides a graphical interface to send and receive text and data from the serial port or BLE connection (Nordic UART Service).
+![Serial Monitor](assets/icon_96.png) **SerialUI** provides a graphical interface to send and receive text and data through a serial port or BLE connection (Nordic UART Service).
 
 It includes a serial plotter for displaying numerical data.
 
-It offers features beyond other serial terminals. For example, in addition to features found on Arduino IDE Monitor or Plotter it offers:
+It offers features beyond other serial terminals. For example, in addition to features found in the Arduino IDE Monitor or Plotter, it offers:
 - Serial over BLE (NUS)
 - Recording of received data
 - Extended charting of the data
   
 Throughput is similar to other serial terminal programs.
 
-This program is written in python using PyQt <img src="docs/pyqt.png" height="30"/> and Bleak <img src="docs/bleak.png" height="30"/> as well as PyQtGraph <img src="docs/pyqtgraph.png" height="30"/> or fastplotlib <img src="docs/fastplotlib.png" height="30"/>.
+This program is written in Python using PyQt <img src="docs/pyqt.png" height="30"/>, Bleak <img src="docs/bleak.png" height="30"/>, and PyQtGraph <img src="docs/pyqtgraph.png" height="30"/>. It also supports fastplotlib <img src="docs/fastplotlib.png" height="30"/>.
 
-The main program is `SerialUI.py`. It uses files in the `assets`, `docs` and `helper` folders.
+The main program is `SerialUI.py`. It uses files in the `assets`, `docs`, and `helpers` folders.
 
-For quick start there are binaries in the Releases link for Windows, Ubuntu and macOS.
-
-Under development are binary data transmission and indicating data with display elements other than a chart.
+For easy use, binaries are available from the Releases page for Windows, Ubuntu, and macOS.
 
 ## Video
 
-Video using ESP32 with testBLESerial program. Data is transmitted using BLE Serial and maximum transfer test shows > 100 kByte/s. Device is initally connected to application with serial USB and then with serial BLE.
+Video using an ESP32 with the testBLESerial program. Data is transmitted using BLE Serial, and the maximum transfer test shows > 100 kByte/s. The device is initially connected to the application with serial USB and then with serial BLE.
 
 <a href="https://youtu.be/O6hl1_sOgLs">
   <img src="https://img.youtube.com/vi/O6hl1_sOgLs/maxresdefault.jpg" alt="Video" width="600">
 </a>
 
 ## Description
-The serial monitor interface
+The program displays text received through a serial connection. It also sends text provided by the user:
+
+The serial monitor interface:
 
 <img src="docs/SerialMonitor.png" alt="Serial Monitor" width="600"/>
 
-The serial charting interface
+Received data can be parsed and displayed using the Plotter/Chart interface:
 
 <img src="docs/SerialPlotter.png" alt="Serial Plotter" width="600"/>
 
-Serial BLE extension
+The Serial BLE extension allows devices to connect using serial over BLE:
 
 <img src="docs/SerialBLE.png" alt="Serial BLE" width="600"/>
 
 ## How to Use This Program
 
-Either use the executable from the release assets or run the program with `python3 SerialUI.py` 
+After starting the program with an executable from the release assets or running the program with `python3 SerialUI.py`, please follow:
 
 - [Usage instructions](docs/Instructions.md).
 - [Supplemental instructions](docs/Supplementalinstructions.md).
@@ -51,92 +51,88 @@ Either use the executable from the release assets or run the program with `pytho
 
 ### From Executables
 
-Use the executable from the release assets on Github. No packages will need to be installed and no source code needs to be downloaded. However you will need to unzip the archive before running the executable.
-
-- MacOs supports arm architecture
-- Linux supports ubuntu 24 with arm and amd64 architecture as well as ubuntu 22 with amd64 architecture
-- Windows supports windows amd64 and arm64 architecture
+Use an executable from the release assets on GitHub. No packages need to be installed, and no source code needs to be downloaded.
+However, you need to unzip the archive before running the executable.
 
 #### First run notes
 Operating systems may block downloaded executables until you explicitly allow them.
 
-- `Windows`: If SmartScreen appears, use `More info` then `Run anyway`. If needed, in power shell unblock the extracted files `Get-ChildItem .\SerialUI -Recurse -File | Unblock-File` 
+- `Windows`: If SmartScreen appears, use `More info` then `Run anyway`. If needed, unblock the extracted files in PowerShell with `Get-ChildItem .\SerialUI -Recurse -File | Unblock-File`.
 - `macOS`: If Gatekeeper blocks launch, right-click the app and choose `Open` once. If still blocked, remove quarantine recursively in shell:
   `xattr -dr com.apple.quarantine /path/to/SerialUI.app`
 - `Linux`: After unzip, ensure executable bit is set in shell:
   `chmod +x ./SerialUI/SerialUI`
 
-After first launch, you can run self-tests from a terminal to make sure the accelerators work:
-
-- C parser: `SerialUI --selftest-c-parser`
-- Numba acceleration: `SerialUI --selftest-numba`
-- If self-tests fail, SerialUI still runs and falls back to the pure Python version.
-- Windows ARM64 builds do not currently enable numba acceleration (llvmlite wheel availability).
-
 ### From Source
 
-Clone this repository into a folder where you store python programs and install the packages described below.
+Clone this repository into a folder where you store Python programs and install the packages described below.
 
-To work of the source code either download the zip or `git clone https://github.com/uutzinger/SerialUI.git` to that folder.
+To obtain the project, run `git clone https://github.com/uutzinger/SerialUI.git` or download the zipped folder from GitHub.
 
-This program has dependencies. You can install them with `scripts/setup.sh` on Linux and MacOS and `scripts\setup.ps1` on Windows.
+This program has dependencies. You can install them with `scripts/setup.sh` on Linux and macOS and `scripts\setup.ps1` on Windows.
 
-There is build script in `scripts/release.sh` or `release.ps1` to activate the C accelerated text parser with `./scripts/release.sh --build-c-accelerated` or `./scripts/release.ps1 -build-c-accelerated`
- 
-This requires a C++ compiler and the python packages `pybind11` and `setuptools` to be available.
+To activate the C-accelerated parser, use the build script `./scripts/release.sh --build-c-accelerated` or `./scripts/release.ps1 -build-c-accelerated`. This requires a C++ compiler and the Python packages `pybind11` and `setuptools`.
 
 ## Enabling / Disabling Features
 
-The programs configuration is stored in `config.py` (main folder). Here you can enable/disable features such as:
+The program's configuration is stored in `config.py` in the main folder. Here you can enable or disable features such as:
 - USE_FASTPLOTLIB: Plotting with fastplotlib instead of pyqtgraph
 - USE_BLE: enable serial communication over BLE
-- USE_BLUETOOTHCTL: enable pairing and trusting of BLE devices (available on Unix like systems)
+- USE_BLUETOOTHCTL: enable pairing and trusting of BLE devices (available on Unix-like systems)
 
-The standalone executable does not provide access to the configuration file.
+The standalone executable does not provide access to the configuration file because the default config is used to create the executable.
 
 ## Modules
 
-The program is organized into [modules](docs/Module_Organization.md).
+The program is organized into [modules](docs/Module_Organization.md):
 
-## Nordic UART Service - BLE
+- General Helper
+- Serial Helper
+- BLE Helper
+- Graph Helper
+- Indicator Helper
+- Bluetooth Ctl Helper
+- Codec Helper
 
-The NUS provides a serial interface similar to regular USB interface for microcontrollers.
+### Nordic UART Service - BLE
 
-The implementation on a microcontroller requires more programming effort than a simple `Serial.print` especially if secure connections and automatic reconnection is considered. BLE connections can be optimized for low power, extended distance or high throughput.
+The NUS provides a serial interface similar to a regular USB interface for microcontrollers.
 
-A detailed example is the [BLE test program](./Arduino_programs/testBLESerial/testBLESerial.ino) which was used to test SerialUI.
+The implementation on a microcontroller requires more programming effort than a simple `Serial.print();`, especially if secure connections and automatic reconnection are considered. BLE connections can be optimized for low power, extended distance, or high throughput. The [Arduino_BLESerial library](https://github.com/uutzinger/Arduino_BLESerial) from the author provides example NUS conenctions. A detailed example is the [BLE test program](./Arduino_programs/testBLESerial/testBLESerial.ino) in this repo's Arduino folder which was used to test SerialUI.
 
-With ESP32-S3 a transfer rate of more than 100kByte/s can be expected when BLE connection is optimized for high throughput.
+With ESP32-S3, a transfer rate of more than 100 kByte/s can be expected when the BLE connection is optimized for high throughput.
 
-## Data Parsing
+### Data Parsing
 
-The data parser extract values and variable names from lines of text. Besides a python version, there is a C accelerated version available. For supported data formats see: [Data Parsing Approach](docs/Dataparsing.md)
+The data parser extracts values and variable names from lines of text. In addition to the Python version, a C-accelerated version is available. The program uses the following [Data Parsing Approach](docs/Dataparsing.md).
 
-## Indicating Data
+### Binary Data 
 
-Indicating data is not implemented yet: [Feature not implemented yet](docs/Indicating.md).
+Binary data transmission is not yet implemented. However, the codec has been developed and requires integration and example programs. It will use COBS to extract blocks of data and the BinaryStreamProcessor to interpret the received data.
 
-## fastplotlib
+### Indicating Data
 
-Fastplotlib itself is under development. There is a custom legend.py in python libraries folder that is needed when you enable fastplotlib in the config file. The file replaces the legend.py of the creators. It needs more work.
+Indicating data is not implemented yet: [N.A.](docs/Indicating.md).
 
-During program startup the library and the chart widget are initialized. This requires building the pipeline for the GPU which takes 5-10 seconds. During that time the program might be sluggish.
+### fastplotlib
 
-fastplotlib is not available in the standalone executable and requires customizations. It is useful if you have GPU and need to display large data sets.
+Fastplotlib itself is under development. A custom `legend.py` file in the Python libraries folder is needed when you enable fastplotlib in the config file. The file replaces the creators' `legend.py`. It needs more work.
+
+During program startup, the library and the chart widget are initialized. This requires building the pipeline for the GPU, which takes 5-10 seconds. During that time, the program might be sluggish.
+
+fastplotlib is not available in the standalone executable and requires customizations. It is useful if you have a GPU and need to display large data sets.
 
 ## Arduino Test Programs
 
-In the `Arduino_programs` folder are example programs that simulate data for serial UART and BLE connection. 
-
-To create your own application remove all the simulations except one and replace it with your code.
+The `Arduino_programs` folder contains example programs that simulate data for serial UART and BLE connections. [testBLESerial_taskbased](Arduino_programs/testBLESerial_taskbased/testBLESerial_taskbased.ino) is the latest.  You can use those programs as examples to create your own application.
 
 ## Efficiency
 
 A detailed [comparison of SerialUI with other serial IO programs](docs/Efficiency.md) was conducted.
 
-The SerialUI is as performant as other good terminal programs. The maximum text transfer of an ESP32-S3 over USB is about 800k bytes/s and 100k bytes/s over BLE. With a Cortex-M7 (Teensy) we reached about 7M bytes/s over USB.
+SerialUI is as performant as other good terminal programs. The maximum text transfer rate of an ESP32-S3 over USB is about 800 kBytes/s and 100 kBytes/s over BLE. With a Cortex-M7 (Teensy), we reached about 7 MBytes/s over USB.
 
-With both fastplotlib and pyqtgraph we can plot two channels with at least 200k samples per second at 10Hz plotting refresh rate. When large display history is needed fastplotlib with a dedicated GPU is better suited as plotting engine.
+With both fastplotlib and pyqtgraph, we can plot two channels with at least 200k samples per second at a 10 Hz plotting refresh rate. When a large display history is needed, fastplotlib with a dedicated GPU is better suited as the plotting engine.
 
 ## Packages utilized in this Project
 
@@ -150,16 +146,17 @@ The following libraries are used:
 - [difflib - device ID comparison](https://docs.python.org/3/library/difflib.html)
 - [html - html display](https://docs.python.org/3/library/html.parser.html)
 - [logging](https://docs.python.org/3/library/logging.html)
-- [markdown - markdown display](https://python-markdown.github.io/)
+- [markdown - markdown display](https://python-markdown.github.io/) `o`
 - [math](https://docs.python.org/3/library/math.html)
-- [numpy - data buffer and display](https://numpy.org/)
+- [numpy - data buffer and display](https://numpy.org/) `o`
 - [numba - accelerator](https://numba.pydata.org/)`*`
 - [os](https://docs.python.org/3/library/os.html)
 - [pathlib](https://docs.python.org/3/library/pathlib.html)
 - [platform](https://docs.python.org/3/library/platform.html)
 - [pybind11 - text parsing acceleration](https://github.com/pybind/pybind11)`*`
-- [PyQt5 or 6 - UI](https://www.riverbankcomputing.com/software/pyqt/)
-- [pyqtgraph - charting](https://www.pyqtgraph.org/)
+- [PyOpenGL](https://github.com/mcfletch/pyopengl) `o`
+- [PyQt5 or 6 - UI](https://www.riverbankcomputing.com/software/pyqt/) `o`
+- [pyqtgraph - charting](https://www.pyqtgraph.org/) `o`
 - [re - regular expression filter](https://docs.python.org/3/library/re.html)
 - [scipy - fft](https://scipy.org/) `****`
 - [setuptools](https://github.com/pypa/setuptools)`*`
@@ -167,55 +164,15 @@ The following libraries are used:
 - [textwrap - logging](https://docs.python.org/3/library/textwrap.html)
 - [time](https://docs.python.org/3/library/time.html)
 - [typing](https://docs.python.org/3/library/typing.html)
-- [wmi - USB events](https://timgolden.me.uk/python/wmi/index.html) or [pyudev - USB events](https://pyudev.readthedocs.io/en/latest/)
+- [wmi - USB events](https://timgolden.me.uk/python/wmi/index.html) or [pyudev - USB events](https://pyudev.readthedocs.io/en/latest/) `o`
 - [zlib - compressor](https://docs.python.org/3/library/zlib.html) `****`
 
+[` `] standard Python library
+[`o`] third-party, required package
 [`*`] not required but will accelerate the program, 
 [`**`] needed if BLE is enabled, 
 [`***`] needed if fastplotlib is enabled,
 [`****`] future version
-
-## Scripts
-
-### Setup
-
-A setup script creates a vritual python environment to run the application. It includes all required dependencies.
-
-### Release
-
-Use of release scripts from the repository root. The release version is read from `VERSION` in `config.py`.
-
-Option style:
-- Linux shell convention uses `--long-option` (for example `--build-executable`).
-- PowerShell convention uses `-Parameter` (for example `-BuildExecutable`).
-- `scripts/release.sh` accepts both styles for parity (`--build-executable` and `-build-executable`).
-
-Linux examples (`scripts/release.sh`):
-
-- Show options: `./scripts/release.sh --help`
-- Update ankerl for C-accelerated parser extension: `./scripts/release.sh --update-ankerl`
-- Build C++ accelerated parser extension before packaging: `./scripts/release.sh --build-c-accelerated`
-- Build standalone executable (also creates `dist/SerialUI-*.zip`): `./scripts/release.sh --build-executable`
-- Build, commit, tag, and push: `./scripts/release.sh --build-executable --build-c-accelerated --commit --tag --push`
-- Create GitHub release for an existing version tag without rebuilding: `./scripts/release.sh --release`
-- Create GitHub release only for an existing pushed tag (never build/tag/push): `./scripts/release.sh --create-release`
-- Upload existing archives in `dist/` (`*.tar.gz`, `*.zip`) to an existing release: `./scripts/release.sh --upload-assets`
-
-Windows examples (`scripts/release.ps1`):
-
-- Show options: `.\scripts\release.ps1 -Help`
-- Build standalone executable (also creates `dist\SerialUI-*.zip`): `.\scripts\release.ps1 -BuildExecutable`
-- Build standalone executable + C-accelerated parser: `.\scripts\release.ps1 -BuildExecutable -BuildCAccelerated`
-- Create GitHub release only for an existing pushed tag (never build/tag/push): `.\scripts\release.ps1 -CreateRelease`
-- Upload existing archives in `dist\` to an existing release: `.\scripts\release.ps1 -UploadAssets`
-
-### Github workflows
-
-There are scripts that create my Github workflows to create executables on different platforms.
-
-`build_realease_all.sh` creates all of the builds
-
-On Windows amr64 platform, llvmlite is not available and numba acceleration is not activated.
 
 ## Contributors
 
