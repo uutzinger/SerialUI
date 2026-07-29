@@ -953,6 +953,7 @@ class mainWindow(QMainWindow):
 
         # Return key pressed in send lineEdit
         self.ui.lineEdit_Text.returnPressed.connect(        self.on_carriageReturnPressed) # send text as soon as enter key is pressed
+        self.ui.lineEdit_Text.installEventFilter(           self)
 
         self.handle_log(logging.INFO,
             f"[{self.instance_name[:15]:<15}]: Text entry signals connected."
@@ -1416,6 +1417,36 @@ class mainWindow(QMainWindow):
             self.handle_log(logging.DEBUG, 
                 f"[{self.instance_name[:15]:<15}]: Text emission completed in {1000*(toc - tic):.2f} ms."
             )
+
+    def eventFilter(self, obj, event):
+        if obj == self.ui.lineEdit_Text and event.type() == _QEVENT_TYPE.KeyPress:
+            paste_key = event.key() in (
+                getattr(Qt, "Key_V", None),
+                getattr(getattr(Qt, "Key", Qt), "Key_V", None),
+            )
+            qt_keyboard_modifier = getattr(Qt, "KeyboardModifier", Qt)
+            control_modifier = getattr(
+                qt_keyboard_modifier, "ControlModifier", getattr(Qt, "ControlModifier", 0)
+            )
+            paste_modifier = bool(event.modifiers() & control_modifier)
+            if paste_key and paste_modifier:
+                text = QApplication.clipboard().text()
+                if "\n" in text or "\r" in text:
+                    eol = self.textLineTerminator if self.textLineTerminator not in {b"", b"\r"} else b"\r\n"
+                    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+                    try:
+                        payload = eol.join(line.encode(self.encoding, errors="replace") for line in normalized.split("\n"))
+                    except Exception as e:
+                        self.handle_log(logging.ERROR,
+                            f"[{self.instance_name[:15]:<15}]: Encoding pasted text failed: {e}"
+                        )
+                        return True
+                    self.runMonitoringRequest.emit(True)
+                    self.sendTextRequest.emit(payload)
+                    self.ui.lineEdit_Text.clear()
+                    self.ui.statusBar().showMessage("Pasted text sent.", 2000)
+                    return True
+        return super().eventFilter(obj, event)
 
     @pyqtSlot()
     def on_pushButton_SendFile(self) -> None:
@@ -2108,8 +2139,10 @@ class mainWindow(QMainWindow):
             # We are neither plotting nor displaying data, therefore we want to stop the serial worker
             self.throughputStopRequest.emit()
             self.rxStopRequest.emit()
-            self.ui.lineEdit_Text.setEnabled(False)
-            self.ui.pushButton_SendFile.setEnabled(False)
+            self.ui.lineEdit_Text.setEnabled(True)
+            self.ui.pushButton_SendFile.setEnabled(
+                self.txrxReady_wired_to_serial or self.txrxReady_wired_to_ble
+            )
             
         else:
             # We are plotting or monitoring data

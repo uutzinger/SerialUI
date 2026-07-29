@@ -8,10 +8,13 @@ A `setup.sh/setup.ps1` script creates a vritual python environment to run the ap
 
 Use of release scripts from the repository root. The release version is read from `VERSION` in `config.py`.
 
+`scripts/build_release_all.sh` completes all the steps for a successful release.
+
 Option style:
 - Linux shell convention uses `--long-option` (for example `--build-executable`).
 - PowerShell convention uses `-Parameter` (for example `-BuildExecutable`).
 - `scripts/release.sh` accepts both styles for parity (`--build-executable` and `-build-executable`).
+
 
 Linux examples (`scripts/release.sh`):
 
