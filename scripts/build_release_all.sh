@@ -10,6 +10,7 @@ RUN_MACOS=1
 RUN_WINDOWS=1
 RUN_RASPBIAN=0
 COMMIT_MSG=""
+BUILD_REF=""
 
 usage() {
   cat <<'EOF'
@@ -17,12 +18,15 @@ Usage:
   scripts/build_release_all.sh [options]
 
 Pipeline:
-  1) Run release.sh with commit/tag/push, then create-release
-  2) Run runner builds (linux/macos/windows/raspbian) on the release tag
+  1) Run release.sh with commit/tag/push for a new tag, then create-release
+     If the version tag already exists locally, skip commit/tag/push and reuse it.
+  2) Run runner builds (linux/macos/windows/raspbian) on the build ref
   3) Run release.sh --upload-assets
 
 Options:
   --commit-msg "msg" Set custom commit message passed to release.sh
+  --build-ref <ref>  Git branch/tag ref used for GitHub runner builds
+                     (default: release version tag from config.py)
   --skip-linux       Skip Linux runner build
   --skip-macos       Skip macOS runner build
   --skip-windows     Skip Windows runner build
@@ -36,6 +40,11 @@ while [[ $# -gt 0 ]]; do
     --commit-msg)
       [[ $# -ge 2 ]] || { echo "Error: --commit-msg requires a value" >&2; exit 2; }
       COMMIT_MSG="$2"
+      shift 2
+      ;;
+    --build-ref)
+      [[ $# -ge 2 ]] || { echo "Error: --build-ref requires a value" >&2; exit 2; }
+      BUILD_REF="$2"
       shift 2
       ;;
     --skip-linux) RUN_LINUX=0; shift ;;
@@ -123,49 +132,58 @@ fi
 
 VERSION="$(project_version)"
 echo "Release version from config.py: ${VERSION}"
+if [[ -z "${BUILD_REF}" ]]; then
+  BUILD_REF="${VERSION}"
+fi
+echo "GitHub runner build ref: ${BUILD_REF}"
 
+EXISTING_TAG=0
 if git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null 2>&1; then
-  echo "Error: git tag '${VERSION}' already exists locally. Bump VERSION before running this pipeline." >&2
-  exit 2
-fi
-
-HAS_CHANGES=0
-if ! git diff --quiet || ! git diff --cached --quiet || [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
-  HAS_CHANGES=1
-fi
-
-RELEASE_ARGS=(--tag --push)
-if [[ "${HAS_CHANGES}" -eq 1 ]]; then
-  RELEASE_ARGS=(--commit "${RELEASE_ARGS[@]}")
+  EXISTING_TAG=1
+  echo "Tag ${VERSION} already exists locally; reusing it for runner builds and asset upload."
 else
-  echo "No local changes detected; running release without --commit."
-fi
+  HAS_CHANGES=0
+  if ! git diff --quiet || ! git diff --cached --quiet || [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
+    HAS_CHANGES=1
+  fi
 
-if [[ -n "${COMMIT_MSG}" ]]; then
-  RELEASE_ARGS=(--commit-msg "${COMMIT_MSG}" "${RELEASE_ARGS[@]}")
+  RELEASE_ARGS=(--tag --push)
+  if [[ "${HAS_CHANGES}" -eq 1 ]]; then
+    RELEASE_ARGS=(--commit "${RELEASE_ARGS[@]}")
+  else
+    echo "No local changes detected; running release without --commit."
+  fi
+
+  if [[ -n "${COMMIT_MSG}" ]]; then
+    RELEASE_ARGS=(--commit-msg "${COMMIT_MSG}" "${RELEASE_ARGS[@]}")
+  fi
 fi
 
 echo ""
-echo "Step 1/3: Running release.sh ${RELEASE_ARGS[*]}"
-bash scripts/release.sh "${RELEASE_ARGS[@]}"
+if [[ "${EXISTING_TAG}" -eq 0 ]]; then
+  echo "Step 1/3: Running release.sh ${RELEASE_ARGS[*]}"
+  bash scripts/release.sh "${RELEASE_ARGS[@]}"
+else
+  echo "Step 1/3: Skipping commit/tag/push for existing tag ${VERSION}"
+fi
 echo "Step 1/3: Running release.sh --create-release"
 bash scripts/release.sh --create-release
 
 echo ""
-echo "Step 2/3: Running runner builds on tag ${VERSION}"
+echo "Step 2/3: Running runner builds on ref ${BUILD_REF}"
 mkdir -p dist
 clear_release_assets_for_version "${VERSION}"
 if [[ "${RUN_LINUX}" -eq 1 ]]; then
-  bash scripts/run_github_linux_build.sh --ref "${VERSION}"
+  bash scripts/run_github_linux_build.sh --ref "${BUILD_REF}"
 fi
 if [[ "${RUN_MACOS}" -eq 1 ]]; then
-  bash scripts/run_github_mac_build.sh --ref "${VERSION}"
+  bash scripts/run_github_mac_build.sh --ref "${BUILD_REF}"
 fi
 if [[ "${RUN_WINDOWS}" -eq 1 ]]; then
-  bash scripts/run_github_windows_build.sh --ref "${VERSION}"
+  bash scripts/run_github_windows_build.sh --ref "${BUILD_REF}"
 fi
 if [[ "${RUN_RASPBIAN}" -eq 1 ]]; then
-  bash scripts/run_github_raspbian_build.sh --ref "${VERSION}"
+  bash scripts/run_github_raspbian_build.sh --ref "${BUILD_REF}"
 fi
 
 echo ""

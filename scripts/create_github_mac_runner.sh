@@ -146,13 +146,10 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: SerialUI-macos-\${{ github.ref_name }}-\${{ github.run_number }}
+          name: SerialUI-archive-macos-\${{ github.ref_name }}-\${{ github.run_number }}
           if-no-files-found: error
           retention-days: 14
-          path: |
-            dist/SerialUI-*.zip
-            dist/SerialUI
-            dist/SerialUI.app
+          path: dist/SerialUI-*.zip
 EOF
 
 echo "Created workflow: ${WORKFLOW_FILE}"

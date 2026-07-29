@@ -5,6 +5,7 @@ WORKFLOW_FILE="${WORKFLOW_FILE:-.github/workflows/build-windows.yml}"
 REF="${REF:-$(git rev-parse --abbrev-ref HEAD)}"
 DOWNLOAD_DIR="${DOWNLOAD_DIR:-artifacts/windows-runner}"
 COPY_TO_DIST="${COPY_TO_DIST:-1}"
+RUN_ID="${RUN_ID:-}"
 
 usage() {
   cat <<EOF
@@ -17,6 +18,8 @@ Options:
                              (default: .github/workflows/build-windows.yml)
   --download-dir <dir>       Local directory for downloaded artifacts
                              (default: artifacts/windows-runner)
+  --run-id <id>              Download artifacts from an existing successful run
+                             instead of triggering a new workflow run
   --no-copy-dist             Do not copy SerialUI-*.zip into local dist/
   -h, --help                 Show help
 
@@ -44,6 +47,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --download-dir)
       DOWNLOAD_DIR="$2"
+      shift 2
+      ;;
+    --run-id)
+      RUN_ID="$2"
       shift 2
       ;;
     --no-copy-dist)
@@ -130,57 +137,67 @@ WORKFLOW_STATE="$(printf '%s' "${RESOLVED_LINE}" | awk -F '\t' '{print $4}')"
 
 echo "Resolved workflow: id=${WORKFLOW_ID} path=${WORKFLOW_PATH} name=${WORKFLOW_NAME} state=${WORKFLOW_STATE}"
 
-START_ISO="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+if [[ -z "${RUN_ID}" ]]; then
+  START_ISO="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 
-echo "Triggering workflow id '${WORKFLOW_ID}' on ref '${REF}'..."
-if ! gh api -X POST "repos/${REPO_SLUG}/actions/workflows/${WORKFLOW_ID}/dispatches" -f "ref=${REF}"; then
-  echo "Dispatch failed. Showing first lines of ${WORKFLOW_PATH} at ref '${REF}' for trigger debugging:" >&2
-  gh api -H "Accept: application/vnd.github.raw+json" "repos/${REPO_SLUG}/contents/${WORKFLOW_PATH}?ref=${REF}" | sed -n '1,40p' >&2 || true
+  echo "Triggering workflow id '${WORKFLOW_ID}' on ref '${REF}'..."
+  if ! gh api -X POST "repos/${REPO_SLUG}/actions/workflows/${WORKFLOW_ID}/dispatches" -f "ref=${REF}"; then
+    echo "Dispatch failed. Showing first lines of ${WORKFLOW_PATH} at ref '${REF}' for trigger debugging:" >&2
+    gh api -H "Accept: application/vnd.github.raw+json" "repos/${REPO_SLUG}/contents/${WORKFLOW_PATH}?ref=${REF}" | sed -n '1,40p' >&2 || true
+    exit 1
+  fi
+
+  for _ in {1..30}; do
+    RUN_ID="$(
+      gh run list \
+        --workflow "${WORKFLOW_ID}" \
+        --limit 20 \
+        --json databaseId,createdAt \
+        --jq "[.[] | select(.createdAt >= \"${START_ISO}\")][0].databaseId // empty"
+    )"
+    if [[ -n "${RUN_ID}" ]]; then
+      break
+    fi
+    sleep 3
+  done
+
+  if [[ -z "${RUN_ID}" ]]; then
+    echo "Error: could not find newly triggered run. Check Actions tab manually." >&2
+    exit 2
+  fi
+
+  echo "Watching run: ${RUN_ID}"
+  gh run watch "${RUN_ID}" --exit-status
+else
+  echo "Using existing run: ${RUN_ID}"
+fi
+
+mapfile -t ARCHIVE_ARTIFACTS < <(
+  gh api "repos/${REPO_SLUG}/actions/runs/${RUN_ID}/artifacts" --paginate \
+    --jq '.artifacts[].name | select(startswith("SerialUI-archive-"))' \
+    | sort
+)
+if [[ "${#ARCHIVE_ARTIFACTS[@]}" -eq 0 ]]; then
+  echo "Warning: run ${RUN_ID} completed but no SerialUI-archive-* artifacts exist." >&2
+  echo "Available artifacts:" >&2
+  gh api "repos/${REPO_SLUG}/actions/runs/${RUN_ID}/artifacts" --paginate \
+    --jq '.artifacts[].name' >&2 || true
+  echo "Rerun the workflow from a ref that contains the archive-only artifact workflow changes." >&2
   exit 1
 fi
 
-RUN_ID=""
-for _ in {1..30}; do
-  RUN_ID="$(
-    gh run list \
-      --workflow "${WORKFLOW_ID}" \
-      --limit 20 \
-      --json databaseId,createdAt \
-      --jq "[.[] | select(.createdAt >= \"${START_ISO}\")][0].databaseId // empty"
-  )"
-  if [[ -n "${RUN_ID}" ]]; then
-    break
-  fi
-  sleep 3
-done
-
-if [[ -z "${RUN_ID}" ]]; then
-  echo "Error: could not find newly triggered run. Check Actions tab manually." >&2
-  exit 2
-fi
-
-echo "Watching run: ${RUN_ID}"
-gh run watch "${RUN_ID}" --exit-status
-
-echo "Downloading artifacts to '${DOWNLOAD_DIR}'..."
+echo "Downloading ${#ARCHIVE_ARTIFACTS[@]} archive artifact(s) to '${DOWNLOAD_DIR}'..."
 rm -rf "${DOWNLOAD_DIR}"
 mkdir -p "${DOWNLOAD_DIR}"
-gh run download "${RUN_ID}" --dir "${DOWNLOAD_DIR}"
+for artifact_name in "${ARCHIVE_ARTIFACTS[@]}"; do
+  echo "Downloading artifact: ${artifact_name}"
+  gh run download "${RUN_ID}" --name "${artifact_name}" --dir "${DOWNLOAD_DIR}"
+done
 
 echo "Downloaded artifact contents:"
 find "${DOWNLOAD_DIR}" -maxdepth 3 -type f | sed 's#^#  - #'
 
 mapfile -t BUILT_ZIPS < <(find "${DOWNLOAD_DIR}" -type f -name 'SerialUI-[0-9]*.zip' | sort)
-if [[ "${#BUILT_ZIPS[@]}" -eq 0 ]]; then
-  if command -v unzip >/dev/null 2>&1; then
-    echo "No packaged executable zips found directly; extracting downloaded artifact zip containers..."
-    EXTRACT_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/serialui-artifacts.XXXXXX")"
-    while IFS= read -r artifact_zip; do
-      unzip -q -o "${artifact_zip}" -d "${EXTRACT_ROOT}/$(basename "${artifact_zip}" .zip)" || true
-    done < <(find "${DOWNLOAD_DIR}" -type f -name '*.zip' | sort)
-    mapfile -t BUILT_ZIPS < <(find "${EXTRACT_ROOT}" -type f -name 'SerialUI-[0-9]*.zip' | sort)
-  fi
-fi
 if [[ "${#BUILT_ZIPS[@]}" -eq 0 ]]; then
   echo "Warning: no packaged SerialUI-<version>-*.zip found in downloaded artifacts." >&2
   exit 1

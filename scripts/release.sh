@@ -88,6 +88,7 @@ PY
 create_github_release() {
   local version="$1"
   local with_assets="${2:-1}"
+  local allow_existing="${3:-0}"
   local tag="${version}"
   local assets=()
 
@@ -104,6 +105,10 @@ create_github_release() {
   fi
 
   if gh_no_env_token release view "${tag}" >/dev/null 2>&1; then
+    if [[ "${allow_existing}" -eq 1 ]]; then
+      echo "GitHub release ${tag} already exists; skipping creation."
+      return 0
+    fi
     echo "Error: GitHub release ${tag} already exists." >&2
     exit 2
   fi
@@ -140,6 +145,9 @@ upload_release_assets() {
   local version="$1"
   local tag="${version}"
   local assets=()
+  local upload_assets=()
+  local asset
+  local asset_name
 
   require_cmd gh
   require_dir "dist"
@@ -160,8 +168,22 @@ upload_release_assets() {
     exit 2
   fi
 
-  gh_no_env_token release upload "${tag}" "${assets[@]}"
-  echo "Uploaded ${#assets[@]} asset(s) to release ${tag}"
+  for asset in "${assets[@]}"; do
+    asset_name="$(basename "${asset}")"
+    if gh_no_env_token release view "${tag}" --json assets --jq ".assets[].name" | grep -Fxq "${asset_name}"; then
+      echo "Skipping existing release asset: ${asset_name}"
+    else
+      upload_assets+=("${asset}")
+    fi
+  done
+
+  if [[ "${#upload_assets[@]}" -eq 0 ]]; then
+    echo "All ${#assets[@]} asset(s) already exist on release ${tag}; nothing to upload."
+    return 0
+  fi
+
+  gh_no_env_token release upload "${tag}" "${upload_assets[@]}"
+  echo "Uploaded ${#upload_assets[@]} asset(s) to release ${tag}"
 }
 
 usage() {
@@ -424,7 +446,7 @@ if [[ "${DO_RELEASE}" -eq 1 ]]; then
   if [[ "${DO_CREATE_RELEASE}" -eq 1 ]]; then
     RELEASE_WITH_ASSETS=0
   fi
-  create_github_release "${PACKAGE_VERSION}" "${RELEASE_WITH_ASSETS}"
+  create_github_release "${PACKAGE_VERSION}" "${RELEASE_WITH_ASSETS}" "${DO_CREATE_RELEASE}"
 fi
 
 if [[ "${DO_UPLOAD_ASSETS}" -eq 1 ]]; then

@@ -298,12 +298,10 @@ ${MATRIX_INCLUDE}
         if: \${{ always() && steps.build_executable.conclusion == 'success' }}
         uses: actions/upload-artifact@v4
         with:
-          name: SerialUI-windows-\${{ matrix.arch }}-\${{ github.ref_name }}-\${{ github.run_number }}
+          name: SerialUI-archive-windows-\${{ matrix.arch }}-\${{ github.ref_name }}-\${{ github.run_number }}
           if-no-files-found: error
           retention-days: 14
-          path: |
-            dist/SerialUI-*.zip
-            dist/SerialUI
+          path: dist/SerialUI-*.zip
 EOF
 
 echo "Created workflow: ${WORKFLOW_FILE}"

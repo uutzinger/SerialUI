@@ -139,12 +139,10 @@ EOF
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: SerialUI-raspbian-\${{ github.ref_name }}-\${{ github.run_number }}
+          name: SerialUI-archive-raspbian-\${{ github.ref_name }}-\${{ github.run_number }}
           if-no-files-found: error
           retention-days: 14
-          path: |
-            dist/SerialUI-*.zip
-            dist/SerialUI
+          path: dist/SerialUI-*.zip
 EOF
 } > "${WORKFLOW_FILE}"
 
