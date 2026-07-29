@@ -79,6 +79,7 @@ require_cmd() {
 
 require_cmd gh
 require_cmd git
+require_cmd unzip
 
 if ! gh auth status >/dev/null 2>&1; then
   echo "Error: gh is not authenticated. Run: gh auth login" >&2
@@ -174,8 +175,8 @@ fi
 
 mapfile -t ARCHIVE_ARTIFACTS < <(
   gh api "repos/${REPO_SLUG}/actions/runs/${RUN_ID}/artifacts" --paginate \
-    --jq '.artifacts[].name | select(startswith("SerialUI-archive-"))' \
-    | sort
+    --jq '.artifacts[] | select(.name | startswith("SerialUI-archive-")) | [.id, .name] | @tsv' \
+    | sort -k2
 )
 if [[ "${#ARCHIVE_ARTIFACTS[@]}" -eq 0 ]]; then
   echo "Warning: run ${RUN_ID} completed but no SerialUI-archive-* artifacts exist." >&2
@@ -189,9 +190,14 @@ fi
 echo "Downloading ${#ARCHIVE_ARTIFACTS[@]} archive artifact(s) to '${DOWNLOAD_DIR}'..."
 rm -rf "${DOWNLOAD_DIR}"
 mkdir -p "${DOWNLOAD_DIR}"
-for artifact_name in "${ARCHIVE_ARTIFACTS[@]}"; do
+for artifact in "${ARCHIVE_ARTIFACTS[@]}"; do
+  artifact_id="$(printf '%s' "${artifact}" | cut -f1)"
+  artifact_name="$(printf '%s' "${artifact}" | cut -f2-)"
+  artifact_zip="${DOWNLOAD_DIR}/${artifact_name}.artifact.zip"
   echo "Downloading artifact: ${artifact_name}"
-  gh run download "${RUN_ID}" --name "${artifact_name}" --dir "${DOWNLOAD_DIR}"
+  gh api "repos/${REPO_SLUG}/actions/artifacts/${artifact_id}/zip" > "${artifact_zip}"
+  unzip -q -o "${artifact_zip}" -d "${DOWNLOAD_DIR}/${artifact_name}"
+  rm -f "${artifact_zip}"
 done
 
 echo "Downloaded artifact contents:"
