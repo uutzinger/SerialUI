@@ -172,7 +172,10 @@ def wait_for_signal(signal, timeout_ms: int = None, sender=None)-> tuple[bool, t
         loop.quit()
 
     # connect one shot handler
-    signal.connect(on_signal)
+    try:
+        signal.connect(on_signal)
+    except (TypeError, RuntimeError) as exc:
+        return False, (), f"connect-failed: {exc}"
 
     timer = None
     if timeout_ms is not None:

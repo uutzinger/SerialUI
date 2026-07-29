@@ -131,6 +131,7 @@ class QUSBMonitor(QObject):
         )
 
         # Proactively flip the loop flag so the worker exits poll loops ASAP
+        usbThread = getattr(self, "usbThread", None)
         worker = getattr(self, "usbWorker", None)
         if worker is not None:
             try:
@@ -138,40 +139,39 @@ class QUSBMonitor(QObject):
             except RuntimeError:
                 pass
 
-        # Request that worker finishes
+        # Request that worker finishes and wait for the owning thread to stop.
+        # Waiting on the worker signal can race with worker deleteLater() during
+        # shutdown, which produces a Qt warning about disconnecting QObject::finished().
         try:
             self.finishWorkerRequest.emit()
-            ok, args, reason = wait_for_signal(
-                self.usbWorker.finished,
-                timeout_ms = 3000,
-                sender=self.usbWorker
-            )
-            if not ok:
-                self.logSignal.emit(logging.ERROR,
-                    f"[{self.instance_name[:15]:<15}]: USB Worker finish timed out because of {reason}.")
-            else:
-                self.logSignal.emit(logging.DEBUG,
-                    f"[{self.instance_name[:15]:<15}]: USB Worker finished: {args}."
-                )
         except RuntimeError:
             return
 
-        # Terminate Thread
         try:
-            usbThread = getattr(self, "usbThread", None)
-            if usbThread:
-                if usbThread.isRunning():
-                    if not usbThread.wait(1500):
-                        usbThread.quit()
-                        if not usbThread.wait(1000):
-                            self.logSignal.emit(logging.WARNING,
-                                f"[{self.instance_name[:15]:<15}]: Thread won’t quit; terminating as last resort."
-                            )
-                            try: 
-                                usbThread.terminate()
-                                usbThread.wait(500)
-                            except RuntimeError:
-                                pass
+            if usbThread and usbThread.isRunning():
+                ok, _args, reason = wait_for_signal(
+                    usbThread.finished,
+                    timeout_ms=3000,
+                    sender=usbThread
+                )
+                if not ok:
+                    self.logSignal.emit(logging.ERROR,
+                        f"[{self.instance_name[:15]:<15}]: USB monitor thread finish timed out because of {reason}."
+                    )
+                    usbThread.quit()
+                    if not usbThread.wait(1000):
+                        self.logSignal.emit(logging.WARNING,
+                            f"[{self.instance_name[:15]:<15}]: Thread won’t quit; terminating as last resort."
+                        )
+                        try:
+                            usbThread.terminate()
+                            usbThread.wait(500)
+                        except RuntimeError:
+                            pass
+                else:
+                    self.logSignal.emit(logging.DEBUG,
+                        f"[{self.instance_name[:15]:<15}]: USB monitor thread finished."
+                    )
         except RuntimeError:
             pass
 

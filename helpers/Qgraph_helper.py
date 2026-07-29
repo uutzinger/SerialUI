@@ -2334,7 +2334,8 @@ class QChart(QObject):
         total_points_uploaded = 0
 
         # Y Scaling ────
-        #   Scaling of each trace so that the min/max of each trace is aligned to the global min/max
+        #   Scaling of each trace so that each trace's largest excursion is aligned
+        #   to the largest visible excursion across traces.
         #   Scaling can be 1x, (2x, 5x,) 10x, (20x, 50x,) 100x, etc.
 
         if not USE_FASTPLOTLIB:
@@ -2355,24 +2356,20 @@ class QChart(QObject):
             y_min_raw = float(np.nanmin(y_min_per_trace))
             y_max_raw = float(np.nanmax(y_max_per_trace))
 
-            scale_to_min = np.full(len(trace_cols), np.inf)
-            scale_to_max = np.full(len(trace_cols), np.inf)
-
-            np.divide(
-                y_min_raw,
-                y_min_per_trace,
-                out=scale_to_min,
-                where=(y_min_per_trace < 0.0) & (y_min_raw < 0.0),
+            global_abs = max(abs(y_min_raw), abs(y_max_raw))
+            y_abs_per_trace = np.maximum(
+                np.abs(y_min_per_trace),
+                np.abs(y_max_per_trace),
             )
 
+            scale_raw = np.ones(len(trace_cols), dtype=np.float64)
             np.divide(
-                y_max_raw,
-                y_max_per_trace,
-                out=scale_to_max,
-                where=(y_max_per_trace > 0.0) & (y_max_raw > 0.0),
+                global_abs,
+                y_abs_per_trace,
+                out=scale_raw,
+                where=np.isfinite(y_abs_per_trace) & (y_abs_per_trace > 0.0) & isfinite(global_abs),
             )
-
-            scale_raw = np.minimum(scale_to_min, scale_to_max)
+            scale_raw = np.maximum(scale_raw, 1.0)
             scale_raw[~np.isfinite(scale_raw)] = 1.0
 
             scale_visible = np.ones_like(scale_raw)

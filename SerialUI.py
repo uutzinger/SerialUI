@@ -270,7 +270,8 @@ try:
         QMainWindow, QLineEdit, QSlider, 
         QMessageBox, QDialog, QVBoxLayout, 
         QTextEdit, QTabWidget, QWidget, 
-        QPlainTextEdit, QApplication,
+        QPlainTextEdit, QApplication, 
+        QToolButton, QMenu
     )
     from PyQt6.QtGui import QIcon, QShortcut, QTextCursor, QTextOption,  QKeySequence, QGuiApplication, QPixmap, QFontDatabase
     WindowType    = Qt.WindowType
@@ -292,6 +293,7 @@ except Exception:
         QMessageBox, QDialog, QVBoxLayout, 
         QTextEdit, QTabWidget, QWidget, QShortcut, 
         QPlainTextEdit, QApplication,
+        QToolButton, QMenu
     )
     from PyQt5.QtGui import (
         QIcon, QTextCursor, QTextOption, QKeySequence, QGuiApplication, QPixmap, QFontDatabase
@@ -503,10 +505,32 @@ class mainWindow(QMainWindow):
         # pix = QPixmap(ble_icon_path)
         # self.logger.log(logging.INFO, f"BLE Icon Pixmap isNull: {pix.isNull()}, Size: {pix.size()}")
 
-        # Find the tabs and connect to tab change
+        # Find the tabs
         # ----------------------------------------
         self.tabs: QTabWidget = self.findChild(QTabWidget, "tabWidget_MainWindow")
+        # Connect to tab change
         self.tabs.currentChanged.connect(self.on_tab_change)
+
+        # Add an info button to the tabs
+        info_button = QToolButton(self.tabs)
+        info_button.setText("Info")
+        if hasQt6:
+            info_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        else:
+            info_button.setPopupMode(QToolButton.InstantPopup)
+
+        info_menu = QMenu(info_button)
+        info_menu.addAction(self.ui.action_About)
+        info_menu.addAction(self.ui.action_Help)
+        info_menu.addAction(self.ui.action_Profile)
+
+        info_button.setMenu(info_menu)
+        if hasQt6:
+            self.tabs.setCornerWidget(info_button, Qt.Corner.TopRightCorner)
+        else:
+            self.tabs.setCornerWidget(info_button, Qt.TopRightCorner)
+
+        self.ui.menubar.hide()
 
         # Configure Drop Down Menus
         # ----------------------------------------
@@ -1079,7 +1103,7 @@ class mainWindow(QMainWindow):
     def show_help_dialog(self):
         """Show a 'Help' dialog with readme content."""
         # Load Markdown content from readme file
-        with open("README.md", "r") as file:
+        with open("docs/Instructions.md", "r") as file:
             markdown_content = file.read()
         html_content = markdown(markdown_content)
 

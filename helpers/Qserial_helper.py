@@ -1412,23 +1412,26 @@ class QSerial(QObject):
         serialWorker = getattr(self, "serialWorker", None)
         serialThread = getattr(self, "serialThread", None)
 
-        self.finishWorkerRequest.emit()                                        # emit signal to finish worker
+        try:
+            self.finishWorkerRequest.emit()                                              # emit signal to finish worker
+        except RuntimeError:
+            pass
 
-        # If thread already not running or worker already gone, skip finish request
+        # If the thread is running, wait for the thread lifecycle signal rather
+        # than the worker signal. The worker schedules deleteLater() on finish,
+        # so connecting to serialWorker.finished during shutdown can race.
         if serialThread and qobject_alive(serialThread) and serialThread.isRunning():
-            if serialWorker and qobject_alive(serialWorker):
-                ok, args, reason = wait_for_signal(
-                    serialWorker.finished,
-                    timeout_ms=1000,
-                    sender=serialWorker
-                )
-                if not ok and reason != "destroyed":
-                    self.logSignal.emit(logging.ERROR,
-                        f"[{self.instance_name[:15]:<15}]: Serial Worker finish timed out because of {reason}.")
-                else:
-                    self.logSignal.emit(logging.DEBUG,
-                        f"[{self.instance_name[:15]:<15}]: Serial Worker finished: {args}."
-                    )
+            ok, _args, reason = wait_for_signal(
+                serialThread.finished,
+                timeout_ms=1000,
+                sender=serialThread
+            )
+            if not ok and reason != "destroyed":
+                self.logSignal.emit(logging.ERROR,
+                    f"[{self.instance_name[:15]:<15}]: Serial thread finish timed out because of {reason}.")
+            else:
+                self.logSignal.emit(logging.DEBUG,
+                    f"[{self.instance_name[:15]:<15}]: Serial thread finished.")
         else:
             self.logSignal.emit(logging.INFO,
                 f"[{self.instance_name[:15]:<15}]: Serial worker already stopped or not initialized."
