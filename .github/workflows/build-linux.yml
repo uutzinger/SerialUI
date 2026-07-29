@@ -23,6 +23,18 @@ jobs:
             arch: arm64
             os_id: ubuntu26
             os_name: linux-ubuntu26
+          - runner: ubuntu-24.04
+            arch: x86_64
+            os_id: ubuntu24
+            os_name: linux-ubuntu24
+          - runner: ubuntu-22.04
+            arch: x86_64
+            os_id: ubuntu22
+            os_name: linux-ubuntu22
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            os_id: ubuntu24
+            os_name: linux-ubuntu24
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout source
