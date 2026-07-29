@@ -7,9 +7,13 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SETUP_SH="${REPO_ROOT}/scripts/setup.sh"
 WORKFLOW_FILE="${REPO_ROOT}/.github/workflows/build-linux.yml"
 PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
+UBUNTU26_AMD64_RUNNER="${UBUNTU26_AMD64_RUNNER:-ubuntu-26.04}"
+UBUNTU26_ARM64_RUNNER="${UBUNTU26_ARM64_RUNNER:-ubuntu-26.04-arm}"
 UBUNTU_AMD64_RUNNER="${UBUNTU_AMD64_RUNNER:-ubuntu-24.04}"
 UBUNTU22_AMD64_RUNNER="${UBUNTU22_AMD64_RUNNER:-ubuntu-22.04}"
 UBUNTU_ARM64_RUNNER="${UBUNTU_ARM64_RUNNER:-ubuntu-24.04-arm}"
+INCLUDE_UBUNTU26_AMD64="${INCLUDE_UBUNTU26_AMD64:-1}"
+INCLUDE_UBUNTU26_ARM64="${INCLUDE_UBUNTU26_ARM64:-1}"
 INCLUDE_AMD64="${INCLUDE_AMD64:-1}"
 INCLUDE_UBUNTU22_AMD64="${INCLUDE_UBUNTU22_AMD64:-1}"
 INCLUDE_ARM64="${INCLUDE_ARM64:-1}"
@@ -27,12 +31,18 @@ Options:
                                 (default: ${PYTHON_VERSION})
   --workflow-name <name>        Workflow display name in GitHub Actions
                                 (default: ${WORKFLOW_NAME})
+  --ubuntu26-amd64-runner <name> Runner label for ubuntu 26.04 amd64 build
+                                 (default: ${UBUNTU26_AMD64_RUNNER})
+  --ubuntu26-arm64-runner <name> Runner label for ubuntu 26.04 arm64 build
+                                 (default: ${UBUNTU26_ARM64_RUNNER})
   --ubuntu-amd64-runner <name>  Runner label for amd64 build
                                 (default: ${UBUNTU_AMD64_RUNNER})
   --ubuntu22-amd64-runner <name> Runner label for ubuntu 22.04 amd64 build
                                  (default: ${UBUNTU22_AMD64_RUNNER})
   --ubuntu-arm64-runner <name>  Runner label for arm64 build
                                 (default: ${UBUNTU_ARM64_RUNNER})
+  --no-ubuntu26-amd64           Exclude ubuntu 26.04 amd64 matrix entry
+  --no-ubuntu26-arm64           Exclude ubuntu 26.04 arm64 matrix entry
   --no-amd64                    Exclude amd64 matrix entry
   --no-ubuntu22-amd64           Exclude ubuntu 22.04 amd64 matrix entry
   --no-arm64                    Exclude arm64 matrix entry
@@ -45,9 +55,13 @@ while [[ $# -gt 0 ]]; do
     --workflow-file) WORKFLOW_FILE="$2"; shift 2 ;;
     --python-version) PYTHON_VERSION="$2"; shift 2 ;;
     --workflow-name) WORKFLOW_NAME="$2"; shift 2 ;;
+    --ubuntu26-amd64-runner) UBUNTU26_AMD64_RUNNER="$2"; shift 2 ;;
+    --ubuntu26-arm64-runner) UBUNTU26_ARM64_RUNNER="$2"; shift 2 ;;
     --ubuntu-amd64-runner) UBUNTU_AMD64_RUNNER="$2"; shift 2 ;;
     --ubuntu22-amd64-runner) UBUNTU22_AMD64_RUNNER="$2"; shift 2 ;;
     --ubuntu-arm64-runner) UBUNTU_ARM64_RUNNER="$2"; shift 2 ;;
+    --no-ubuntu26-amd64) INCLUDE_UBUNTU26_AMD64=0; shift ;;
+    --no-ubuntu26-arm64) INCLUDE_UBUNTU26_ARM64=0; shift ;;
     --no-amd64) INCLUDE_AMD64=0; shift ;;
     --no-ubuntu22-amd64) INCLUDE_UBUNTU22_AMD64=0; shift ;;
     --no-arm64) INCLUDE_ARM64=0; shift ;;
@@ -56,7 +70,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "${INCLUDE_AMD64}" != "1" && "${INCLUDE_UBUNTU22_AMD64}" != "1" && "${INCLUDE_ARM64}" != "1" ]]; then
+if [[ "${INCLUDE_UBUNTU26_AMD64}" != "1" \
+   && "${INCLUDE_UBUNTU26_ARM64}" != "1" \
+   && "${INCLUDE_AMD64}" != "1" \
+   && "${INCLUDE_UBUNTU22_AMD64}" != "1" \
+   && "${INCLUDE_ARM64}" != "1" ]]; then
   echo "Error: all Linux matrix entries were disabled. Enable at least one target." >&2
   exit 2
 fi
@@ -88,7 +106,31 @@ PIP_INSTALL_LINE="$(printf '%s ' "${COMMON_PACKAGES[@]}")"
 PIP_INSTALL_LINE="${PIP_INSTALL_LINE% } pyudev"
 
 MATRIX_INCLUDE=""
+if [[ "${INCLUDE_UBUNTU26_AMD64}" == "1" ]]; then
+  MATRIX_INCLUDE+=$(cat <<EOF
+          - runner: ${UBUNTU26_AMD64_RUNNER}
+            arch: x86_64
+            os_id: ubuntu26
+            os_name: linux-ubuntu26
+EOF
+)
+fi
+if [[ "${INCLUDE_UBUNTU26_ARM64}" == "1" ]]; then
+  if [[ -n "${MATRIX_INCLUDE}" ]]; then
+    MATRIX_INCLUDE+=$'\n'
+  fi
+  MATRIX_INCLUDE+=$(cat <<EOF
+          - runner: ${UBUNTU26_ARM64_RUNNER}
+            arch: arm64
+            os_id: ubuntu26
+            os_name: linux-ubuntu26
+EOF
+)
+fi
 if [[ "${INCLUDE_AMD64}" == "1" ]]; then
+  if [[ -n "${MATRIX_INCLUDE}" ]]; then
+    MATRIX_INCLUDE+=$'\n'
+  fi
   MATRIX_INCLUDE+=$(cat <<EOF
           - runner: ${UBUNTU_AMD64_RUNNER}
             arch: x86_64
