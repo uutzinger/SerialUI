@@ -115,6 +115,19 @@ def changed(a, b, rel_tol=1e-6, abs_tol=1e-9):
     return abs(a - b) > max(abs_tol, rel_tol * max(abs(a), abs(b)))
     # isclose function in math is 10 times faster
 
+def build_text_payload(text: str, eol: bytes, encoding: str = "utf-8") -> bytes:
+    """Encode text and append the selected terminator exactly once."""
+    if not eol:
+        return text.encode(encoding, errors="replace")
+    if text == "":
+        return eol
+
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    payload = eol.join(
+        line.encode(encoding, errors="replace") for line in normalized.split("\n")
+    )
+    return payload if payload.endswith(eol) else payload + eol
+
 # ==============================================================================
 # Signal/Slot Helpers
 # ==============================================================================

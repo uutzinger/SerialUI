@@ -91,6 +91,8 @@ create_github_release() {
   local allow_existing="${3:-0}"
   local tag="${version}"
   local assets=()
+  local notes
+  local notes_args=()
 
   require_cmd gh
 
@@ -122,15 +124,22 @@ create_github_release() {
     fi
   fi
 
+  notes="$(release_notes_from_changelog "${version}")"
+  if [[ -n "${notes}" ]]; then
+    notes_args=(--notes "${notes}")
+  else
+    notes_args=(--generate-notes)
+  fi
+
   if [[ "${with_assets}" -eq 1 ]]; then
     gh_no_env_token release create "${tag}" \
       "${assets[@]}" \
       --title "${tag}" \
-      --generate-notes
+      "${notes_args[@]}"
   else
     gh_no_env_token release create "${tag}" \
       --title "${tag}" \
-      --generate-notes
+      "${notes_args[@]}"
   fi
 
   echo "Created GitHub release ${tag}"
@@ -139,6 +148,33 @@ create_github_release() {
       echo "  asset: ${asset}"
     done
   fi
+}
+
+release_notes_from_changelog() {
+  local version="$1"
+
+  if [[ ! -f "CHANGELOG.md" ]]; then
+    return 0
+  fi
+
+  "${PYTHON_BIN}" - "${version}" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+version = sys.argv[1]
+text = Path("CHANGELOG.md").read_text(encoding="utf-8")
+heading = re.compile(r"^##\s+(?:\[" + re.escape(version) + r"\]|" + re.escape(version) + r")(?:\s|$).*", re.MULTILINE)
+match = heading.search(text)
+if not match:
+    raise SystemExit(0)
+
+next_heading = re.search(r"^##\s+", text[match.end():], re.MULTILINE)
+end = match.end() + next_heading.start() if next_heading else len(text)
+notes = text[match.end():end].strip()
+if notes:
+    print(notes)
+PY
 }
 
 upload_release_assets() {

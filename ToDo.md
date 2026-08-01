@@ -119,3 +119,39 @@ When occasional values are received interspersed with frequent values from anoth
 - In fastplotlib, rebuild the visible trace buffer from the current window so line continuity follows the original sample timeline instead of the old compacted append-only representation. Done.
 - Keep autoscaling and legend behavior consistent across both backends, including visibility toggles and efficient min/max computation for sparse channels.
 - Implement the pyqtgraph version first because it already preserves `NaN` segment breaks cleanly, then bring fastplotlib to feature parity with the same visual behavior.]
+
+## BLE Issues
+
+Repair checkbox-controlled Serial/BLE routing without breaking line-oriented commands, then determine whether duplicate BLE output remains.
+
+[Status: command-input regression fixed in code; pending live BLE/USB validation]
+[Findings:
+- In the previous committed design, transport connection state controlled command routing. The Serial and BLE Display checkboxes only controlled terminal rendering, so a command was sent to every connected transport even when its Display checkbox was clear.
+- The first checkbox-routing implementation correctly separated Serial and BLE targets, but its per-transport payload builder omitted the final line terminator. For example, "." became `2E` instead of `2E 0D 0A`, leaving the MAX30001G line reader waiting for the rest of the command.
+- The first implementation also changed terminal callback connections whenever a Display checkbox changed. This was unnecessary because the Serial and BLE display handlers already consult their `display` flags, and it introduced avoidable connect/disconnect errors.
+- The reported duplicate BLE command or duplicate terminal output is not yet confirmed as a second defect. Both checked sources can legitimately show the same device output when the device is connected through USB and BLE. Qt receive connections already request `UniqueConnection`, so rejected repeated connections produce log errors rather than duplicate callbacks.
+- Keep this separate from the MAX30001G/BLESerial large help-output truncation investigation, whose transport-congestion hypothesis remains unconfirmed.]
+[Implemented:
+- Command entry, multiline paste, and Send File target only checked transports that are currently ready.
+- Each selected transport uses its own line-ending setting.
+- Command payload construction now honors all configured EOL choices exactly: none, CRLF, LF, CR, and LFCR. Focused tests cover single commands, multiline text, trailing newlines, empty input, and every configured EOL.
+- Restored the prior stable terminal callback lifecycle; Display checkboxes filter rendering without reconnecting worker signals.
+- Initialized the main recording state before checkbox callbacks can run, and recording now follows checked Display sources.
+- Reverted the speculative BLE worker start/stop guard; notification lifecycle changes require evidence from live reconnect testing.
+- Updated command-input tooltips to describe checkbox-controlled routing.]
+[Plan:
+1. Run SerialUI with BLE checked and Serial clear. Confirm `.` and `z` each change MAX30001G state once and that the device receives the configured terminator exactly.
+2. Repeat with Serial checked and BLE clear, then with both checked. Confirm one write per checked, connected transport.
+3. Record with one source checked at a time and verify that only that source writes to the file.
+4. Reconnect BLE several times and verify there is one notification subscription and one terminal append per notification.
+5. If duplicate BLE output remains with Serial clear, add temporary sequence logging at the final BLE write and notification boundaries to distinguish duplicate GATT activity from terminal rendering.
+6. Remove temporary diagnostics after the remaining defect is proven.
+
+- Acceptance criteria
+- `.` and `z` work over BLE and USB with the selected line ending.
+- Unchecked or disconnected transports receive no command or file payload.
+- One user action causes one write per checked, connected transport.
+- One BLE notification is displayed once when only BLE Display is checked.
+- Recording contains only checked sources.
+- BLE reconnects do not multiply callbacks or notification subscriptions.
+- Report hardware results separately from compile and unit-test evidence.]

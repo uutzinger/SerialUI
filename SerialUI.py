@@ -349,8 +349,8 @@ except Exception:
 from helpers.Qgraph_helper          import QChart
 from helpers.Qserial_helper         import QSerial
 from helpers.USB_SerialPortMonitor  import QUSBMonitor
-from helpers.General_helper         import (clip_value, connect, disconnect, select_file, 
-                                            confirm_overwrite_append)
+from helpers.General_helper         import (build_text_payload, clip_value, connect, disconnect,
+                                            select_file, confirm_overwrite_append)
 if USE_BLE:
     from helpers.QBLE_helper        import QBLESerial 
 #
@@ -785,6 +785,7 @@ class mainWindow(QMainWindow):
         self.text_widget.setTextCursor(textCursor)
         self.text_widget.ensureCursorVisible()
 
+        self.record = False
         self.recordingFileName = ""
         self.recordingFile = None
 
@@ -1217,6 +1218,58 @@ class mainWindow(QMainWindow):
         )
         self.ui.statusBar().showMessage('BLE.', 2000)
 
+    def _use_serial_transport(self) -> bool:
+        return self.ui.checkBox_DisplaySerial.isChecked()
+
+    def _use_ble_transport(self) -> bool:
+        return bool(USE_BLE and hasattr(self, "ble") and self.ui.checkBox_DisplayBLE.isChecked())
+
+    def _payload_for_transport(self, text: str, eol: bytes) -> bytes:
+        return build_text_payload(text, eol, self.encoding)
+
+    def _emit_text_to_selected_transports(self, text: str) -> bool:
+        sent = False
+        if self._use_serial_transport() and self.txrxReady_wired_to_serial:
+            payload = self._payload_for_transport(text, self.serial.textLineTerminator)
+            if payload:
+                self.serial.sendTextRequest.emit(payload)
+                sent = True
+        if self._use_ble_transport() and self.txrxReady_wired_to_ble:
+            payload = self._payload_for_transport(text, self.ble.textLineTerminator)
+            if payload:
+                self.ble.sendTextRequest.emit(payload)
+                sent = True
+        if not sent:
+            self.handle_log(logging.WARNING,
+                f"[{self.instance_name[:15]:<15}]: No command bytes emitted; check the source, connection, text, and EOL selection."
+            )
+        return sent
+
+    def _emit_file_to_selected_transports(self, file_path: Path) -> bool:
+        sent = False
+        if self._use_serial_transport() and self.txrxReady_wired_to_serial:
+            self.serial.sendFileRequest.emit(file_path)
+            sent = True
+        if self._use_ble_transport() and self.txrxReady_wired_to_ble:
+            self.ble.sendFileRequest.emit(file_path)
+            sent = True
+        if not sent:
+            self.handle_log(logging.WARNING,
+                f"[{self.instance_name[:15]:<15}]: No checked, connected Serial/BLE source; file not sent."
+            )
+        return sent
+
+    def _sync_recording_sources(self) -> None:
+        serial_enabled = bool(getattr(self, "record", False) and self._use_serial_transport())
+        self.serial.record = serial_enabled
+        self.serial.recordingFile = self.recordingFile if serial_enabled else None
+        self.serial.recordingFileName = self.recordingFileName if serial_enabled else ""
+        if USE_BLE:
+            ble_enabled = bool(getattr(self, "record", False) and self._use_ble_transport())
+            self.ble.record = ble_enabled
+            self.ble.recordingFile = self.recordingFile if ble_enabled else None
+            self.ble.recordingFileName = self.recordingFileName if ble_enabled else ""
+
     @pyqtSlot()
     def showEvent(self, event):
         """Qt calls this when the User Interface window is shown."""
@@ -1373,17 +1426,11 @@ class mainWindow(QMainWindow):
 
         text = self.ui.lineEdit_Text.text()                                    # obtain text from send input window
 
-        # Line Terminator "\n"  or "\r\n"
-        #  - "\n" when user selected "\n" in drop down 
-        #  - "\r\n" when ("\r\n" or "" or "\r")
-        eol = self.textLineTerminator if self.textLineTerminator not in {b"", b"\r"} else b"\r\n"
-
         self.runMonitoringRequest.emit(True)            
 
         if not text:
             # No text provided, empty line
 
-            text_bytearray = eol
             self.handle_log(logging.INFO, 
                 f"[{self.instance_name[:15]:<15}]: Sending empty line"
             )
@@ -1394,20 +1441,13 @@ class mainWindow(QMainWindow):
             self.lineSendHistory.append(text)                                  # keep history of previously sent commands
             self.lineSendHistoryIndx = len(self.lineSendHistory)               # reset history pointer
         
-            try:
-                text_bytearray = text.encode(self.encoding, errors="replace") + eol # add line termination
-            except Exception as e:
-                self.handle_log(logging.ERROR, 
-                    f"[{self.instance_name[:15]:<15}]: Encoding error: {e}"
-                )
-                return
-
         if DEBUGKEYINPUT:
             self.handle_log(logging.DEBUG, 
                 f"[{self.instance_name[:15]:<15}]: Text ready to emit {time.perf_counter()}"
             )
 
-        self.sendTextRequest.emit(text_bytearray)                              # send text to serial or BLE TX line
+        if not self._emit_text_to_selected_transports(text):
+            return
 
         self.ui.lineEdit_Text.clear()
         self.ui.statusBar().showMessage("Text sent.", 2000)
@@ -1432,19 +1472,10 @@ class mainWindow(QMainWindow):
             if paste_key and paste_modifier:
                 text = QApplication.clipboard().text()
                 if "\n" in text or "\r" in text:
-                    eol = self.textLineTerminator if self.textLineTerminator not in {b"", b"\r"} else b"\r\n"
-                    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
-                    try:
-                        payload = eol.join(line.encode(self.encoding, errors="replace") for line in normalized.split("\n"))
-                    except Exception as e:
-                        self.handle_log(logging.ERROR,
-                            f"[{self.instance_name[:15]:<15}]: Encoding pasted text failed: {e}"
-                        )
-                        return True
                     self.runMonitoringRequest.emit(True)
-                    self.sendTextRequest.emit(payload)
-                    self.ui.lineEdit_Text.clear()
-                    self.ui.statusBar().showMessage("Pasted text sent.", 2000)
+                    if self._emit_text_to_selected_transports(text):
+                        self.ui.lineEdit_Text.clear()
+                        self.ui.statusBar().showMessage("Pasted text sent.", 2000)
                     return True
         return super().eventFilter(obj, event)
 
@@ -1469,9 +1500,8 @@ class mainWindow(QMainWindow):
 
         if file_path:
             self.runMonitoringRequest.emit(True)
-            self.sendFileRequest.emit(file_path)
-
-        self.ui.statusBar().showMessage('File sent.', 2000)
+            if self._emit_file_to_selected_transports(file_path):
+                self.ui.statusBar().showMessage('File sent.', 2000)
 
 
     @pyqtSlot()
@@ -1629,14 +1659,7 @@ class mainWindow(QMainWindow):
             if not file_path:
                 self.record = False
                 self.ui.checkBox_ReceiverRecord.setChecked(self.record)
-                # keep QSerial in sync
-                self.serial.record = False
-                self.serial.recordingFile = None
-                self.serial.recordingFileName = ""
-                if USE_BLE:
-                    self.ble.record = False
-                    self.ble.recordingFile = None
-                    self.ble.recordingFileName = ""
+                self._sync_recording_sources()
                 return
             
             if file_path.exists():                                             # Check if file already exists
@@ -1644,13 +1667,7 @@ class mainWindow(QMainWindow):
                 if mode == "c":                                                # Cancel
                     self.record = False
                     self.ui.checkBox_ReceiverRecord.setChecked(self.record)
-                    self.serial.record = False
-                    self.serial.recordingFile = None
-                    self.serial.recordingFileName = ""
-                    if USE_BLE:
-                        self.ble.record = False
-                        self.ble.recordingFile = None
-                        self.ble.recordingFileName = ""
+                    self._sync_recording_sources()
                     return
                 else:
                     mode = mode + "b"                                          # append or overwrite in binary mode
@@ -1663,26 +1680,15 @@ class mainWindow(QMainWindow):
                 self.handle_log(logging.INFO, 
                     f"[{self.instance_name[:15]:<15}]: Recording to file {file_path.name} in mode {mode_text}."
                 )
-                self.serial.record = True
-                self.serial.recordingFile = self.recordingFile
-                self.serial.recordingFileName = str(file_path)
-                if USE_BLE:
-                    self.ble.record = True
-                    self.ble.recordingFile = self.recordingFile
-                    self.ble.recordingFileName = str(file_path)
+                self.recordingFileName = str(file_path)
+                self._sync_recording_sources()
             except Exception as e:
                 self.handle_log(logging.ERROR, 
                     f"[{self.instance_name[:15]:<15}]: Could not open file {file_path.name} in mode {mode}: {e}."
                 )
                 self.record = False
                 self.ui.checkBox_ReceiverRecord.setChecked(self.record)
-                self.serial.record = False
-                self.serial.recordingFile = None
-                self.serial.recordingFileName = ""
-                if USE_BLE:
-                    self.ble.record = False
-                    self.ble.recordingFile = None
-                    self.ble.recordingFileName = ""
+                self._sync_recording_sources()
         else:
             if self.recordingFile:
                 try:
@@ -1696,23 +1702,19 @@ class mainWindow(QMainWindow):
                         f"[{self.instance_name[:15]:<15}]: Could not close file {self.recordingFile.name}: {e}."
                     )
                 self.recordingFile = None
-                self.serial.record = False
-                self.serial.recordingFile = None
-                self.serial.recordingFileName = ""
-                if USE_BLE:
-                    self.ble.record = False
-                    self.ble.recordingFile = None
-                    self.ble.recordingFileName = ""
+                self._sync_recording_sources()
 
     @pyqtSlot()
     def on_displayBLE(self) -> None:
         """Toggle wether to display incoming BLE data in the text window"""
         self.ble.display = self.ui.checkBox_DisplayBLE.isChecked()
+        self._sync_recording_sources()
 
     @pyqtSlot()
     def on_displaySerial(self) -> None:
         """Toggle wether to display incoming Serial data in the text window"""
         self.serial.display = self.ui.checkBox_DisplaySerial.isChecked()
+        self._sync_recording_sources()
 
     @pyqtSlot()
     def on_plotBLE(self) -> None:
@@ -2064,10 +2066,9 @@ class mainWindow(QMainWindow):
 
             if runIt and not self.isMonitoring:
                 # Start displaying data in serial terminal
-                #if self.serialUseSerial:
                 try:
-                    self.serial.connect_receivedLines(  self.serial.on_receivedLines) # connect text display to serial receiver signal
-                    self.serial.connect_receivedData(   self.serial.on_receivedData) # connect text display to serial receiver signal
+                    self.serial.connect_receivedLines(self.serial.on_receivedLines)
+                    self.serial.connect_receivedData(self.serial.on_receivedData)
                     self.ui.pushButton_ReceiverStartStop.setText("Stop")
                     self.isMonitoring = runIt
                     if DEBUGRECEIVER:
@@ -2078,12 +2079,10 @@ class mainWindow(QMainWindow):
                     self.handle_log(logging.ERROR,
                         f"[{self.instance_name[:15]:<15}]: Connecting to Serial signals for text displaying failed: {e}"
                     )
-
                 if USE_BLE:
-                    # if self.serialUseBLE:
                     try:
-                        self.ble.connect_receivedLines( self.ble.on_receivedLines) # connect text display to serial receiver signal
-                        self.ble.connect_receivedData(  self.ble.on_receivedData) # connect text display to serial receiver signal
+                        self.ble.connect_receivedLines(self.ble.on_receivedLines)
+                        self.ble.connect_receivedData(self.ble.on_receivedData)
                         self.ui.pushButton_ReceiverStartStop.setText("Stop")
                         self.isMonitoring = runIt
                         if DEBUGRECEIVER:
@@ -2099,8 +2098,8 @@ class mainWindow(QMainWindow):
                 # Stop displaying data in monitor
                 # if self.serialUseSerial:
                 try:
-                    self.serial.disconnect_receivedLines(self.serial.on_receivedLines) # disconnect text display to serial receiver signal
-                    self.serial.disconnect_receivedData(self.serial.on_receivedData) # disconnect text display to serial receiver signal
+                    self.serial.disconnect_receivedLines(self.serial.on_receivedLines)
+                    self.serial.disconnect_receivedData(self.serial.on_receivedData)
                     self.ui.pushButton_ReceiverStartStop.setText("Start")
                     self.isMonitoring = runIt
                     if DEBUGRECEIVER:
@@ -2114,8 +2113,8 @@ class mainWindow(QMainWindow):
                 if USE_BLE:
                     # if self.serialUseBLE:
                     try:
-                        self.ble.disconnect_receivedLines(self.ble.on_receivedLines) # disconnect text display to serial receiver signal
-                        self.ble.disconnect_receivedData(self.ble.on_receivedData) # disconnect text display to serial receiver signal
+                        self.ble.disconnect_receivedLines(self.ble.on_receivedLines)
+                        self.ble.disconnect_receivedData(self.ble.on_receivedData)
                         self.ui.pushButton_ReceiverStartStop.setText("Start")
                         self.isMonitoring = runIt
                         if DEBUGRECEIVER:

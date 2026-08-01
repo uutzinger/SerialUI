@@ -137,7 +137,7 @@
             </font>
            </property>
            <property name="toolTip">
-            <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Enter text to be sent to serial port or BLE device. If both Serial port is open and BLE device is connected, text is sent to both. Enter submits the text and adds the End of Line from either serial or BLE device, whichever was opened last. Empty lines sends the End of Line characters. EOL is eitehr &amp;quot;\n&amp;quot; or &amp;quot;\r\n&amp;quot;, other options will be replaced.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+            <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Enter text to be sent to checked, connected Serial and/or BLE sources. Enter submits the text and each selected source uses its own End of Line setting exactly. With End of Line set to none, no terminator is added and an empty entry sends no bytes.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
            </property>
           </widget>
           <widget class="QPushButton" name="pushButton_SendFile">
