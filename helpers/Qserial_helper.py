@@ -504,12 +504,12 @@ class QSerial(QObject):
                     # find the port that matches the previous hwid
                     indx = port_hwids.index(best_match)
                     # Skip debug-class interfaces (don’t auto-reconnect to them)
-                    if is_debug_port(ports[indx], port_names[indx]):
-                        self.awaitingReconnection = False
-                        self.logSignal.emit(logging.INFO,
-                            f"[{self.instance_name[:15]:<15}]: Skipping auto‑reconnect to debug interface: {ports[indx]} ({port_names[indx]})."
-                        )
-                        return
+                    # if is_debug_port(ports[indx], port_names[indx]):
+                    #     self.awaitingReconnection = False
+                    #     self.logSignal.emit(logging.INFO,
+                    #         f"[{self.instance_name[:15]:<15}]: Skipping auto‑reconnect to debug interface: {ports[indx]} ({port_names[indx]})."
+                    #     )
+                    #     return
                     self.serialPort_backup = ports[indx]
                     self.serialPort_previous = ports[indx]
                     QTimer.singleShot(  0, lambda: self.scanPortsRequest.emit()) # request new port list, takes 225ms to complete
@@ -532,7 +532,8 @@ class QSerial(QObject):
                 # We have new device insertion, connect to it
                 if self.serialPort == "":
                     # Build candidate list excluding debug-class interfaces
-                    candidates = [(p, n) for p, n in zip(ports, port_names) if not is_debug_port(p, n)]
+                    # candidates = [(p, n) for p, n in zip(ports, port_names) if not is_debug_port(p, n)]
+                    candidates = [(p, n) for p, n in zip(ports, port_names)]
                     new_ports     = [p for (p, _) in candidates]
                     new_portnames = [n for (_, n) in candidates]
 
@@ -2525,6 +2526,7 @@ class Serial(QObject):
 
     @pyqtSlot()
     def on_resetESPRequest(self) -> None:
+        self.writeData("x" + self.eol)
         self.espHardReset()
 
 
