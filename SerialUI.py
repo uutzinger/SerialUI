@@ -445,6 +445,7 @@ class mainWindow(QMainWindow):
 
         self.isMonitoring = False
         self.isPlotting   = False                                              # chart receiver status request
+        self.receiverDemandActive = False
         self.startup_work_scheduled = False
         self.lineSendHistory     = []                                          # previously sent text (e.g. commands)
         self.lineSendHistoryIndx = -1               
@@ -1834,30 +1835,27 @@ class mainWindow(QMainWindow):
         """Update wiring of send/receive signals to serial worker"""
         if ready:
             if self.txrxReady_wired_to_serial:
-                if (self.isMonitoring or self.isPlotting):
-                    self.rxStartRequest.emit()
-                    self.throughputStartRequest.emit()
                 return
             self.textLineTerminator = self.serial.textLineTerminator
             ok = True
-            ok &= connect(self.sendFileRequest,        self.serial.sendFileRequest)
-            ok &= connect(self.sendTextRequest,        self.serial.sendTextRequest)
-            ok &= connect(self.sendLineRequest,        self.serial.sendLineRequest)
-            ok &= connect(self.sendLinesRequest,       self.serial.sendLinesRequest)
+            ok &= connect(self.sendFileRequest,        self.serial.sendFileRequest, unique=True)
+            ok &= connect(self.sendTextRequest,        self.serial.sendTextRequest, unique=True)
+            ok &= connect(self.sendLineRequest,        self.serial.sendLineRequest, unique=True)
+            ok &= connect(self.sendLinesRequest,       self.serial.sendLinesRequest, unique=True)
             # also wire RX and Throughput control
-            ok &= connect(self.rxStartRequest,         self.serial.startTransceiverRequest)
-            ok &= connect(self.rxStopRequest,          self.serial.stopTransceiverRequest)
-            ok &= connect(self.throughputStartRequest, self.serial.startThroughputRequest)
-            ok &= connect(self.throughputStopRequest,  self.serial.stopThroughputRequest)
+            ok &= connect(self.rxStartRequest,         self.serial.startTransceiverRequest, unique=True)
+            ok &= connect(self.rxStopRequest,          self.serial.stopTransceiverRequest, unique=True)
+            ok &= connect(self.throughputStartRequest, self.serial.startThroughputRequest, unique=True)
+            ok &= connect(self.throughputStopRequest,  self.serial.stopThroughputRequest, unique=True)
             self.txrxReady_wired_to_serial = ok
             if ok:
                 self.handle_log(logging.DEBUG, 
                     f"[{self.instance_name[:15]:<15}]: TX/RX wired to Serial."
                 )
                 # If monitor/plotter is running, start now
-                if (self.isMonitoring or self.isPlotting):
-                    self.rxStartRequest.emit()
-                    self.throughputStartRequest.emit()
+                if self.receiverDemandActive:
+                    self.serial.startTransceiverRequest.emit()
+                    self.serial.startThroughputRequest.emit()
             else:
                 self.handle_log(logging.ERROR, 
                     f"[{self.instance_name[:15]:<15}]: Could not wire TX/RX to Serial."
@@ -1875,7 +1873,7 @@ class mainWindow(QMainWindow):
             ok &= disconnect(self.rxStopRequest,          self.serial.stopTransceiverRequest)
             ok &= disconnect(self.throughputStartRequest, self.serial.startThroughputRequest)
             ok &= disconnect(self.throughputStopRequest,  self.serial.stopThroughputRequest)
-            self.txrxReady_wired_to_serial = not ok
+            self.txrxReady_wired_to_serial = False
             if ok:
                 self.handle_log(logging.DEBUG, 
                     f"[{self.instance_name[:15]:<15}]: TX disconnected from Serial."
@@ -1890,29 +1888,26 @@ class mainWindow(QMainWindow):
         """Update wiring of send/receive signals to BLE worker"""
         if ready:
             if self.txrxReady_wired_to_ble:
-                if (self.isMonitoring or self.isPlotting):
-                    self.rxStartRequest.emit()
-                    self.throughputStartRequest.emit()
                 return
             self.textLineTerminator = self.ble.textLineTerminator
             ok = True
-            ok &= connect(self.sendFileRequest,        self.ble.sendFileRequest)
-            ok &= connect(self.sendTextRequest,        self.ble.sendTextRequest)
-            ok &= connect(self.sendLineRequest,        self.ble.sendLineRequest)
-            ok &= connect(self.sendLinesRequest,       self.ble.sendLinesRequest)
+            ok &= connect(self.sendFileRequest,        self.ble.sendFileRequest, unique=True)
+            ok &= connect(self.sendTextRequest,        self.ble.sendTextRequest, unique=True)
+            ok &= connect(self.sendLineRequest,        self.ble.sendLineRequest, unique=True)
+            ok &= connect(self.sendLinesRequest,       self.ble.sendLinesRequest, unique=True)
             # also wire RX and Throughput control
-            ok &= connect(self.rxStartRequest,         self.ble.startTransceiverRequest)
-            ok &= connect(self.rxStopRequest,          self.ble.stopTransceiverRequest)
-            ok &= connect(self.throughputStartRequest, self.ble.startThroughputRequest)
-            ok &= connect(self.throughputStopRequest,  self.ble.stopThroughputRequest)
+            ok &= connect(self.rxStartRequest,         self.ble.startTransceiverRequest, unique=True)
+            ok &= connect(self.rxStopRequest,          self.ble.stopTransceiverRequest, unique=True)
+            ok &= connect(self.throughputStartRequest, self.ble.startThroughputRequest, unique=True)
+            ok &= connect(self.throughputStopRequest,  self.ble.stopThroughputRequest, unique=True)
             self.txrxReady_wired_to_ble = ok
             if ok:
                 self.handle_log(logging.DEBUG, 
                     f"[{self.instance_name[:15]:<15}]: TX/RX wired to BLE."
                 )
-                if (self.isMonitoring or self.isPlotting):
-                    self.rxStartRequest.emit()
-                    self.throughputStartRequest.emit()
+                if self.receiverDemandActive:
+                    self.ble.startTransceiverRequest.emit()
+                    self.ble.startThroughputRequest.emit()
             else:
                 self.handle_log(logging.ERROR, 
                     f"[{self.instance_name[:15]:<15}]: Could not wire TX/RX to BLE."
@@ -1929,7 +1924,7 @@ class mainWindow(QMainWindow):
             ok &= disconnect(self.rxStopRequest,          self.ble.stopTransceiverRequest)
             ok &= disconnect(self.throughputStartRequest, self.ble.startThroughputRequest)
             ok &= disconnect(self.throughputStopRequest,  self.ble.stopThroughputRequest)
-            self.txrxReady_wired_to_ble = not ok
+            self.txrxReady_wired_to_ble = False
             if ok:
                 self.handle_log(logging.DEBUG, 
                     f"[{self.instance_name[:15]:<15}]: TX disconnected from BLE."
@@ -2134,7 +2129,12 @@ class mainWindow(QMainWindow):
         # Start or Stop the serial or ble receiver
         # ----------------------------------------
 
-        if not (self.isPlotting or self.isMonitoring):
+        demand = bool(self.isPlotting or self.isMonitoring)
+        if demand == self.receiverDemandActive:
+            return
+        self.receiverDemandActive = demand
+
+        if not demand:
             # We are neither plotting nor displaying data, therefore we want to stop the serial worker
             self.throughputStopRequest.emit()
             self.rxStopRequest.emit()

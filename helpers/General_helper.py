@@ -147,10 +147,25 @@ def disconnectconnect(signal: pyqtSignal, slot: pyqtSlot, previous_slot: pyqtSlo
         return False
 
 def connect(signal: pyqtSignal, slot: pyqtSlot, unique: bool = True)-> bool:
+    """Connect ``slot`` once.
+
+    PyQt raises ``TypeError`` when ``UniqueConnection`` finds an existing
+    signal-slot pair.  Treat that case as an idempotent success by replacing the
+    existing pair with one unique connection.  This keeps callers from marking
+    otherwise-correct transport wiring as failed after a repeated ready event.
+    """
     try:
         signal.connect(slot, type=ConnectionType.UniqueConnection if unique else ConnectionType.AutoConnection)
         return True
     except TypeError:
+        if not unique:
+            return False
+
+    try:
+        signal.disconnect(slot)
+        signal.connect(slot, type=ConnectionType.UniqueConnection)
+        return True
+    except (TypeError, RuntimeError):
         return False
 
 def disconnect(signal: pyqtSignal, slot: pyqtSlot = None)-> bool:

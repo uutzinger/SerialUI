@@ -11,6 +11,7 @@ RUN_WINDOWS=1
 RUN_RASPBIAN=0
 COMMIT_MSG=""
 BUILD_REF=""
+COMMIT_ONLY=0
 
 usage() {
   cat <<'EOF'
@@ -25,6 +26,7 @@ Pipeline:
 
 Options:
   --commit-msg "msg" Set custom commit message passed to release.sh
+  --commit-only      Stage and commit, then stop before tag, push, release, or build
   --build-ref <ref>  Git branch/tag ref used for GitHub runner builds
                      (default: release version tag from config.py)
   --skip-linux       Skip Linux runner build
@@ -42,6 +44,7 @@ while [[ $# -gt 0 ]]; do
       COMMIT_MSG="$2"
       shift 2
       ;;
+    --commit-only) COMMIT_ONLY=1; shift ;;
     --build-ref)
       [[ $# -ge 2 ]] || { echo "Error: --build-ref requires a value" >&2; exit 2; }
       BUILD_REF="$2"
@@ -117,9 +120,24 @@ PY
 }
 
 require_cmd git
-require_cmd gh
 require_cmd python3
 require_file "scripts/release.sh"
+
+VERSION="$(project_version)"
+echo "Release version from config.py: ${VERSION}"
+
+if [[ "${COMMIT_ONLY}" -eq 1 ]]; then
+  RELEASE_ARGS=(--commit)
+  if [[ -n "${COMMIT_MSG}" ]]; then
+    RELEASE_ARGS=(--commit-msg "${COMMIT_MSG}" "${RELEASE_ARGS[@]}")
+  fi
+  echo "Commit-only: Running release.sh ${RELEASE_ARGS[*]}"
+  bash scripts/release.sh "${RELEASE_ARGS[@]}"
+  echo "Commit-only complete; skipped tag, push, release, and builds."
+  exit 0
+fi
+
+require_cmd gh
 require_file "scripts/run_github_linux_build.sh"
 require_file "scripts/run_github_mac_build.sh"
 require_file "scripts/run_github_windows_build.sh"
@@ -130,8 +148,6 @@ if ! gh auth status >/dev/null 2>&1; then
   exit 2
 fi
 
-VERSION="$(project_version)"
-echo "Release version from config.py: ${VERSION}"
 if [[ -z "${BUILD_REF}" ]]; then
   BUILD_REF="${VERSION}"
 fi

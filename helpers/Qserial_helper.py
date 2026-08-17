@@ -1356,13 +1356,13 @@ class QSerial(QObject):
     # UI wants to receive data
 
     def connect_receivedLines(self, on_receivedLines: pyqtSlot) -> None:
-        if not connect(self.serialWorker.receivedLines, on_receivedLines):
+        if not connect(self.serialWorker.receivedLines, on_receivedLines, unique=True):
             self.logSignal.emit(logging.ERROR, 
                 f"[{self.instance_name[:15]:<15}]: Could not connect receivedLines signal."
             )
 
     def connect_receivedData(self, on_receivedData: pyqtSlot) -> None:
-        if not connect(self.serialWorker.receivedData, on_receivedData):
+        if not connect(self.serialWorker.receivedData, on_receivedData, unique=True):
             self.logSignal.emit(logging.ERROR, 
                 f"[{self.instance_name[:15]:<15}]: Could not connect receivedData signal."
             )
@@ -2176,7 +2176,7 @@ class Serial(QObject):
             if self.QSer and self.QSer.isOpen():
                 self.clearPort()
                 # self.QSer.readyRead.connect(self.on_dataReady, Qt.QueuedConnection)
-                if connect(self.QSer.readyRead, self.on_dataReady):
+                if connect(self.QSer.readyRead, self.on_dataReady, unique=True):
                     self.receiverIsRunning  = True
                     self.workerStateChanged.emit(True)                         # serial worker is running
                     self.logSignal.emit(logging.INFO,

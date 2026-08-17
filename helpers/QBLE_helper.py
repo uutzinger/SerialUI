@@ -1281,13 +1281,13 @@ class QBLESerial(QObject):
     # ==========================================================================
 
     def connect_receivedLines(self, on_receivedLines: pyqtSlot) -> None:
-        if not connect(self.bleakWorker.receivedLines, on_receivedLines):
+        if not connect(self.bleakWorker.receivedLines, on_receivedLines, unique=True):
             self.logSignal.emit(logging.INFO,
                 f"[{self.instance_name[:15]:<15}]: Received lines signal could not be connected."
             )
 
     def connect_receivedData(self, on_receivedData: pyqtSlot) -> None:
-        if not connect(self.bleakWorker.receivedData, on_receivedData):
+        if not connect(self.bleakWorker.receivedData, on_receivedData, unique=True):
             self.logSignal.emit(logging.INFO,
                 f"[{self.instance_name[:15]:<15}]: Received data signal could not be connected."
             )
@@ -1527,6 +1527,11 @@ class BleakWorker(QObject):
     eolChanged           = pyqtSignal(bytes)                                   # notify UI when eol changed
     finished             = pyqtSignal()
 
+    NOTIFY_STOPPED  = "stopped"
+    NOTIFY_STARTING = "starting"
+    NOTIFY_STARTED  = "started"
+    NOTIFY_STOPPING = "stopping"
+
     def __init__(self, parent=None):
         super(BleakWorker, self).__init__(parent)
 
@@ -1554,6 +1559,9 @@ class BleakWorker(QObject):
         self.BLEpayloadSize = 20
 
         self.receiverIsRunning = False
+        self.notification_state = self.NOTIFY_STOPPED
+        self.notification_wanted = False
+        self.connection_generation = 0
 
         self.mtoc_on_sendText = 0.
         self.mtoc_on_sendLine = 0.
@@ -1853,10 +1861,34 @@ class BleakWorker(QObject):
             f"[{self.instance_name[:15]:<15}]: Throughput timer stopped."
         )
 
+    def _set_receiver_running(self, running: bool) -> None:
+        """Update public receiver state and emit only on an actual transition."""
+        running = bool(running)
+        if self.receiverIsRunning == running:
+            return
+        self.receiverIsRunning = running
+        self.workerStateChanged.emit(running)
+
+    def _reset_notification_state(self, preserve_wanted: bool) -> None:
+        """Invalidate pending notification operations for the old connection."""
+        self.connection_generation += 1
+        self.notification_state = self.NOTIFY_STOPPED
+        if not preserve_wanted:
+            self.notification_wanted = False
+        self._set_receiver_running(False)
+
     def start_transceiver(self):
-        if self.receiverIsRunning:
+        self.notification_wanted = True
+
+        if self.notification_state in (self.NOTIFY_STARTING, self.NOTIFY_STARTED):
             self.logSignal.emit(logging.DEBUG,
-                f"[{self.instance_name[:15]:<15}]: Transceiver is already running."
+                f"[{self.instance_name[:15]:<15}]: Notification subscription is already {self.notification_state}."
+            )
+            return
+
+        if self.notification_state == self.NOTIFY_STOPPING:
+            self.logSignal.emit(logging.DEBUG,
+                f"[{self.instance_name[:15]:<15}]: Notification restart requested while stopping."
             )
             return
 
@@ -1866,47 +1898,98 @@ class BleakWorker(QObject):
             )
             return
 
-        fut = self.schedule(self._startTransceiver())
+        generation = self.connection_generation
+        client = self.client
+        char_tx = self.char_tx
+        self.notification_state = self.NOTIFY_STARTING
+
+        fut = self.schedule(self._startTransceiver(client, char_tx))
+
         def _done(f):
-            exc = f.exception()
+            if generation != self.connection_generation or client is not self.client:
+                return
+            try:
+                exc = f.exception()
+            except Exception as error:
+                exc = error
             if exc:
+                self.notification_state = self.NOTIFY_STOPPED
+                self._set_receiver_running(False)
                 self.logSignal.emit(logging.ERROR, 
                     f"[{self.instance_name[:15]:<15}]: Transceiver not started: {exc}"
                 )
             else:
-                self.receiverIsRunning = True
-                self.workerStateChanged.emit(True)
+                self.notification_state = self.NOTIFY_STARTED
+                if not self.notification_wanted:
+                    self.stop_transceiver()
+                    return
+                self._set_receiver_running(True)
                 self.logSignal.emit(logging.INFO, 
                     f"[{self.instance_name[:15]:<15}]: Transceiver started, subscribed to notifications."
                 )
         fut.add_done_callback(_done)
 
-    async def _startTransceiver(self):
-        await self.client.start_notify(self.char_tx, self._handle_data)
+    async def _startTransceiver(self, client=None, char_tx=None):
+        client = client or self.client
+        char_tx = char_tx or self.char_tx
+        await client.start_notify(char_tx, self._handle_data)
 
     def stop_transceiver(self):
-        if not self.receiverIsRunning:
-            self.logSignal.emit(logging.WARNING,
-                f"[{self.instance_name[:15]:<15}]: Transceiver is already stopped."
+        self.notification_wanted = False
+
+        if self.notification_state == self.NOTIFY_STOPPED:
+            self.logSignal.emit(logging.DEBUG,
+                f"[{self.instance_name[:15]:<15}]: Notification subscription is already stopped."
             )
             return
 
-        fut = self.schedule(self._stopTransceiver())
+        if self.notification_state == self.NOTIFY_STARTING:
+            self.logSignal.emit(logging.DEBUG,
+                f"[{self.instance_name[:15]:<15}]: Notification stop deferred until startup completes."
+            )
+            return
+        if self.notification_state == self.NOTIFY_STOPPING:
+            self.logSignal.emit(logging.DEBUG,
+                f"[{self.instance_name[:15]:<15}]: Notification subscription is already stopping."
+            )
+            return
+
+        generation = self.connection_generation
+        client = self.client
+        char_tx = self.char_tx
+        if not (client and getattr(client, "is_connected", False) and char_tx):
+            self.notification_state = self.NOTIFY_STOPPED
+            self._set_receiver_running(False)
+            return
+
+        self.notification_state = self.NOTIFY_STOPPING
+        fut = self.schedule(self._stopTransceiver(client, char_tx))
+
         def _done(f):
-            exc = f.exception()
+            if generation != self.connection_generation or client is not self.client:
+                return
+            try:
+                exc = f.exception()
+            except Exception as error:
+                exc = error
             if exc:
+                self.notification_state = self.NOTIFY_STARTED
                 self.logSignal.emit(logging.ERROR, 
                     f"[{self.instance_name[:15]:<15}]: Transceiver stop failed: {exc}"
                 )
             else:
-                self.receiverIsRunning = False
-                self.workerStateChanged.emit(False)
+                self.notification_state = self.NOTIFY_STOPPED
+                self._set_receiver_running(False)
                 self.logSignal.emit(logging.WARNING,
                     f"[{self.instance_name[:15]:<15}]: BLEAK client unsubscribed from notifications.")
+                if self.notification_wanted:
+                    self.start_transceiver()
         fut.add_done_callback(_done)
                 
-    async def _stopTransceiver(self):
-        await self.client.stop_notify(self.char_tx)
+    async def _stopTransceiver(self, client=None, char_tx=None):
+        client = client or self.client
+        char_tx = char_tx or self.char_tx
+        await client.stop_notify(char_tx)
 
     def clean_up(self):
         """Handle Cleanup of the worker."""
@@ -2135,6 +2218,7 @@ class BleakWorker(QObject):
                 self.char_tx = service.get_characteristic(TX_CHARACTERISTIC_UUID)
                 self.char_rx = service.get_characteristic(RX_CHARACTERISTIC_UUID)
 
+                self._reset_notification_state(preserve_wanted=True)
                 self.connectingSuccess.emit(True) 
                 self.logSignal.emit(logging.INFO, 
                     f"[{self.instance_name[:15]:<15}]: Connected to {self.device.name} "
@@ -2180,6 +2264,7 @@ class BleakWorker(QObject):
                             self.char_tx = service.get_characteristic(TX_CHARACTERISTIC_UUID)
                             self.char_rx = service.get_characteristic(RX_CHARACTERISTIC_UUID)
 
+                            self._reset_notification_state(preserve_wanted=True)
                             self.connectingSuccess.emit(True)
                             self.logSignal.emit(logging.INFO,
                                 f"[{self.instance_name[:15]:<15}]: Connected after rescan MTU={self.mtu}, payload={self.BLEpayloadSize}"
@@ -2227,9 +2312,7 @@ class BleakWorker(QObject):
         )
 
         # Reflect disconnected state immediately so UI switches to "Connect"
-        if self.receiverIsRunning:
-            self.receiverIsRunning = False
-            self.workerStateChanged.emit(False)
+        self._reset_notification_state(preserve_wanted=self.reconnect)
         self.disconnectingSuccess.emit(True)                                   # UI: show Connect, disable send, etc.
 
         if not self.reconnect:                                                 # Check if reconnection is allowed
@@ -2279,13 +2362,13 @@ class BleakWorker(QObject):
                 self.char_tx = service.get_characteristic(TX_CHARACTERISTIC_UUID)
                 self.char_rx = service.get_characteristic(RX_CHARACTERISTIC_UUID)
 
-                # Reconnect notifications if receiver was running
-                await self.client.start_notify(self.char_tx, self._handle_data)
-                self.receiverIsRunning = True
-                self.workerStateChanged.emit(True)
+                self._reset_notification_state(preserve_wanted=True)
+                self.connectingSuccess.emit(True)
+                if self.notification_wanted:
+                    self.start_transceiver()
 
                 self.logSignal.emit(logging.INFO, 
-                    f"[{self.instance_name[:15]:<15}]: Reconnected to {self.device.name} with MTU={self.mtu} and notifications started."
+                    f"[{self.instance_name[:15]:<15}]: Reconnected to {self.device.name} with MTU={self.mtu}."
                 )
                 retry_attempts = 0                                             # Reset retry attempts on success
                 return                                                         # Exit the loop on successful reconnection
@@ -2317,9 +2400,7 @@ class BleakWorker(QObject):
             )
 
         # Ensure UI reflects disconnected state and can try Connect again
-        if self.receiverIsRunning:
-            self.receiverIsRunning = False
-            self.workerStateChanged.emit(False)
+        self._reset_notification_state(preserve_wanted=False)
         self.disconnectingSuccess.emit(True)                                   # switch UI to "Connect"
 
         # Make sure internal handles are cleared
@@ -2342,6 +2423,7 @@ class BleakWorker(QObject):
             tic = time.perf_counter()
 
         self.reconnect = False                                                 # Stop reconnection attempts
+        self._reset_notification_state(preserve_wanted=False)
 
         if not self.client or not self.client.is_connected:
             self.logSignal.emit(logging.WARNING, 
