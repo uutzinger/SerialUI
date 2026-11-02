@@ -21,17 +21,21 @@ Usage:
 Pipeline:
   1) Run release.sh with commit/tag/push for a new tag, then create-release
      If the version tag already exists locally, skip commit/tag/push and reuse it.
-  2) Run runner builds (linux/macos/windows/raspbian) on the build ref
-  3) Run release.sh --upload-assets
+  2) Start Publish Release Assets on the repository's default branch
+  3) Wait for builds and asset publication entirely within GitHub
+     Existing tag-triggered builds and published packages are reused.
+     No packages are downloaded to this computer or uploaded from it.
 
 Options:
   --commit-msg "msg" Set custom commit message passed to release.sh
   --commit-only      Stage and commit, then stop before tag, push, release, or build
   --build-ref <ref>  Git branch/tag ref used for GitHub runner builds
                      (default: release version tag from config.py)
-  --skip-linux       Skip Linux runner build
-  --skip-macos       Skip macOS runner build
-  --skip-windows     Skip Windows runner build
+                     Must point to the same commit as the release tag.
+  --skip-linux       Omit Linux packages
+  --skip-macos       Omit macOS packages
+  --skip-windows     Omit Windows packages
+  --with-raspbian    Include Raspbian packages (requires self-hosted runner)
   --skip-raspbian    Skip Raspbian runner build
   -h, --help         Show help
 EOF
@@ -53,6 +57,7 @@ while [[ $# -gt 0 ]]; do
     --skip-linux) RUN_LINUX=0; shift ;;
     --skip-macos) RUN_MACOS=0; shift ;;
     --skip-windows) RUN_WINDOWS=0; shift ;;
+    --with-raspbian) RUN_RASPBIAN=1; shift ;;
     --skip-raspbian) RUN_RASPBIAN=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage; exit 2 ;;
@@ -73,26 +78,6 @@ require_file() {
     echo "Error: required file missing: ${path}" >&2
     exit 2
   fi
-}
-
-clear_release_assets_for_version() {
-  local version="$1"
-  shopt -s nullglob
-  local assets=(
-    "dist/SerialUI-${version}-"*.zip
-    "dist/SerialUI-${version}-"*.tar.gz
-  )
-  shopt -u nullglob
-
-  if [[ "${#assets[@]}" -eq 0 ]]; then
-    return
-  fi
-
-  echo "Removing stale local dist assets for ${version}:"
-  for asset in "${assets[@]}"; do
-    rm -f "${asset}"
-    echo "  removed: ${asset}"
-  done
 }
 
 project_version() {
@@ -138,15 +123,29 @@ if [[ "${COMMIT_ONLY}" -eq 1 ]]; then
 fi
 
 require_cmd gh
-require_file "scripts/run_github_linux_build.sh"
-require_file "scripts/run_github_mac_build.sh"
-require_file "scripts/run_github_windows_build.sh"
-require_file "scripts/run_github_raspbian_build.sh"
+
+# Match release.sh: use stored authentication instead of stale environment tokens.
+gh() { env -u GITHUB_TOKEN -u GH_TOKEN gh "$@"; }
 
 if ! gh auth status >/dev/null 2>&1; then
   echo "Error: gh is not authenticated. Run: gh auth login" >&2
   exit 2
 fi
+
+PLATFORMS=()
+if [[ "${RUN_LINUX}" -eq 1 ]]; then PLATFORMS+=(linux); fi
+if [[ "${RUN_MACOS}" -eq 1 ]]; then PLATFORMS+=(macos); fi
+if [[ "${RUN_WINDOWS}" -eq 1 ]]; then PLATFORMS+=(windows); fi
+if [[ "${RUN_RASPBIAN}" -eq 1 ]]; then PLATFORMS+=(raspbian); fi
+if [[ "${#PLATFORMS[@]}" -eq 0 ]]; then
+  echo "Error: select at least one platform." >&2
+  exit 2
+fi
+PLATFORM_LIST="$(IFS=,; echo "${PLATFORMS[*]}")"
+REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+WORKFLOW_REF="$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)"
+# Check before committing/tagging that remote publication is available.
+gh api "repos/${REPO}/actions/workflows/publish-release-assets.yml" >/dev/null
 
 if [[ -z "${BUILD_REF}" ]]; then
   BUILD_REF="${VERSION}"
@@ -186,25 +185,31 @@ echo "Step 1/3: Running release.sh --create-release"
 bash scripts/release.sh --create-release
 
 echo ""
-echo "Step 2/3: Running runner builds on ref ${BUILD_REF}"
-mkdir -p dist
-clear_release_assets_for_version "${VERSION}"
-if [[ "${RUN_LINUX}" -eq 1 ]]; then
-  bash scripts/run_github_linux_build.sh --ref "${BUILD_REF}"
-fi
-if [[ "${RUN_MACOS}" -eq 1 ]]; then
-  bash scripts/run_github_mac_build.sh --ref "${BUILD_REF}"
-fi
-if [[ "${RUN_WINDOWS}" -eq 1 ]]; then
-  bash scripts/run_github_windows_build.sh --ref "${BUILD_REF}"
-fi
-if [[ "${RUN_RASPBIAN}" -eq 1 ]]; then
-  bash scripts/run_github_raspbian_build.sh --ref "${BUILD_REF}"
+echo "Step 2/3: Publishing ${PLATFORM_LIST} packages within GitHub"
+REQUEST_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+RUN_TITLE="Publish release ${VERSION} (${REQUEST_ID})"
+gh workflow run publish-release-assets.yml --repo "${REPO}" --ref "${WORKFLOW_REF}" \
+  -f "tag=${VERSION}" -f "build_ref=${BUILD_REF}" \
+  -f "platforms=${PLATFORM_LIST}" -f "request_id=${REQUEST_ID}"
+
+# Identify this exact dispatch rather than accidentally watching a concurrent run.
+RUN_ID=""
+for _ in {1..30}; do
+  RUN_ID="$(gh run list --repo "${REPO}" --workflow publish-release-assets.yml \
+    --event workflow_dispatch --limit 100 --json databaseId,displayTitle | \
+    python3 -c 'import json, sys; print(next((str(r["databaseId"]) for r in json.load(sys.stdin) if r["displayTitle"] == sys.argv[1]), ""))' "${RUN_TITLE}")"
+  if [[ -n "${RUN_ID}" ]]; then break; fi
+  sleep 3
+done
+if [[ -z "${RUN_ID}" ]]; then
+  echo "Error: could not find publication run '${RUN_TITLE}'. Check GitHub Actions before retrying." >&2
+  exit 2
 fi
 
 echo ""
-echo "Step 3/3: Uploading downloaded artifacts from local dist/ to GitHub release ${VERSION}"
-bash scripts/release.sh --upload-assets
+echo "Step 3/3: Waiting for publication run ${RUN_ID}"
+gh run watch "${RUN_ID}" --repo "${REPO}" --exit-status
+gh release view "${VERSION}" --repo "${REPO}" --json url --jq .url
 
 echo ""
 echo "Done."
