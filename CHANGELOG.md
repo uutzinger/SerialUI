@@ -2,6 +2,21 @@
 
 All notable changes to SerialUI are documented here.
 
+## 1.5.9 - 2026-11-02
+
+### Fixed
+
+- Re-enable BLE Scan after failed or cancelled scans so Bluetooth can be turned on and scanning retried without restarting SerialUI.
+- Log Bluetooth scan failures with adapter and retry guidance plus the underlying error.
+- Explicitly select CRLF for both Serial and BLE at startup, including the UI form defaults, matching Arduino `Serial.println()`.
+- Correct the Help dialog description to identify its instructions source.
+
+### Validation
+
+- Pass 16 focused receiver lifecycle, BLE scan recovery, and command-framing tests, Python compilation checks, and `git diff --check`.
+- Verify both line-ending selectors default to CRLF with an offscreen UI check.
+- Live Bluetooth adapter recovery and packaged application testing remain pending.
+
 ## 1.5.8 - 2026-08-16
 
 ### Fixed

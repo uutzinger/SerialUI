@@ -316,7 +316,7 @@ THEME_CHANGE_EVENTS = tuple(
         getattr(_QEVENT_TYPE, "ThemeChange", None),
     ) if ev is not None
 )
-#
+
 # # Set HiDPI rounding policy early (before creating QApplication). Safe for Qt5/Qt6.
 # NOT enabled as environment variables should take care of this
 # try:
@@ -329,7 +329,7 @@ THEME_CHANGE_EVENTS = tuple(
 #             QGuiApplication.setHighDpiScaleFactorRoundingPolicy(policy)
 # except Exception:
 #     pass
-#
+
 # Enable High DPI scaling and use high DPI pixmaps (should be before creating QApplication)
 try:
     if hasattr(Qt.ApplicationAttribute, "AA_EnableHighDpiScaling"):
@@ -342,7 +342,7 @@ try:
         )
 except Exception:
     pass
-#
+
 # Program's local class imports 
 # ----------------------------------------
 #
@@ -541,14 +541,7 @@ class mainWindow(QMainWindow):
         cb.blockSignals(True)
         cb.clear()
         cb.addItems(list(EOL_DICT.keys()))
-        # Set current index based on the current bytes value (if you already have one)
-        current_bytes = getattr(self, "textLineTerminator", EOL_DEFAULT_BYTES)
-        label = EOL_DICT_INV.get(current_bytes, EOL_DEFAULT_LABEL)
-        idx = cb.findText(label)
-        if idx >= 0:
-            cb.setCurrentIndex(idx)
-        else:
-            cb.setCurrentIndex(cb.findText(EOL_DEFAULT_LABEL))
+        cb.setCurrentIndex(cb.findText(EOL_DEFAULT_LABEL))
         cb.blockSignals(False)
 
         # Line Termination BLE
@@ -556,14 +549,7 @@ class mainWindow(QMainWindow):
         cb.blockSignals(True)
         cb.clear()
         cb.addItems(list(EOL_DICT.keys()))
-        # Set current index based on the current bytes value (if you already have one)
-        # current_bytes = getattr(self, "textLineTerminator", EOL_DEFAULT_BYTES)
-        # label = EOL_DICT_INV.get(current_bytes, EOL_DEFAULT_LABEL)
-        idx = cb.findText(label)
-        if idx >= 0:
-            cb.setCurrentIndex(idx)
-        else:
-            cb.setCurrentIndex(cb.findText(EOL_DEFAULT_LABEL))
+        cb.setCurrentIndex(cb.findText(EOL_DEFAULT_LABEL))
         cb.blockSignals(False)
 
         # Plotting Data Separator
@@ -1104,8 +1090,8 @@ class mainWindow(QMainWindow):
 
     @pyqtSlot()
     def show_help_dialog(self):
-        """Show a 'Help' dialog with readme content."""
-        # Load Markdown content from readme file
+        """Show a 'Help' dialog with instructions content."""
+        # Load Markdown content from instructions file
         with open("docs/Instructions.md", "r") as file:
             markdown_content = file.read()
         html_content = markdown(markdown_content)

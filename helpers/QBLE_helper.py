@@ -309,6 +309,7 @@ class QBLESerial(QObject):
         # Signals from BLEAK Worker to UI
         self.bleakWorker.throughputReady.connect(       self.on_throughputReady, type=ConnectionType.QueuedConnection) # connect display throughput status
         self.bleakWorker.deviceListReady.connect(       self.on_deviceListReady, type=ConnectionType.QueuedConnection) # connect new port list to its ready signal
+        self.bleakWorker.scanFinished.connect(          self.on_scanFinished, type=ConnectionType.QueuedConnection)
         self.bleakWorker.connectingSuccess.connect(     self.on_connectingSuccess, type=ConnectionType.QueuedConnection) # connect connecting status to BLE UI
         self.bleakWorker.disconnectingSuccess.connect(  self.on_disconnectingSuccess, type=ConnectionType.QueuedConnection) # connect disconnecting status to BLE UI
         self.bleakWorker.workerStateChanged.connect(    self.on_workerStateChanged, type=ConnectionType.QueuedConnection) # mirror serial worker state to serial UI
@@ -432,9 +433,9 @@ class QBLESerial(QObject):
         Update BLE device list
         """
         self.device_scan_requested = True
-        self.scanDevicesRequest.emit(float(BLESCAN_LONG))
         self.ui.pushButton_BLEScan.setEnabled(False)
         self.ui.pushButton_BLEConnect.setEnabled(False)
+        self.scanDevicesRequest.emit(float(BLESCAN_LONG))
         self.logSignal.emit(logging.INFO, 
             f"[{self.instance_name[:15]:<15}]: BLE device scan requested ({BLESCAN_LONG:.1f}s)."
         )
@@ -657,6 +658,11 @@ class QBLESerial(QObject):
             toc = time.perf_counter()
             self.mtoc_on_statusReady = max((toc - tic), self.mtoc_on_statusReady)
 
+    @pyqtSlot()
+    def on_scanFinished(self):
+        """Allow another scan after success, failure, or cancellation."""
+        self.ui.pushButton_BLEScan.setEnabled(True)
+
     @pyqtSlot(list)
     def on_deviceListReady(self, devices:list):
         """pickup new list of devices"""
@@ -668,8 +674,6 @@ class QBLESerial(QObject):
             logging.DEBUG,
             f"[{self.instance_name[:15]:<15}]: Device list received."
         )
-
-        self.ui.pushButton_BLEScan.setEnabled(True)                            # re-enable device scan, was turned of during scanning
 
         # save current selected device 
         currentIndex   = self.ui.comboBoxDropDown_Device.currentIndex()
@@ -1518,6 +1522,7 @@ class BleakWorker(QObject):
 
     logSignal            = pyqtSignal(int, str)  
     deviceListReady      = pyqtSignal(list)
+    scanFinished         = pyqtSignal()
     connectingSuccess    = pyqtSignal(bool)
     disconnectingSuccess = pyqtSignal(bool)
     receivedLines        = pyqtSignal(list)
@@ -2062,69 +2067,73 @@ class BleakWorker(QObject):
     async def _scanDevices(self, timeout: float = BLESCAN_LONG):
         """Scan for BLE devices offering the Nordic UART Service."""
 
-        if PROFILEME: 
-            tic = time.perf_counter()
-
         try:
-            self.logSignal.emit(logging.INFO, 
-                f"[{self.instance_name[:15]:<15}]: Scanning for BLE devices ({timeout:.1f}s)."
-            )
-            devices = await BleakScanner.discover(timeout=float(timeout), return_adv=True)
-        except Exception as e:
-            self.logSignal.emit(logging.ERROR, 
-                f"[{self.instance_name[:15]:<15}]: Error scanning for devices: {e}"
-            )
-            return
-        
-        if not devices:
-            self.logSignal.emit(logging.INFO, 
-                f"[{self.instance_name[:15]:<15}]: No devices found."
-            )
-        
-        self.NSUdevices = []
-        seen_addresses = set()
-        known_addresses = {
-            getattr(self.device, "address", None),
-            getattr(self.device_backup, "address", None),
-        }
-        known_addresses = {address for address in known_addresses if address}
-        known_names = {
-            getattr(self.device, "name", None),
-            getattr(self.device_backup, "name", None),
-            DEFAULT_TARGET_DEVICE_NAME,
-        }
-        known_names = {name.strip() for name in known_names if isinstance(name, str) and name.strip()}
-        for device, adv in devices.values():
-            self.logSignal.emit(logging.INFO, 
-                f"[{self.instance_name[:15]:<15}]: Found device: {device.name} ({device.address}) RSSI: {adv.rssi} dBm"
-            )
-            suids = adv.service_uuids or ()
-            service_match = any(service_uuid.lower() == SERVICE_UUID.lower() for service_uuid in suids)
-            name_match = bool(device.name and device.name.strip() in known_names)
-            address_match = bool(device.address and device.address in known_addresses)
+            if PROFILEME:
+                tic = time.perf_counter()
 
-            if service_match or name_match or address_match:
-                if device.address not in seen_addresses:
-                    self.NSUdevices.append(device)
-                    seen_addresses.add(device.address)
-                if not service_match and (name_match or address_match):
-                    self.logSignal.emit(logging.INFO,
-                        f"[{self.instance_name[:15]:<15}]: Keeping known BLE device without advertised NUS UUID: {device.name} ({device.address})"
-                    )
+            try:
+                self.logSignal.emit(logging.INFO,
+                    f"[{self.instance_name[:15]:<15}]: Scanning for BLE devices ({timeout:.1f}s)."
+                )
+                devices = await BleakScanner.discover(timeout=float(timeout), return_adv=True)
+            except Exception as e:
+                self.logSignal.emit(logging.ERROR,
+                    f"[{self.instance_name[:15]:<15}]: BLE scan failed. Check that your Bluetooth "
+                    f"adapter is connected and turned on, then try Scan again. Details: {e}"
+                )
+                return
 
-        if not self.NSUdevices:
-            self.logSignal.emit(logging.INFO, 
-                f"[{self.instance_name[:15]:<15}]: Scan complete. No matching devices found."
-            )
-        else:
-            self.logSignal.emit(logging.INFO, 
-                f"[{self.instance_name[:15]:<15}]: Scan complete."
-            )
-        self.deviceListReady.emit(self.NSUdevices)
+            if not devices:
+                self.logSignal.emit(logging.INFO,
+                    f"[{self.instance_name[:15]:<15}]: No devices found."
+                )
 
-        if PROFILEME:
-            toc = time.perf_counter()
-            self.mtoc_on_scanDevices = max((toc - tic), self.mtoc_on_scanDevices) # End performance tracking
+            self.NSUdevices = []
+            seen_addresses = set()
+            known_addresses = {
+                getattr(self.device, "address", None),
+                getattr(self.device_backup, "address", None),
+            }
+            known_addresses = {address for address in known_addresses if address}
+            known_names = {
+                getattr(self.device, "name", None),
+                getattr(self.device_backup, "name", None),
+                DEFAULT_TARGET_DEVICE_NAME,
+            }
+            known_names = {name.strip() for name in known_names if isinstance(name, str) and name.strip()}
+            for device, adv in devices.values():
+                self.logSignal.emit(logging.INFO,
+                    f"[{self.instance_name[:15]:<15}]: Found device: {device.name} ({device.address}) RSSI: {adv.rssi} dBm"
+                )
+                suids = adv.service_uuids or ()
+                service_match = any(service_uuid.lower() == SERVICE_UUID.lower() for service_uuid in suids)
+                name_match = bool(device.name and device.name.strip() in known_names)
+                address_match = bool(device.address and device.address in known_addresses)
+
+                if service_match or name_match or address_match:
+                    if device.address not in seen_addresses:
+                        self.NSUdevices.append(device)
+                        seen_addresses.add(device.address)
+                    if not service_match and (name_match or address_match):
+                        self.logSignal.emit(logging.INFO,
+                            f"[{self.instance_name[:15]:<15}]: Keeping known BLE device without advertised NUS UUID: {device.name} ({device.address})"
+                        )
+
+            if not self.NSUdevices:
+                self.logSignal.emit(logging.INFO,
+                    f"[{self.instance_name[:15]:<15}]: Scan complete. No matching devices found."
+                )
+            else:
+                self.logSignal.emit(logging.INFO,
+                    f"[{self.instance_name[:15]:<15}]: Scan complete."
+                )
+            self.deviceListReady.emit(self.NSUdevices)
+
+            if PROFILEME:
+                toc = time.perf_counter()
+                self.mtoc_on_scanDevices = max((toc - tic), self.mtoc_on_scanDevices) # End performance tracking
+        finally:
+            self.scanFinished.emit()
 
     # BLEAK Device Connect
     # ----------------------------------------

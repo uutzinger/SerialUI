@@ -2452,6 +2452,9 @@
                 <property name="sizeAdjustPolicy">
                  <enum>QComboBox::AdjustToContents</enum>
                 </property>
+                <property name="currentIndex">
+                 <number>1</number>
+                </property>
                 <item>
                  <property name="text">
                   <string>none</string>
@@ -2858,6 +2861,9 @@
                 </property>
                 <property name="sizeAdjustPolicy">
                  <enum>QComboBox::AdjustToContents</enum>
+                </property>
+                <property name="currentIndex">
+                 <number>1</number>
                 </property>
                 <item>
                  <property name="text">

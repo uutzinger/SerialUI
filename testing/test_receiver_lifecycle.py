@@ -2,6 +2,7 @@ import asyncio
 import sys
 import types
 import unittest
+from unittest.mock import AsyncMock, Mock, patch
 from concurrent.futures import Future
 from types import SimpleNamespace
 
@@ -20,7 +21,7 @@ if "bleak" not in sys.modules:
     })
 
 from helpers.General_helper import connect
-from helpers.QBLE_helper import BleakWorker
+from helpers.QBLE_helper import BleakWorker, QBLESerial, BleakScanner
 from helpers.Qserial_helper import Serial
 
 graph = types.ModuleType("helpers.Qgraph_helper")
@@ -161,6 +162,66 @@ class FakeWidget:
 
     def setEnabled(self, _enabled):
         pass
+
+
+class BleScanTests(unittest.TestCase):
+    def setUp(self):
+        self.worker = ControlledBleWorker()
+        self.button = Mock()
+        self.context = SimpleNamespace(
+            ui=SimpleNamespace(
+                pushButton_BLEScan=self.button,
+                pushButton_BLEConnect=Mock(),
+                statusBar=lambda: Mock(),
+            ),
+            scanDevicesRequest=SimpleNamespace(emit=self.worker.start_scan),
+            logSignal=Mock(),
+            instance_name="test",
+        )
+        self.results = []
+        self.logs = []
+        self.worker.deviceListReady.connect(self.results.append)
+        self.worker.logSignal.connect(lambda level, message: self.logs.append(message))
+        self.worker.scanFinished.connect(lambda: QBLESerial.on_scanFinished(self.context))
+
+    def test_adapter_off_then_successful_retry(self):
+        device = SimpleNamespace(name="test", address="AA:BB")
+        advertisement = SimpleNamespace(service_uuids=[], rssi=-50)
+        self.worker.device = device
+        scanner = AsyncMock(side_effect=[
+            RuntimeError("Bluetooth adapter is powered off"),
+            {device.address: (device, advertisement)},
+        ])
+        with patch.object(BleakScanner, "discover", scanner, create=True):
+            QBLESerial.on_pushButton_BLEScan(self.context)
+            self.button.setEnabled.assert_called_with(False)
+            self.worker.complete_next()
+            self.button.setEnabled.assert_called_with(True)
+            self.assertEqual(self.results, [])
+            self.assertTrue(any("turned on" in message and "powered off" in message
+                                for message in self.logs))
+
+            QBLESerial.on_pushButton_BLEScan(self.context)
+            self.button.setEnabled.assert_called_with(False)
+            self.worker.complete_next()
+            self.button.setEnabled.assert_called_with(True)
+            self.assertEqual(self.results, [[device]])
+            self.assertEqual(scanner.await_count, 2)
+
+    def test_no_devices_still_allows_retry(self):
+        with patch.object(BleakScanner, "discover", AsyncMock(return_value={}), create=True):
+            QBLESerial.on_pushButton_BLEScan(self.context)
+            self.worker.complete_next()
+        self.button.setEnabled.assert_called_with(True)
+        self.assertEqual(self.results, [[]])
+
+    def test_cancelled_scan_still_allows_retry(self):
+        with patch.object(BleakScanner, "discover",
+                          AsyncMock(side_effect=asyncio.CancelledError), create=True):
+            with self.assertRaises(asyncio.CancelledError):
+                asyncio.run(self.worker._scanDevices())
+        self.button.setEnabled.assert_called_with(True)
+        self.assertEqual(self.results, [])
 
 
 class BleLifecycleTests(unittest.TestCase):

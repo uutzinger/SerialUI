@@ -6,7 +6,7 @@ import re
 from helpers.colors import color_names_sweet16 as COLORS
 ################################################################################################################################
 # Constants General
-VERSION                 = "1.5.8"                # this version
+VERSION                 = "1.5.9"                # this version
 AUTHOR                  = "Urs Utzinger"         # me
 DATE                    = "2026"                 # year of last update
 ################################################################################################################################
@@ -104,7 +104,7 @@ EOL_DICT = {
     "newline return (\\n\\r)" : b"\n\r",
 }
 # Defaults
-EOL_DEFAULT_LABEL       = "return newline (\\r\\n)" # "none"
+EOL_DEFAULT_LABEL       = "return newline (\\r\\n)" # Arduino Serial.println() uses CRLF
 EOL_DEFAULT_BYTES       = EOL_DICT[EOL_DEFAULT_LABEL]
 # Bytes → human-readable (for reverse lookup)
 EOL_DICT_INV            = {v: k for k, v in EOL_DICT.items()}

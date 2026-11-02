@@ -230,7 +230,7 @@ class QSerial(QObject):
         self.tx                    = 0                                         # init throughput 
         self.lastNumComputed       = time.perf_counter()                       # init throughput time calculation
         self.receiverIsRunning     = False                                     # keep track of worker state
-        self.textLineTerminator    = EOL_DEFAULT_BYTES                         # default line termination: none
+        self.textLineTerminator    = EOL_DEFAULT_BYTES                         # default line termination: CRLF
         self.serialTimeout         = 0                                         # default timeout    
         self.serialConnected       = False                                     # keep track of connection state
 
