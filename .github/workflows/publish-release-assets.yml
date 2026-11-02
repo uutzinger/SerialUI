@@ -1,0 +1,95 @@
+name: Publish Release Assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to publish packages for
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: publish-release-assets-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - name: Download verified build archives and upload to release
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import time
+          from urllib.parse import quote
+          import zipfile
+
+          repo = os.environ['GH_REPO']
+          tag = os.environ['RELEASE_TAG']
+          if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+[a-zA-Z0-9._-]*', tag):
+              raise SystemExit('Expected a version tag such as 1.5.9')
+
+          def gh_json(*args):
+              return json.loads(subprocess.check_output(['gh', *args], text=True))
+
+          sha = gh_json('api', f'repos/{repo}/commits/{quote(tag, safe="")}')['sha']
+          subprocess.run(['gh', 'release', 'view', tag], check=True)
+          workflows = {'build-linux.yml': 5, 'build-macos.yml': 1, 'build-windows.yml': 2}
+          deadline = time.monotonic() + 30 * 60
+          runs = {}
+          while len(runs) < len(workflows):
+              for workflow in workflows.keys() - runs.keys():
+                  candidates = gh_json('api',
+                      f'repos/{repo}/actions/workflows/{workflow}/runs?branch={quote(tag, safe="")}&per_page=30'
+                  )['workflow_runs']
+                  matching = [run for run in candidates
+                              if run['head_sha'] == sha and run['head_branch'] == tag]
+                  successful = [run for run in matching if run['conclusion'] == 'success']
+                  if successful:
+                      runs[workflow] = successful[0]['id']
+                      print(f'{workflow}: using successful run {runs[workflow]} at {sha}', flush=True)
+                  elif matching and all(run['status'] == 'completed' for run in matching):
+                      raise SystemExit(f'No successful build for {workflow}: '
+                                       f'{[(run["id"], run["conclusion"]) for run in matching]}')
+              if len(runs) == len(workflows):
+                  break
+              if time.monotonic() >= deadline:
+                  raise SystemExit('Timed out waiting for successful builds at the release commit')
+              print('Waiting for remaining release builds...', flush=True)
+              time.sleep(30)
+
+          archives = []
+          for workflow, count in workflows.items():
+              run_id = runs[workflow]
+              destination = Path('packages') / workflow
+              subprocess.run(['gh', 'run', 'download', str(run_id),
+                              '--pattern', 'SerialUI-archive-*', '--dir', str(destination)], check=True)
+              packages = sorted(destination.rglob(f'SerialUI-{tag}-*.zip'))
+              if len(packages) != count:
+                  raise SystemExit(f'{workflow}: expected {count} packages, found {len(packages)}')
+              for package in packages:
+                  with zipfile.ZipFile(package) as archive:
+                      bad_member = archive.testzip()
+                      if bad_member:
+                          raise SystemExit(f'Corrupt archive: {package}: {bad_member}')
+                  print(f'Validated {package.name} ({package.stat().st_size} bytes)', flush=True)
+              archives.extend(packages)
+          if len({package.name for package in archives}) != len(archives):
+              raise SystemExit('Duplicate package filenames')
+          subprocess.run(['gh', 'release', 'upload', tag, *map(str, archives)], check=True)
+          print(f'Uploaded {len(archives)} validated packages to release {tag}', flush=True)
+          PY
